@@ -28,8 +28,49 @@ pub fn get_diff(
 }
 
 #[tauri::command]
+pub fn review_summary(
+    repo: String,
+    branch: String,
+    base: String,
+) -> Result<Option<git::GitReview>, String> {
+    git::review_summary(&repo, &branch, &base)
+}
+
+#[tauri::command]
+pub fn list_branches(repo: String) -> Result<Vec<String>, String> {
+    git::list_branches(&repo)
+}
+
+#[tauri::command]
+pub fn detect_base(repo: String) -> Result<String, String> {
+    git::detect_base(&repo)
+}
+
+#[tauri::command]
 pub fn push_branch(repo: String, branch: String, remote: Option<String>) -> Result<String, String> {
     actions::push_branch(&repo, &branch, remote.as_deref().unwrap_or("origin"))
+}
+
+#[tauri::command]
+pub fn delete_branch(repo: String, branch: String) -> Result<(), String> {
+    actions::delete_branch(&repo, &branch)
+}
+
+// ---- tracked-review index (.locke/index.json) ----
+
+#[tauri::command]
+pub fn read_review_index(repo: String) -> Result<Vec<store::IndexEntry>, String> {
+    store::read_index(&repo)
+}
+
+#[tauri::command]
+pub fn add_review_index(repo: String, branch: String, base: String) -> Result<(), String> {
+    store::add_index_entry(&repo, &branch, &base)
+}
+
+#[tauri::command]
+pub fn remove_review_index(repo: String, branch: String) -> Result<(), String> {
+    store::remove_index_entry(&repo, &branch)
 }
 
 #[tauri::command]

@@ -70,7 +70,39 @@ pub struct GitDiff {
 type R<T> = Result<T, String>;
 
 fn open(path: &str) -> R<Repository> {
-    Repository::open(path).map_err(|e| format!("open repo: {e}"))
+    // discover() walks upward to find the .git dir, so picking a subfolder of a
+    // repo (not just its root) still works.
+    Repository::discover(path).map_err(|e| format!("open repo: {e}"))
+}
+
+/// Best-effort detection of the repo's trunk branch: origin/HEAD's target, then
+/// common names, then the current branch. Used when no base is configured.
+pub fn detect_base(repo_path: &str) -> R<String> {
+    let repo = open(repo_path)?;
+    let exists = |n: &str| repo.find_branch(n, BranchType::Local).is_ok();
+
+    if let Ok(reference) = repo.find_reference("refs/remotes/origin/HEAD") {
+        if let Some(target) = reference.symbolic_target() {
+            if let Some(name) = target.rsplit('/').next() {
+                if exists(name) {
+                    return Ok(name.to_string());
+                }
+            }
+        }
+    }
+    for cand in ["main", "master", "trunk", "develop"] {
+        if exists(cand) {
+            return Ok(cand.to_string());
+        }
+    }
+    if let Ok(head) = repo.head() {
+        if head.is_branch() {
+            if let Some(name) = head.shorthand() {
+                return Ok(name.to_string());
+            }
+        }
+    }
+    Err("could not determine a base branch (no main/master found)".to_string())
 }
 
 fn branch_tip<'r>(repo: &'r Repository, name: &str) -> R<Commit<'r>> {
@@ -147,48 +179,120 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
+/// Summarize a single head→base pair. Returns None when the head isn't ahead of
+/// the base (nothing to review). Used both for the auto-listing and for explicit
+/// reviews created against an arbitrary base.
+fn summarize_one(repo: &Repository, branch: &str, base: &str, now: i64) -> R<Option<GitReview>> {
+    if branch == base {
+        return Ok(None);
+    }
+    let tip = match branch_tip(repo, branch) {
+        Ok(c) => c,
+        Err(_) => return Ok(None),
+    };
+    let base_commit = branch_tip(repo, base)?;
+    let (ahead, _behind) = repo.graph_ahead_behind(tip.id(), base_commit.id()).unwrap_or((0, 0));
+    if ahead == 0 {
+        return Ok(None);
+    }
+    let diff = diff_for(repo, branch, base, None)?;
+    let stats = diff.stats().map_err(|e| format!("stats: {e}"))?;
+    // Extract before building the struct so the borrowed Signature temporary is
+    // dropped before `tip` at end of scope.
+    let title = tip.summary().unwrap_or("").to_string();
+    let author = tip.author().name().unwrap_or("").to_string();
+    let time = humanize(tip.time().seconds(), now);
+    Ok(Some(GitReview {
+        id: branch.to_string(),
+        branch: branch.to_string(),
+        base: base.to_string(),
+        title,
+        author,
+        files: stats.files_changed(),
+        add: stats.insertions(),
+        del: stats.deletions(),
+        commits: ahead,
+        time,
+    }))
+}
+
+/// Examine at most this many (most-recent) branches for ahead-of-base status,
+/// and return at most this many reviews. Keeps repos with thousands of branches
+/// responsive — the expensive per-branch diff runs only for candidates that pass
+/// the cheap recency + ahead checks. Older reviews are still reachable via the
+/// New-review picker.
+const SCAN_CAP: usize = 400;
+const RESULT_CAP: usize = 100;
+
 pub fn list_reviews(repo_path: &str, base: &str) -> R<Vec<GitReview>> {
     let repo = open(repo_path)?;
     let now = now_secs();
     let base_commit = branch_tip(&repo, base)?;
     let base_oid = base_commit.id();
 
-    let mut out = Vec::new();
-    let branches = repo.branches(Some(BranchType::Local)).map_err(|e| format!("branches: {e}"))?;
-    for entry in branches {
+    // Cheaply collect (name, tip) for every local branch, then sort by recency.
+    let mut entries: Vec<(String, Commit)> = Vec::new();
+    for entry in repo.branches(Some(BranchType::Local)).map_err(|e| format!("branches: {e}"))? {
         let (branch, _) = entry.map_err(|e| format!("branch entry: {e}"))?;
-        let name = match branch_name(&branch) {
-            Some(n) if n != base => n,
-            _ => continue,
-        };
-        let tip = match branch.get().peel_to_commit() {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        let (ahead, _behind) = repo
-            .graph_ahead_behind(tip.id(), base_oid)
-            .unwrap_or((0, 0));
+        let Some(name) = branch_name(&branch) else { continue };
+        if name == base {
+            continue;
+        }
+        if let Ok(tip) = branch.get().peel_to_commit() {
+            entries.push((name, tip));
+        }
+    }
+    entries.sort_by(|a, b| b.1.time().seconds().cmp(&a.1.time().seconds()));
+
+    // Diff only the candidates that are actually ahead of base, capped.
+    let mut out = Vec::new();
+    for (name, tip) in entries.into_iter().take(SCAN_CAP) {
+        let (ahead, _behind) = repo.graph_ahead_behind(tip.id(), base_oid).unwrap_or((0, 0));
         if ahead == 0 {
             continue;
         }
         let diff = diff_for(&repo, &name, base, None)?;
         let stats = diff.stats().map_err(|e| format!("stats: {e}"))?;
+        let title = tip.summary().unwrap_or("").to_string();
+        let author = tip.author().name().unwrap_or("").to_string();
+        let time = humanize(tip.time().seconds(), now);
         out.push(GitReview {
             id: name.clone(),
-            branch: name.clone(),
+            branch: name,
             base: base.to_string(),
-            title: tip.summary().unwrap_or("").to_string(),
-            author: tip.author().name().unwrap_or("").to_string(),
+            title,
+            author,
             files: stats.files_changed(),
             add: stats.insertions(),
             del: stats.deletions(),
             commits: ahead,
-            time: humanize(tip.time().seconds(), now),
+            time,
         });
+        if out.len() >= RESULT_CAP {
+            break;
+        }
     }
-    // Most-recently-updated first.
-    out.sort_by(|a, b| b.time.cmp(&a.time));
     Ok(out)
+}
+
+/// Summarize one explicit review (any head/base). None if the head isn't ahead.
+pub fn review_summary(repo_path: &str, branch: &str, base: &str) -> R<Option<GitReview>> {
+    let repo = open(repo_path)?;
+    summarize_one(&repo, branch, base, now_secs())
+}
+
+/// All local branch names, sorted — for the New-review head/base pickers.
+pub fn list_branches(repo_path: &str) -> R<Vec<String>> {
+    let repo = open(repo_path)?;
+    let mut names = Vec::new();
+    for entry in repo.branches(Some(BranchType::Local)).map_err(|e| format!("branches: {e}"))? {
+        let (branch, _) = entry.map_err(|e| format!("branch entry: {e}"))?;
+        if let Some(n) = branch_name(&branch) {
+            names.push(n);
+        }
+    }
+    names.sort();
+    Ok(names)
 }
 
 fn branch_name(branch: &Branch) -> Option<String> {
@@ -364,6 +468,49 @@ mod tests {
         assert!(kinds.contains(&"add"));
         assert!(kinds.contains(&"del"));
         assert!(kinds.contains(&"ctx"));
+
+        // Branch listing + explicit single-review summary (any head/base).
+        let branches = list_branches(path).expect("list_branches");
+        assert!(branches.contains(&"main".to_string()));
+        assert!(branches.contains(&"agent/feature".to_string()));
+
+        let summary = review_summary(path, "agent/feature", "main").expect("summary");
+        assert_eq!(summary.unwrap().commits, 1);
+        // No commits ahead → no review.
+        assert!(review_summary(path, "main", "agent/feature").unwrap().is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn detects_master_trunk_and_lists_against_it() {
+        let dir = std::env::temp_dir().join(format!("locke-master-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(&dir)
+                .env("GIT_AUTHOR_NAME", "T").env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "T").env("GIT_COMMITTER_EMAIL", "t@t")
+                .status().unwrap().success());
+        };
+        g(&["init", "-q", "-b", "master"]);
+        std::fs::write(dir.join("f.txt"), "a\n").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "base"]);
+        g(&["checkout", "-q", "-b", "feature"]);
+        std::fs::write(dir.join("f.txt"), "a\nb\n").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "more"]);
+
+        let path = dir.to_str().unwrap();
+        // No "main" exists — detection must fall back to master.
+        assert_eq!(detect_base(path).unwrap(), "master");
+        let reviews = list_reviews(path, "master").unwrap();
+        assert_eq!(reviews.len(), 1);
+        assert_eq!(reviews[0].branch, "feature");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

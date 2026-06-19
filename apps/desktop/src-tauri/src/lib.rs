@@ -15,9 +15,16 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::list_reviews,
+            commands::review_summary,
+            commands::list_branches,
+            commands::detect_base,
             commands::get_review,
             commands::get_diff,
             commands::push_branch,
+            commands::delete_branch,
+            commands::read_review_index,
+            commands::add_review_index,
+            commands::remove_review_index,
             commands::detect_checks,
             commands::run_checks,
             commands::read_review_state,

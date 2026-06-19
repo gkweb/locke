@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { Review } from "@locke/core";
 import { useStore } from "../state/store.js";
@@ -23,7 +24,21 @@ const FILTERS = [
   { id: "ready", label: "Ready" },
   { id: "draft", label: "Draft" },
   { id: "changes", label: "Changes requested" },
+  { id: "closed", label: "Closed" },
 ] as const;
+
+/** "All" hides closed reviews; every other tab matches its status exactly. */
+function matchesFilter(status: Review["status"], filter: string): boolean {
+  if (filter === "all") return status !== "closed";
+  return status === filter;
+}
+
+/** Open the OS folder picker and load the chosen git repository. */
+async function chooseRepo(openRepo: (path: string) => Promise<void>) {
+  if (!isTauri) return;
+  const dir = await open({ directory: true, multiple: false, title: "Open a git repository" });
+  if (typeof dir === "string") await openRepo(dir);
+}
 
 function Sidebar() {
   const reviews = useStore((s) => s.reviews);
@@ -34,11 +49,10 @@ function Sidebar() {
   const trackHistory = useStore((s) => s.trackHistory);
   const setTrackHistory = useStore((s) => s.setTrackHistory);
 
-  const pickRepo = async () => {
-    if (!isTauri) return;
-    const dir = await open({ directory: true, multiple: false, title: "Open a git repository" });
-    if (typeof dir === "string") await openRepo(dir);
-  };
+  const pickRepo = () => chooseRepo(openRepo);
+
+  // Coding agents that authored open reviews (unique by name).
+  const agents = Array.from(new Map(reviews.filter((r) => r.isAgent).map((r) => [r.agent, r])).values());
 
   return (
     <div
@@ -81,7 +95,7 @@ function Sidebar() {
         REVIEW QUEUE
       </div>
       {FILTERS.map((f) => {
-        const count = f.id === "all" ? reviews.length : reviews.filter((p) => p.status === f.id).length;
+        const count = reviews.filter((p) => matchesFilter(p.status, f.id)).length;
         const active = filter === f.id;
         return (
           <HoverButton
@@ -121,12 +135,17 @@ function Sidebar() {
         );
       })}
 
-      <div style={{ height: 1, background: color.borderSubtle, margin: "16px 6px" }} />
-      <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".8px", color: color.textGhost, padding: "0 8px 8px" }}>
-        AGENTS
-      </div>
-      <AgentRow initials="CL" name="Claude" tint="teal" />
-      <AgentRow initials="CX" name="Codex" tint="violet" />
+      {agents.length > 0 && (
+        <>
+          <div style={{ height: 1, background: color.borderSubtle, margin: "16px 6px" }} />
+          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".8px", color: color.textGhost, padding: "0 8px 8px" }}>
+            AGENTS
+          </div>
+          {agents.map((a) => (
+            <AgentRow key={a.agent} initials={a.initials} name={a.agent} />
+          ))}
+        </>
+      )}
 
       <div style={{ flex: 1 }} />
       <div
@@ -145,12 +164,55 @@ function Sidebar() {
         <ShieldIcon size={13} color={color.green} />
         Working on a local copy
       </div>
+
+      {repoPath && (
+        <button
+          onClick={() => setTrackHistory(!trackHistory)}
+          title={
+            trackHistory
+              ? ".locke/ review history is committed to git"
+              : ".locke/ review history is gitignored (local only)"
+          }
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 9,
+            width: "100%",
+            marginTop: 8,
+            padding: "8px 11px",
+            background: "transparent",
+            border: "1px solid #1c212b",
+            borderRadius: 9,
+            cursor: "pointer",
+            fontFamily: font.sans,
+            textAlign: "left",
+          }}
+        >
+          <span style={{ flex: 1, fontSize: 11, color: color.textFainter, lineHeight: 1.3 }}>
+            Track review history in git
+          </span>
+          <span
+            style={{
+              flex: "none",
+              width: 30,
+              height: 17,
+              borderRadius: 20,
+              padding: 2,
+              background: trackHistory ? color.violet : "#262c38",
+              display: "flex",
+              justifyContent: trackHistory ? "flex-end" : "flex-start",
+              transition: "background .12s",
+            }}
+          >
+            <span style={{ width: 13, height: 13, borderRadius: "50%", background: "#fff" }} />
+          </span>
+        </button>
+      )}
     </div>
   );
 }
 
-function AgentRow({ initials, name, tint }: { initials: string; name: string; tint: "teal" | "violet" }) {
-  const isTeal = tint === "teal";
+function AgentRow({ initials, name }: { initials: string; name: string }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "7px 10px" }}>
       <span
@@ -158,9 +220,9 @@ function AgentRow({ initials, name, tint }: { initials: string; name: string; ti
           width: 24,
           height: 24,
           borderRadius: 7,
-          background: isTeal ? "rgba(63,208,192,.12)" : "rgba(167,139,255,.13)",
-          border: `1px solid ${isTeal ? "rgba(63,208,192,.3)" : "rgba(167,139,255,.3)"}`,
-          color: isTeal ? color.teal : color.violetSoft,
+          background: "rgba(63,208,192,.12)",
+          border: "1px solid rgba(63,208,192,.3)",
+          color: color.teal,
           fontSize: 10,
           fontWeight: 700,
           display: "flex",
@@ -171,7 +233,6 @@ function AgentRow({ initials, name, tint }: { initials: string; name: string; ti
         {initials}
       </span>
       <span style={{ fontSize: 12.5, color: color.textMuted, flex: 1 }}>{name}</span>
-      <span style={{ width: 7, height: 7, borderRadius: "50%", background: color.teal }} />
     </div>
   );
 }
@@ -275,7 +336,16 @@ function PRCard({ pr }: { pr: Review }) {
 function Main() {
   const reviews = useStore((s) => s.reviews);
   const filter = useStore((s) => s.filter);
-  const filtered = reviews.filter((p) => filter === "all" || p.status === filter);
+  const repoPath = useStore((s) => s.repoPath);
+  const base = useStore((s) => s.base);
+  const branches = useStore((s) => s.branches);
+  const loading = useStore((s) => s.loading);
+  const error = useStore((s) => s.error);
+  const openRepo = useStore((s) => s.openRepo);
+  const createReview = useStore((s) => s.createReview);
+  const [modalOpen, setModalOpen] = useState(false);
+  const filtered = reviews.filter((p) => matchesFilter(p.status, filter));
+  const openCount = reviews.filter((p) => p.status !== "closed" && p.status !== "merged").length;
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, background: color.appBg }}>
@@ -304,34 +374,385 @@ function Main() {
                 padding: "2px 10px",
               }}
             >
-              {reviews.length} open
+              {openCount} open
             </span>
           </div>
           <p style={{ margin: "7px 0 0", fontSize: 13, color: color.textFainter }}>
             Review what your agents built locally before it reaches{" "}
-            <span style={{ fontFamily: font.mono, color: color.textFaint }}>origin/main</span>.
+            <span style={{ fontFamily: font.mono, color: color.textFaint }}>origin/{base}</span>.
           </p>
         </div>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            background: color.panelBg,
-            border: "1px solid #232a35",
-            borderRadius: 9,
-            padding: "7px 11px",
-            width: 240,
-          }}
-        >
-          <SearchIcon size={14} color={color.textGhost} />
-          <span style={{ fontSize: 12.5, color: color.textGhost }}>Search pull requests</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {repoPath && (
+            <HoverButton
+              onClick={() => setModalOpen(true)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                fontSize: 12.5,
+                fontWeight: 600,
+                color: "#fff",
+                background: color.violet,
+                border: `1px solid ${color.violet}`,
+                borderRadius: 9,
+                padding: "8px 13px",
+                cursor: "pointer",
+                fontFamily: font.sans,
+              }}
+              hoverStyle={{ background: color.violetHover }}
+            >
+              <span style={{ fontSize: 15, lineHeight: 1 }}>+</span>
+              New review
+            </HoverButton>
+          )}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              background: color.panelBg,
+              border: "1px solid #232a35",
+              borderRadius: 9,
+              padding: "7px 11px",
+              width: 240,
+            }}
+          >
+            <SearchIcon size={14} color={color.textGhost} />
+            <span style={{ fontSize: 12.5, color: color.textGhost }}>Search pull requests</span>
+          </div>
         </div>
       </div>
+      {modalOpen && (
+        <NewReviewModal
+          branches={branches}
+          defaultBase={base}
+          onClose={() => setModalOpen(false)}
+          onCreate={async (head, b) => {
+            setModalOpen(false);
+            await createReview(head, b);
+          }}
+        />
+      )}
       <div style={{ flex: 1, overflowY: "auto", padding: "18px 30px 30px" }}>
-        {filtered.map((pr) => (
-          <PRCard key={pr.id} pr={pr} />
-        ))}
+        {error && (
+          <div
+            style={{
+              display: "flex",
+              gap: 9,
+              padding: "11px 14px",
+              marginBottom: 14,
+              background: "rgba(240,97,109,.08)",
+              border: "1px solid rgba(240,97,109,.3)",
+              borderRadius: 10,
+              fontSize: 12.5,
+              color: "#f0959d",
+            }}
+          >
+            {error}
+          </div>
+        )}
+        {filtered.length > 0 ? (
+          filtered.map((pr) => <PRCard key={pr.id} pr={pr} />)
+        ) : (
+          <EmptyState
+            repoOpen={!!repoPath}
+            base={base}
+            branchCount={branches.length}
+            loading={loading}
+            onOpen={() => chooseRepo(openRepo)}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function EmptyState({
+  repoOpen,
+  base,
+  branchCount,
+  loading,
+  onOpen,
+}: {
+  repoOpen: boolean;
+  base: string;
+  branchCount: number;
+  loading: boolean;
+  onOpen: () => void;
+}) {
+  // branchCount includes the base itself; "other" branches are the candidates.
+  const otherBranches = Math.max(0, branchCount - 1);
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 14,
+        padding: "80px 20px",
+        textAlign: "center",
+      }}
+    >
+      <span
+        style={{
+          width: 46,
+          height: 46,
+          borderRadius: 12,
+          background: "#10131a",
+          border: "1px solid #242a35",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <FileSimpleIcon size={20} color={color.violetLogo} />
+      </span>
+      {loading ? (
+        <div style={{ fontSize: 14, color: color.textFaint }}>Loading…</div>
+      ) : repoOpen ? (
+        <>
+          <div style={{ fontSize: 15, fontWeight: 600, color: color.text }}>No open reviews</div>
+          <div style={{ fontSize: 13, color: color.textFainter, maxWidth: 380, lineHeight: 1.5 }}>
+            {otherBranches > 0 ? (
+              <>
+                {otherBranches} other local branch{otherBranches === 1 ? "" : "es"} found, but none are ahead of{" "}
+                <span style={{ fontFamily: font.mono, color: color.textFaint }}>{base}</span>. Use{" "}
+                <strong style={{ color: color.textMuted }}>New review</strong> to compare against a different base.
+              </>
+            ) : (
+              <>
+                Branches ahead of <span style={{ fontFamily: font.mono, color: color.textFaint }}>{base}</span> will
+                appear here. Create a branch and commit on it to start a review.
+              </>
+            )}
+          </div>
+        </>
+      ) : (
+        <>
+          <div style={{ fontSize: 15, fontWeight: 600, color: color.text }}>No repository open</div>
+          <div style={{ fontSize: 13, color: color.textFainter, maxWidth: 360, lineHeight: 1.5 }}>
+            Open a local git repository to review the branches your agents built.
+          </div>
+          <HoverButton
+            onClick={onOpen}
+            style={{
+              marginTop: 4,
+              fontSize: 13,
+              fontWeight: 600,
+              color: "#fff",
+              background: color.violet,
+              border: `1px solid ${color.violet}`,
+              borderRadius: 9,
+              padding: "9px 16px",
+              cursor: "pointer",
+              fontFamily: font.sans,
+            }}
+            hoverStyle={{ background: color.violetHover }}
+          >
+            Open repository…
+          </HoverButton>
+        </>
+      )}
+    </div>
+  );
+}
+
+const COMBO_LIMIT = 50;
+
+/** Type-to-filter branch picker — renders only the top matches so repos with
+ *  thousands of branches stay responsive. */
+function BranchCombobox({
+  value,
+  onChange,
+  branches,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  branches: string[];
+  placeholder?: string;
+}) {
+  const [query, setQuery] = useState(value);
+  const [open, setOpen] = useState(false);
+  useEffect(() => setQuery(value), [value]);
+
+  const q = query.trim().toLowerCase();
+  const all = q ? branches.filter((b) => b.toLowerCase().includes(q)) : branches;
+  const matches = all.slice(0, COMBO_LIMIT);
+
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        value={query}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          onChange(e.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder={placeholder}
+        style={{
+          width: "100%",
+          boxSizing: "border-box",
+          background: color.appBg,
+          border: "1px solid #2c333f",
+          borderRadius: 8,
+          padding: "9px 11px",
+          color: color.text,
+          fontFamily: font.mono,
+          fontSize: 12.5,
+          outline: "none",
+        }}
+      />
+      {open && matches.length > 0 && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            left: 0,
+            right: 0,
+            maxHeight: 220,
+            overflowY: "auto",
+            background: "#0c0f15",
+            border: "1px solid #2c333f",
+            borderRadius: 8,
+            zIndex: 10,
+            boxShadow: "0 8px 24px rgba(0,0,0,.4)",
+          }}
+        >
+          {matches.map((b) => (
+            <button
+              key={b}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                onChange(b);
+                setQuery(b);
+                setOpen(false);
+              }}
+              style={{
+                display: "block",
+                width: "100%",
+                textAlign: "left",
+                padding: "7px 11px",
+                border: "none",
+                background: b === value ? "#1b2230" : "transparent",
+                color: color.textCode,
+                fontFamily: font.mono,
+                fontSize: 12,
+                cursor: "pointer",
+              }}
+            >
+              {b}
+            </button>
+          ))}
+          {all.length > matches.length && (
+            <div style={{ padding: "6px 11px", fontSize: 11, color: color.textGhost, fontFamily: font.sans }}>
+              {all.length - matches.length} more — keep typing to narrow
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NewReviewModal({
+  branches,
+  defaultBase,
+  onClose,
+  onCreate,
+}: {
+  branches: string[];
+  defaultBase: string;
+  onClose: () => void;
+  onCreate: (head: string, base: string) => void;
+}) {
+  const [head, setHead] = useState("");
+  const [base, setBase] = useState(branches.includes(defaultBase) ? defaultBase : "");
+  const valid = branches.includes(head) && branches.includes(base) && head !== base;
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,.5)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 50,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: 440,
+          background: color.panelBg,
+          border: `1px solid ${color.borderPanel}`,
+          borderRadius: 14,
+          padding: 20,
+          fontFamily: font.sans,
+        }}
+      >
+        <div style={{ fontSize: 15, fontWeight: 700, color: color.textBright, marginBottom: 4 }}>New review</div>
+        <div style={{ fontSize: 12.5, color: color.textFainter, marginBottom: 18 }}>
+          Review a branch against a base. Only branches with commits ahead of the base can be reviewed.
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: ".5px", color: color.textGhost }}>
+              COMPARE (HEAD)
+            </span>
+            <BranchCombobox value={head} onChange={setHead} branches={branches} placeholder="Search branches…" />
+          </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: ".5px", color: color.textGhost }}>
+              INTO (BASE)
+            </span>
+            <BranchCombobox value={base} onChange={setBase} branches={branches} placeholder="Search branches…" />
+          </label>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 22 }}>
+          <button
+            onClick={onClose}
+            style={{
+              fontFamily: font.sans,
+              fontSize: 12.5,
+              color: "#aab2c0",
+              background: "transparent",
+              border: "1px solid #2c333f",
+              padding: "8px 15px",
+              borderRadius: 8,
+              cursor: "pointer",
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            disabled={!valid}
+            onClick={() => onCreate(head, base)}
+            style={{
+              fontFamily: font.sans,
+              fontSize: 12.5,
+              fontWeight: 600,
+              color: "#fff",
+              background: valid ? color.violet : "#2a2740",
+              border: `1px solid ${valid ? color.violet : "#2a2740"}`,
+              padding: "8px 15px",
+              borderRadius: 8,
+              cursor: valid ? "pointer" : "not-allowed",
+              opacity: valid ? 1 : 0.7,
+            }}
+          >
+            Create review
+          </button>
+        </div>
       </div>
     </div>
   );

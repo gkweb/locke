@@ -95,34 +95,21 @@ export function Titlebar() {
           color: color.textFaint,
         }}
       >
-        <FileIcon size={13} color={color.textFainter} />
-        <span style={{ color: "#aab2c0", fontWeight: 500 }}>{repoName}</span>
-        <span style={{ color: "#3a414e" }}>/</span>
-        <BranchIcon size={12} color={color.textFainter} />
-        <span style={{ fontFamily: font.mono, fontSize: 11.5, color: color.textFaint }}>
-          {pr?.branch}
-        </span>
-      </div>
-
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 7,
-          fontSize: 11.5,
-          color: color.textFainter,
-        }}
-      >
-        <span
-          style={{
-            width: 7,
-            height: 7,
-            borderRadius: "50%",
-            background: color.teal,
-            animation: "anvpulse 2s infinite",
-          }}
-        />
-        2 agents active
+        {repoPath && (
+          <>
+            <FileIcon size={13} color={color.textFainter} />
+            <span style={{ color: "#aab2c0", fontWeight: 500 }}>{repoName}</span>
+            {pr?.branch && (
+              <>
+                <span style={{ color: "#3a414e" }}>/</span>
+                <BranchIcon size={12} color={color.textFainter} />
+                <span style={{ fontFamily: font.mono, fontSize: 11.5, color: color.textFaint }}>
+                  {pr.branch}
+                </span>
+              </>
+            )}
+          </>
+        )}
       </div>
     </div>
   );

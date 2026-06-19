@@ -1,5 +1,7 @@
+import { confirm } from "@tauri-apps/plugin-dialog";
 import type { Check } from "@locke/core";
 import { useStore } from "../state/store.js";
+import { isTauri } from "../api/git.js";
 import { color, font } from "../theme/tokens.js";
 import { statusMeta, fileStatusMeta, agentChipStyle, addStr, delStr, currentReview } from "../lib/meta.js";
 import { HoverButton, HoverDiv } from "../components/primitives.js";
@@ -55,10 +57,24 @@ const checkInput: React.CSSProperties = {
 function Sidebar() {
   const reviews = useStore((s) => s.reviews);
   const selectedPR = useStore((s) => s.selectedPR);
+  const detail = useStore((s) => s.detail);
   const goList = useStore((s) => s.go);
+  const closeReview = useStore((s) => s.closeReview);
+  const deleteReviewBranch = useStore((s) => s.deleteReviewBranch);
   const pr = currentReview(reviews, selectedPR);
   const sm = statusMeta(pr.status);
   const agentModel = pr.model ?? "human";
+  const commitCount = detail.commits.length;
+
+  const onDelete = async () => {
+    const ok = isTauri
+      ? await confirm(`Delete local branch "${pr.branch}"? This permanently removes the branch and its review history.`, {
+          title: "Delete branch",
+          kind: "warning",
+        })
+      : false;
+    if (ok) await deleteReviewBranch();
+  };
 
   return (
     <div
@@ -147,7 +163,7 @@ function Sidebar() {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 8, fontSize: 11, color: color.teal }}>
             <SparkleIcon size={11} color={color.teal} />
-            3 commits, 2 follow-up runs
+            {commitCount} commit{commitCount === 1 ? "" : "s"} on this branch
           </div>
         </div>
       </div>
@@ -175,12 +191,14 @@ function Sidebar() {
         <span style={{ fontSize: 11, color: color.textFainter, marginLeft: "auto" }}>awaiting review</span>
       </div>
 
-      {label("LABELS")}
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 22 }}>
-        <LabelChip text="webhooks" col="#82aaff" rgb="130,170,255" />
-        <LabelChip text="bug" col="#f0616d" rgb="240,97,109" />
-        <LabelChip text="agent-authored" col="#3fd0c0" rgb="63,208,192" />
-      </div>
+      {pr.isAgent && (
+        <>
+          {label("LABELS")}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 22 }}>
+            <LabelChip text="agent-authored" col="#3fd0c0" rgb="63,208,192" />
+          </div>
+        </>
+      )}
 
       {label("BRANCH")}
       <div style={{ display: "flex", flexDirection: "column", gap: 9, fontFamily: font.mono, fontSize: 11.5 }}>
@@ -192,6 +210,54 @@ function Sidebar() {
           <span style={{ color: color.textGhost, width: 30 }}>base</span>
           <span style={{ color: color.blue }}>{pr.base}</span>
         </div>
+      </div>
+
+      <div style={{ height: 1, background: color.borderSubtle, margin: "22px 0 18px" }} />
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {pr.status !== "closed" && (
+          <HoverButton
+            onClick={closeReview}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 7,
+              padding: "8px 12px",
+              background: "transparent",
+              border: "1px solid #2c333f",
+              borderRadius: 8,
+              color: color.textSoft,
+              fontFamily: font.sans,
+              fontSize: 12.5,
+              fontWeight: 500,
+              cursor: "pointer",
+            }}
+            hoverStyle={{ background: "#161b24", borderColor: "#37404f" }}
+          >
+            Close review
+          </HoverButton>
+        )}
+        <HoverButton
+          onClick={() => void onDelete()}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 7,
+            padding: "8px 12px",
+            background: "transparent",
+            border: "1px solid #38303a",
+            borderRadius: 8,
+            color: color.red,
+            fontFamily: font.sans,
+            fontSize: 12.5,
+            fontWeight: 500,
+            cursor: "pointer",
+          }}
+          hoverStyle={{ background: "rgba(240,97,109,.08)", borderColor: "#5a3a42" }}
+        >
+          Delete branch
+        </HoverButton>
       </div>
     </div>
   );
@@ -220,7 +286,6 @@ function Main() {
   const files = useStore((s) => s.files);
   const detail = useStore((s) => s.detail);
   const testsRunning = useStore((s) => s.testsRunning);
-  const testsRan = useStore((s) => s.testsRan);
   const repoPath = useStore((s) => s.repoPath);
   const liveChecks = useStore((s) => s.liveChecks);
   const checkSpecs = useStore((s) => s.checkSpecs);
@@ -240,19 +305,8 @@ function Main() {
   const pr = currentReview(reviews, selectedPR);
   const sm = statusMeta(pr.status);
 
-  // Mock mode shows the design's sample checks; live mode shows auto-detected,
-  // really-executed results (empty until the first run).
-  const mockChecks: Check[] = [
-    { label: "ESLint", detail: "0 problems", status: "pass" },
-    { label: "tsc --noEmit", detail: "no type errors", status: "pass" },
-    {
-      label: "Unit tests",
-      detail: testsRunning ? "running…" : testsRan ? "142 passed in 3.1s" : "142 passed",
-      status: testsRunning ? "running" : "pass",
-    },
-    { label: "Build", detail: "bundle ok", status: "pass" },
-  ];
-  const checks: Check[] = repoPath ? liveChecks : mockChecks;
+  // Auto-detected, really-executed check results (empty until the first run).
+  const checks: Check[] = liveChecks;
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, background: color.appBg }}>
@@ -366,33 +420,36 @@ function Main() {
         <div style={{ maxWidth: 880, display: "flex", flexDirection: "column", gap: 18 }}>
           <VerdictBanner pr={pr} />
 
-          {/* Prompt */}
-          <div style={card}>
-            <div style={cardHeader}>
-              <SparkleIcon size={14} color={color.teal} />
-              <span style={{ fontSize: 12.5, fontWeight: 600, color: color.textSoft }}>Prompt</span>
-              <span style={{ fontSize: 11.5, color: color.textGhost, fontFamily: font.mono }}>
-                You → {pr.agent} · {pr.model ?? "human"}
-              </span>
+          {/* Prompt — only when narrative metadata exists */}
+          {detail.prompt && (
+            <div style={card}>
+              <div style={cardHeader}>
+                <SparkleIcon size={14} color={color.teal} />
+                <span style={{ fontSize: 12.5, fontWeight: 600, color: color.textSoft }}>Prompt</span>
+                <span style={{ fontSize: 11.5, color: color.textGhost, fontFamily: font.mono }}>
+                  You → {pr.agent} · {pr.model ?? "human"}
+                </span>
+              </div>
+              <div
+                style={{
+                  fontSize: 13.5,
+                  lineHeight: 1.6,
+                  color: color.textDim,
+                  fontStyle: "italic",
+                  borderLeft: `2px solid ${color.teal}`,
+                  margin: "14px 16px",
+                  background: "rgba(63,208,192,.03)",
+                  borderRadius: "0 8px 8px 0",
+                  padding: "13px 16px",
+                }}
+              >
+                {detail.prompt}
+              </div>
             </div>
-            <div
-              style={{
-                fontSize: 13.5,
-                lineHeight: 1.6,
-                color: color.textDim,
-                fontStyle: "italic",
-                borderLeft: `2px solid ${color.teal}`,
-                margin: "14px 16px",
-                background: "rgba(63,208,192,.03)",
-                borderRadius: "0 8px 8px 0",
-                padding: "13px 16px",
-              }}
-            >
-              {detail.prompt}
-            </div>
-          </div>
+          )}
 
-          {/* Description */}
+          {/* Description — only when narrative metadata exists */}
+          {(detail.summary || detail.bullets.length > 0) && (
           <div style={card}>
             <div style={cardHeader}>
               <span style={{ fontSize: 12.5, fontWeight: 600, color: color.textSoft }}>Description</span>
@@ -435,24 +492,27 @@ function Main() {
                   </li>
                 ))}
               </ul>
-              <div
-                style={{
-                  display: "flex",
-                  gap: 10,
-                  marginTop: 16,
-                  padding: "11px 14px",
-                  background: "rgba(130,170,255,.05)",
-                  border: "1px solid rgba(130,170,255,.16)",
-                  borderRadius: 9,
-                  fontSize: 12.5,
-                  color: "#9fb4d8",
-                }}
-              >
-                <InfoIcon size={15} color={color.blue} style={{ flex: "none", marginTop: 1 }} />
-                {detail.note}
-              </div>
+              {detail.note && (
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 10,
+                    marginTop: 16,
+                    padding: "11px 14px",
+                    background: "rgba(130,170,255,.05)",
+                    border: "1px solid rgba(130,170,255,.16)",
+                    borderRadius: 9,
+                    fontSize: 12.5,
+                    color: "#9fb4d8",
+                  }}
+                >
+                  <InfoIcon size={15} color={color.blue} style={{ flex: "none", marginTop: 1 }} />
+                  {detail.note}
+                </div>
+              )}
             </div>
           </div>
+          )}
 
           {/* Checks */}
           <div style={card}>

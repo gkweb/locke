@@ -2,7 +2,7 @@
 // view logic and the real git/store backends speak the same language.
 
 /** Review lifecycle state. Not derivable from git — lives in the local store. */
-export type ReviewStatus = "ready" | "draft" | "changes" | "merged";
+export type ReviewStatus = "ready" | "draft" | "changes" | "merged" | "closed";
 
 /** Aggregate CI/local-check state for a review. */
 export type CheckState = "pass" | "running" | "fail";

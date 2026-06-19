@@ -28,7 +28,7 @@ threads, and an approve-&-push flow — all against your local repo, no GitHub r
 apps/desktop/        Tauri app
   src/               React frontend (views/, components/, state/, lib/, api/, theme/)
   src-tauri/         Rust core (git.rs, actions.rs, commands.rs, lib.rs)
-packages/core/       Shared TS types + mock sample data (@locke/core)
+packages/core/       Shared TS types (@locke/core)
 ```
 
 ## How "PRs" map to git
@@ -37,7 +37,10 @@ Local git has no PRs or comments, so Locke derives what it can and stores the re
 
 | Concept                     | Source                                            |
 | --------------------------- | ------------------------------------------------- |
-| A "review"                  | a head branch ahead of a base branch              |
+| A "review"                  | a head branch ahead of a base branch (auto-listed, or created via **New review**) |
+| New review                  | pick head + base; persisted in `.locke/index.json` (supports non-default bases) |
+| Close review                | status-only, reversible; hidden from **All**, shown under **Closed** |
+| Delete branch               | `git branch -D` (confirm-gated) + drops the branch's `.locke` state |
 | Files / hunks / commits     | `git diff <base>...<head>` and `git log` (git2)   |
 | Status / verdict / comments | files in `<repo>/.locke/reviews/<branch>.json`    |
 | Approve & push              | `git push` to the configured remote               |
@@ -73,14 +76,14 @@ pnpm install
 pnpm tauri dev          # launch the desktop app (frameless window)
 ```
 
-With no repo open, the UI runs on `@locke/core` mock data. Click the repo selector
-(top of the sidebar) to open a real git repository; branches ahead of `main` show up
-as reviews.
+On launch the queue is empty. Click **Open repository…** (or the repo selector at
+the top of the sidebar) to choose a local git repository; branches ahead of the
+base (`main` by default, or `locke.config.json`'s `base`) show up as reviews.
 
 Other scripts:
 
 ```bash
-pnpm dev                # frontend only (browser, mock data — window controls no-op)
+pnpm dev                # frontend only (browser; git-backed features need the Tauri shell)
 pnpm --filter @locke/desktop build      # typecheck + build frontend
 pnpm -r typecheck                       # typecheck all packages
 cd apps/desktop/src-tauri && cargo test # git + checks unit tests (real temp repos)

@@ -81,6 +81,12 @@ pub fn push_branch(repo: &str, branch: &str, remote: &str) -> R<String> {
     }
 }
 
+/// Force-delete a local branch (`git branch -D`). Used by the review "Delete
+/// branch" action after the user confirms.
+pub fn delete_branch(repo: &str, branch: &str) -> R<()> {
+    run_git(repo, &["branch", "-D", branch])
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct CheckSpec {
     pub label: String,

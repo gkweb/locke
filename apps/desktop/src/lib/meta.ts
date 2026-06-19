@@ -15,6 +15,7 @@ const STATUS: Record<ReviewStatus, StatusMeta> = {
   draft: { label: "Draft", col: "#f0b86e", bg: "rgba(240,184,110,.12)", bd: "rgba(240,184,110,.3)" },
   changes: { label: "Changes requested", col: "#f0616d", bg: "rgba(240,97,109,.12)", bd: "rgba(240,97,109,.3)" },
   merged: { label: "Merged", col: "#a78bff", bg: "rgba(167,139,255,.12)", bd: "rgba(167,139,255,.3)" },
+  closed: { label: "Closed", col: "#7b8494", bg: "rgba(123,132,148,.12)", bd: "rgba(123,132,148,.3)" },
 };
 
 export const statusMeta = (s: ReviewStatus): StatusMeta => STATUS[s] ?? STATUS.ready;

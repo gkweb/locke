@@ -41,6 +41,27 @@ export interface GitDiff {
 export const listReviews = (repo: string, base: string) =>
   invoke<GitReview[]>("list_reviews", { repo, base });
 
+export const reviewSummary = (repo: string, branch: string, base: string) =>
+  invoke<GitReview | null>("review_summary", { repo, branch, base });
+
+export const listBranches = (repo: string) => invoke<string[]>("list_branches", { repo });
+
+/** Detect the repo's trunk branch (origin/HEAD → main/master/… → current). */
+export const detectBase = (repo: string) => invoke<string>("detect_base", { repo });
+
+export const deleteBranch = (repo: string, branch: string) =>
+  invoke("delete_branch", { repo, branch });
+
+export interface IndexEntry {
+  branch: string;
+  base: string;
+}
+export const readReviewIndex = (repo: string) => invoke<IndexEntry[]>("read_review_index", { repo });
+export const addReviewIndex = (repo: string, branch: string, base: string) =>
+  invoke("add_review_index", { repo, branch, base });
+export const removeReviewIndex = (repo: string, branch: string) =>
+  invoke("remove_review_index", { repo, branch });
+
 export const getReview = (repo: string, branch: string, base: string) =>
   invoke<GitReviewDetail>("get_review", { repo, branch, base });
 
@@ -112,7 +133,7 @@ export function toReview(g: GitReview, comments: number, status: ReviewStatus = 
 }
 
 /** Display name for a repo path (its final path segment). */
-export const repoBasename = (path: string | null, fallback = "payments-service"): string =>
+export const repoBasename = (path: string | null, fallback = "Open repository…"): string =>
   path ? path.split("/").filter(Boolean).pop() || fallback : fallback;
 
 /** Build a ChangedFile shell from a summary; hunks are loaded lazily. */

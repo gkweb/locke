@@ -5,11 +5,21 @@
 //   .locke/checks.json             per-repo check-command overrides
 //   .locke/README.md               explains the folder
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 type R<T> = Result<T, String>;
+
+/// An explicitly-created review: a head branch tracked against a chosen base.
+/// Stored in `.locke/index.json` so reviews against non-default bases (or
+/// branches not auto-listed) persist across restarts.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct IndexEntry {
+    pub branch: String,
+    pub base: String,
+}
 
 fn locke_dir(repo: &str) -> PathBuf {
     Path::new(repo).join(".locke")
@@ -81,6 +91,47 @@ pub fn clear_check_overrides(repo: &str) -> R<()> {
     Ok(())
 }
 
+fn index_path(repo: &str) -> PathBuf {
+    locke_dir(repo).join("index.json")
+}
+
+pub fn read_index(repo: &str) -> R<Vec<IndexEntry>> {
+    match read_json(&index_path(repo))? {
+        Some(v) => serde_json::from_value(v).map_err(|e| format!("parse index.json: {e}")),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn write_index(repo: &str, entries: &[IndexEntry]) -> R<()> {
+    ensure_locke(repo)?;
+    let value = serde_json::to_value(entries).map_err(|e| format!("serialize index: {e}"))?;
+    write_json(&index_path(repo), &value)
+}
+
+/// Add (or replace) a tracked review for `branch`.
+pub fn add_index_entry(repo: &str, branch: &str, base: &str) -> R<()> {
+    let mut entries = read_index(repo)?;
+    entries.retain(|e| e.branch != branch);
+    entries.push(IndexEntry { branch: branch.to_string(), base: base.to_string() });
+    write_index(repo, &entries)
+}
+
+/// Remove a tracked review and its stored state (used by Delete branch).
+pub fn remove_index_entry(repo: &str, branch: &str) -> R<()> {
+    let mut entries = read_index(repo)?;
+    entries.retain(|e| e.branch != branch);
+    write_index(repo, &entries)?;
+    delete_review_state(repo, branch)
+}
+
+pub fn delete_review_state(repo: &str, branch: &str) -> R<()> {
+    let p = review_path(repo, branch);
+    if p.exists() {
+        fs::remove_file(&p).map_err(|e| format!("remove {}: {e}", p.display()))?;
+    }
+    Ok(())
+}
+
 fn gitignore_path(repo: &str) -> PathBuf {
     locke_dir(repo).join(".gitignore")
 }
@@ -129,6 +180,28 @@ mod tests {
         assert!(read_check_overrides(repo).unwrap().is_some());
         clear_check_overrides(repo).unwrap();
         assert!(read_check_overrides(repo).unwrap().is_none());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tracks_created_reviews_in_index() {
+        let dir = std::env::temp_dir().join(format!("locke-index-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let repo = dir.to_str().unwrap();
+
+        assert!(read_index(repo).unwrap().is_empty());
+        add_index_entry(repo, "agent/x", "develop").unwrap();
+        add_index_entry(repo, "agent/x", "main").unwrap(); // replace, not duplicate
+        let idx = read_index(repo).unwrap();
+        assert_eq!(idx.len(), 1);
+        assert_eq!(idx[0].base, "main");
+
+        write_review_state(repo, "agent/x", json!({ "verdict": "approve" })).unwrap();
+        remove_index_entry(repo, "agent/x").unwrap();
+        assert!(read_index(repo).unwrap().is_empty());
+        assert!(read_review_state(repo, "agent/x").unwrap().is_none(), "state removed too");
 
         let _ = fs::remove_dir_all(&dir);
     }
