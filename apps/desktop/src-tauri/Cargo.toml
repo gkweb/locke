@@ -1,0 +1,31 @@
+[package]
+name = "locke"
+version = "0.0.0"
+description = "Locke — Local PR Review"
+authors = ["Locke"]
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+# The desktop app's Rust core is a library so it can be shared with mobile
+# targets and tests; main.rs is a thin binary wrapper.
+name = "locke_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+git2 = { version = "0.19", default-features = false, features = ["vendored-libgit2"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
