@@ -7,6 +7,7 @@ import { statusMeta, fileStatusMeta, agentChipStyle, addStr, delStr, currentRevi
 import { HoverButton, HoverDiv } from "../components/primitives.js";
 import { VerdictBanner } from "../components/VerdictBanner.js";
 import { buildAgentPrompt, openChangeRequests } from "../lib/agentPrompt.js";
+import { writeAgentPrompt } from "../api/reviewStore.js";
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -315,6 +316,9 @@ function Main() {
   const onCopyAgentPrompt = () => {
     const prompt = buildAgentPrompt({ repoPath, selectedPR, reviews, files, threads });
     void navigator.clipboard.writeText(prompt);
+    // Also leave a durable artifact under .locke/requests/<id>.md. Best-effort:
+    // the clipboard copy must never depend on the disk write succeeding.
+    if (repoPath && selectedPR) void writeAgentPrompt(repoPath, Number(selectedPR), prompt);
   };
 
   return (

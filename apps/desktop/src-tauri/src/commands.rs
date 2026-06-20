@@ -123,6 +123,13 @@ pub fn clear_check_overrides(repo: String) -> Result<(), String> {
     store::clear_check_overrides(&repo)
 }
 
+// ---- per-PR agent request artifacts (.locke/requests/<id>.md) ----
+
+#[tauri::command]
+pub fn write_agent_prompt(repo: String, id: u64, content: String) -> Result<(), String> {
+    store::write_agent_prompt(&repo, id, &content)
+}
+
 #[tauri::command]
 pub fn read_config(repo: String) -> Result<config::LockeConfig, String> {
     config::read_config(&repo)

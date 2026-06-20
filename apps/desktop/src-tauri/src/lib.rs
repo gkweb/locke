@@ -32,6 +32,7 @@ pub fn run() {
             commands::read_check_overrides,
             commands::write_check_overrides,
             commands::clear_check_overrides,
+            commands::write_agent_prompt,
             commands::read_config,
             commands::get_locke_tracking,
             commands::set_locke_tracking,
