@@ -49,14 +49,16 @@ function Sidebar() {
   const trackHistory = useStore((s) => s.trackHistory);
   const setTrackHistory = useStore((s) => s.setTrackHistory);
   const detectedAgents = useStore((s) => s.agents);
+  const disabledAgents = useStore((s) => s.disabledAgents);
 
   const pickRepo = () => chooseRepo(openRepo);
 
   // Coding agents that authored open reviews (unique by name).
   const agents = Array.from(new Map(reviews.filter((r) => r.isAgent).map((r) => [r.agent, r])).values());
 
-  // Agent CLIs found on PATH (read-only status; toggles arrive in a later phase).
-  const installedAgents = detectedAgents.filter((a) => a.detected);
+  // Agent CLIs that are both installed and not opted out in Settings — i.e. the
+  // ones offered for the copy-prompt handoff. Toggling in Settings updates this.
+  const enabledAgents = detectedAgents.filter((a) => a.detected && !disabledAgents.includes(a.id));
 
   return (
     <div
@@ -151,13 +153,13 @@ function Sidebar() {
         </>
       )}
 
-      {installedAgents.length > 0 && (
+      {enabledAgents.length > 0 && (
         <>
           <div style={{ height: 1, background: color.borderSubtle, margin: "16px 6px" }} />
           <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".8px", color: color.textGhost, padding: "0 8px 8px" }}>
             DETECTED AGENTS
           </div>
-          {installedAgents.map((a) => (
+          {enabledAgents.map((a) => (
             <div
               key={a.id}
               title={a.path ?? undefined}

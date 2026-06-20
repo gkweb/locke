@@ -6,6 +6,7 @@ use crate::config;
 use crate::git;
 use crate::store;
 use serde_json::Value;
+use tauri::Manager;
 
 #[tauri::command]
 pub fn get_review(repo: String, branch: String, base: String) -> Result<git::GitReviewDetail, String> {
@@ -90,6 +91,20 @@ pub fn detect_checks(repo: String) -> Vec<actions::CheckSpec> {
 #[tauri::command]
 pub fn detect_agents() -> Vec<actions::AgentInfo> {
     actions::detect_agents()
+}
+
+// ---- app-global agent settings (<app_config_dir>/agents.json) ----
+
+#[tauri::command]
+pub fn read_agent_settings(app: tauri::AppHandle) -> Result<Option<Value>, String> {
+    let dir = app.path().app_config_dir().map_err(|e| format!("config dir: {e}"))?;
+    store::read_agent_settings(&dir)
+}
+
+#[tauri::command]
+pub fn write_agent_settings(app: tauri::AppHandle, settings: Value) -> Result<(), String> {
+    let dir = app.path().app_config_dir().map_err(|e| format!("config dir: {e}"))?;
+    store::write_agent_settings(&dir, settings)
 }
 
 #[tauri::command]

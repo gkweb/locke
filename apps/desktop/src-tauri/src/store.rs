@@ -145,6 +145,21 @@ pub fn write_agent_prompt(repo: &str, id: u64, content: &str) -> R<()> {
     fs::write(&path, content).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
+// ---- app-global agent settings (<app_config_dir>/agents.json) ----
+//
+// The first state in Locke that is NOT keyed by repo: which detected agents the
+// user has explicitly opted out of, persisted app-wide. The caller resolves the
+// OS config dir (Tauri's `app_config_dir`); store.rs stays Tauri-free and just
+// reads/writes JSON under it. `write_json` creates the dir if absent.
+
+pub fn read_agent_settings(config_dir: &Path) -> R<Option<Value>> {
+    read_json(&config_dir.join("agents.json"))
+}
+
+pub fn write_agent_settings(config_dir: &Path, data: Value) -> R<()> {
+    write_json(&config_dir.join("agents.json"), &data)
+}
+
 // ---- pull-request registry (.locke/pulls.json) ----
 
 /// Read the pull-request registry. When `pulls.json` is absent, a legacy
@@ -439,6 +454,28 @@ mod tests {
         // Re-writing overwrites in place (no duplication).
         write_agent_prompt(repo, 7, "updated\n").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "updated\n");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn agent_settings_opt_out_round_trip() {
+        let dir = tmp("agent-settings");
+
+        // No file yet → None, i.e. defaults (nothing disabled, every agent on).
+        assert!(read_agent_settings(&dir).unwrap().is_none());
+
+        // Disable one agent; it persists.
+        write_agent_settings(&dir, json!({ "disabled": ["codex"] })).unwrap();
+        assert!(dir.join("agents.json").exists());
+        let got = read_agent_settings(&dir).unwrap().unwrap();
+        assert_eq!(got["disabled"][0], "codex");
+
+        // A never-seen agent is absent from the disabled set, so the opt-out
+        // model leaves it enabled by default — re-enabling codex empties the set.
+        write_agent_settings(&dir, json!({ "disabled": [] })).unwrap();
+        let reread = read_agent_settings(&dir).unwrap().unwrap();
+        assert_eq!(reread["disabled"].as_array().unwrap().len(), 0);
 
         let _ = fs::remove_dir_all(&dir);
     }

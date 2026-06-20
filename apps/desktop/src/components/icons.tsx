@@ -127,6 +127,13 @@ export const PlayIcon = ({ size = 13, color = "currentColor", stroke = 1.5, styl
   </svg>
 );
 
+export const GearIcon = ({ size = 14, color = "currentColor", stroke = 1.3, style }: IconProps) => (
+  <svg {...strokeBase(size, color, stroke, style)}>
+    <circle cx="8" cy="8" r="2.1" />
+    <path d="M8 1.6v1.7M8 12.7v1.7M3.5 3.5l1.2 1.2M11.3 11.3l1.2 1.2M1.6 8h1.7M12.7 8h1.7M3.5 12.5l1.2-1.2M11.3 4.7l1.2-1.2" />
+  </svg>
+);
+
 export const InfoIcon = ({ size = 15, color = "currentColor", stroke = 1.4, style }: IconProps) => (
   <svg {...strokeBase(size, color, stroke, style)}>
     <circle cx="8" cy="8" r="6.5" />

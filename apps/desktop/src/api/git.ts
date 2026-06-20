@@ -103,6 +103,25 @@ export interface AgentInfo {
 export const detectAgents = (): Promise<AgentInfo[]> =>
   isTauri ? invoke<AgentInfo[]>("detect_agents") : Promise.resolve([]);
 
+/**
+ * App-global agent preferences (not repo-keyed): the ids the user has explicitly
+ * opted out of. Opt-out by design — a newly-installed agent the user has never
+ * toggled is enabled by default. Persisted to `<app_config_dir>/agents.json`.
+ */
+export interface AgentSettings {
+  disabled: string[];
+}
+
+export const readAgentSettings = (): Promise<AgentSettings> =>
+  isTauri
+    ? invoke<{ disabled?: string[] } | null>("read_agent_settings").then((s) => ({
+        disabled: s?.disabled ?? [],
+      }))
+    : Promise.resolve({ disabled: [] });
+
+export const writeAgentSettings = (settings: AgentSettings): Promise<void> =>
+  isTauri ? invoke("write_agent_settings", { settings }) : Promise.resolve();
+
 export const runChecks = (repo: string, branch: string, checks: CheckSpec[]) =>
   invoke<CheckResult[]>("run_checks", { repo, branch, checks });
 

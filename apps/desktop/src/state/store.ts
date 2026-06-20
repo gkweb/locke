@@ -24,6 +24,8 @@ import {
   toReview,
   toChangedFile,
   detectAgents,
+  readAgentSettings,
+  writeAgentSettings,
   type CheckSpec,
   type LockeConfig,
   type AgentInfo,
@@ -121,6 +123,10 @@ interface LockeState {
   editingChecks: boolean;
   /** Known agent CLIs detected on PATH (app-global; probed once on launch). */
   agents: AgentInfo[];
+  /** Agent ids the user has explicitly opted out of (app-global, persisted). */
+  disabledAgents: string[];
+  /** Whether the app-global Settings modal is open. */
+  settingsOpen: boolean;
 
   // ---- navigation ----
   go: (view: View) => void;
@@ -128,8 +134,11 @@ interface LockeState {
   goOverview: () => void;
   goReview: () => void;
 
-  // ---- agent detection (app-global) ----
+  // ---- agents + settings (app-global) ----
   detectAgents: () => Promise<void>;
+  loadAgentSettings: () => Promise<void>;
+  toggleAgentEnabled: (id: string) => void;
+  setSettingsOpen: (open: boolean) => void;
 
   // ---- live git loading ----
   openRepo: (path: string, base?: string) => Promise<void>;
@@ -208,6 +217,8 @@ export const useStore = create<LockeState>((set, get) => ({
   checksAreOverride: false,
   editingChecks: false,
   agents: [],
+  disabledAgents: [],
+  settingsOpen: false,
 
   detectAgents: async () => {
     try {
@@ -216,6 +227,24 @@ export const useStore = create<LockeState>((set, get) => ({
       // Detection is best-effort status; never block the app on a failed probe.
     }
   },
+
+  loadAgentSettings: async () => {
+    try {
+      set({ disabledAgents: (await readAgentSettings()).disabled });
+    } catch {
+      // Missing/unreadable settings just means defaults (nothing disabled).
+    }
+  },
+
+  toggleAgentEnabled: (id) => {
+    const disabled = get().disabledAgents;
+    // Opt-out model: flip membership in the disabled set, then persist app-wide.
+    const next = disabled.includes(id) ? disabled.filter((d) => d !== id) : [...disabled, id];
+    set({ disabledAgents: next });
+    void writeAgentSettings({ disabled: next });
+  },
+
+  setSettingsOpen: (open) => set({ settingsOpen: open }),
 
   go: (view) => set({ view }),
   openPR: (id) => {

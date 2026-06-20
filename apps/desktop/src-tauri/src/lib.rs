@@ -27,6 +27,8 @@ pub fn run() {
             commands::delete_pull,
             commands::detect_checks,
             commands::detect_agents,
+            commands::read_agent_settings,
+            commands::write_agent_settings,
             commands::run_checks,
             commands::read_comments,
             commands::write_comments,
