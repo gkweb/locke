@@ -90,10 +90,16 @@ export interface AgentInfo {
   name: string;
   cmd: string;
   detected: boolean;
+  /** Resolved location on PATH when detected (presence-only; nothing is run). */
+  path: string | null;
   version: string | null;
 }
 
-/** Probe known agent CLIs on PATH. Empty in mock mode (no Tauri bridge). */
+/**
+ * Detect known agent CLIs by presence on PATH — a filesystem lookup, never an
+ * execution (so it can't trip Gatekeeper or run an untrusted binary). Empty in
+ * mock mode (no Tauri bridge).
+ */
 export const detectAgents = (): Promise<AgentInfo[]> =>
   isTauri ? invoke<AgentInfo[]>("detect_agents") : Promise.resolve([]);
 

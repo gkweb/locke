@@ -160,26 +160,24 @@ function Sidebar() {
           {installedAgents.map((a) => (
             <div
               key={a.id}
-              title={a.version ?? undefined}
+              title={a.path ?? undefined}
               style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", minWidth: 0 }}
             >
               <span style={{ width: 7, height: 7, borderRadius: "50%", background: color.green, flex: "none" }} />
               <span style={{ fontSize: 12, color: color.text, flex: "none" }}>{a.name}</span>
-              {a.version && (
-                <span
-                  style={{
-                    fontSize: 10.5,
-                    fontFamily: font.mono,
-                    color: color.textGhost,
-                    marginLeft: "auto",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {a.version}
-                </span>
-              )}
+              <span
+                style={{
+                  fontSize: 10.5,
+                  fontFamily: font.mono,
+                  color: color.textGhost,
+                  marginLeft: "auto",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {a.cmd}
+              </span>
             </div>
           ))}
         </>

@@ -3,7 +3,7 @@
 // configured shell commands in the repo and report pass/fail.
 
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 type R<T> = Result<T, String>;
@@ -106,56 +106,63 @@ pub struct CheckResult {
 pub struct AgentInfo {
     pub id: String,
     pub name: String,
-    /// The binary probed on PATH, e.g. "claude".
+    /// The binary looked up on PATH, e.g. "claude".
     pub cmd: String,
     pub detected: bool,
-    /// First non-empty line of the probe's output, when detected.
+    /// Where the binary resolved on PATH when detected (no process is run).
+    pub path: Option<String>,
+    /// Reserved for an opt-in `--version` probe; always None at launch detection.
     pub version: Option<String>,
 }
 
-/// Known coding-agent CLIs Locke can hand a prompt to:
-/// (id, display name, binary, version-probe arg). Probes must be cheap and
-/// non-destructive — a `--version`-style flag that exits quickly.
-const KNOWN_AGENTS: &[(&str, &str, &str, &str)] = &[
-    ("claude", "Claude Code", "claude", "--version"),
-    ("codex", "Codex CLI", "codex", "--version"),
-    ("aider", "Aider", "aider", "--version"),
-    ("gemini", "Gemini CLI", "gemini", "--version"),
-    ("cursor", "Cursor CLI", "cursor-agent", "--version"),
+/// Known coding-agent CLIs Locke can hand a prompt to: (id, display name, binary).
+const KNOWN_AGENTS: &[(&str, &str, &str)] = &[
+    ("claude", "Claude Code", "claude"),
+    ("codex", "Codex CLI", "codex"),
+    ("aider", "Aider", "aider"),
+    ("gemini", "Gemini CLI", "gemini"),
+    ("cursor", "Cursor CLI", "cursor-agent"),
 ];
 
-/// Probe each known agent CLI for installation. Read-only and side-effect-free.
+/// Detect which known agent CLIs are installed by resolving each binary on
+/// `PATH`. Presence-only: nothing is executed, so detection never triggers
+/// Gatekeeper/XProtect and never runs an untrusted, slow, or hanging binary.
+/// Read-only and side-effect-free.
 pub fn detect_agents() -> Vec<AgentInfo> {
     probe_agents(KNOWN_AGENTS)
 }
 
-/// Run each registry entry's version probe. A binary that can't be spawned (not
-/// on PATH) is reported `detected: false` — never an error — so one missing
-/// agent never fails detection of the rest.
-fn probe_agents(agents: &[(&str, &str, &str, &str)]) -> Vec<AgentInfo> {
+fn probe_agents(agents: &[(&str, &str, &str)]) -> Vec<AgentInfo> {
     agents
         .iter()
-        .map(|&(id, name, bin, version_arg)| {
-            // `output()` only errs when the program can't start; a non-zero exit
-            // still means the binary is installed, so `Ok(_)` ⇒ detected.
-            let (detected, version) = match Command::new(bin).arg(version_arg).output() {
-                Ok(o) => {
-                    let combined = format!(
-                        "{}{}",
-                        String::from_utf8_lossy(&o.stdout),
-                        String::from_utf8_lossy(&o.stderr)
-                    );
-                    let line = combined
-                        .lines()
-                        .find(|l| !l.trim().is_empty())
-                        .map(|l| l.trim().chars().take(80).collect());
-                    (true, line)
-                }
-                Err(_) => (false, None),
-            };
-            AgentInfo { id: id.into(), name: name.into(), cmd: bin.into(), detected, version }
+        .map(|&(id, name, bin)| {
+            let found = which_on_path(bin);
+            AgentInfo {
+                id: id.into(),
+                name: name.into(),
+                cmd: bin.into(),
+                detected: found.is_some(),
+                path: found.map(|p| p.to_string_lossy().into_owned()),
+                version: None,
+            }
         })
         .collect()
+}
+
+/// Resolve a bare binary name against `PATH`, returning the first executable
+/// regular file. `metadata` follows symlinks, so a dangling symlink (e.g. a
+/// binary macOS quarantined and removed) correctly reads as absent. No process
+/// is spawned — this is a pure filesystem lookup, like `which`.
+fn which_on_path(bin: &str) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).find_map(|dir| {
+        let candidate = dir.join(bin);
+        match std::fs::metadata(&candidate) {
+            Ok(m) if m.is_file() && m.permissions().mode() & 0o111 != 0 => Some(candidate),
+            _ => None,
+        }
+    })
 }
 
 fn run_git(repo: &str, args: &[&str]) -> R<()> {
@@ -323,23 +330,25 @@ mod tests {
 
     #[test]
     fn probes_present_and_absent_agents() {
-        // Deterministic: `true` is on every unix PATH; the bogus name never is.
-        // Avoids depending on which real agent CLIs happen to be installed here.
-        let registry: &[(&str, &str, &str, &str)] = &[
-            ("present", "Present", "true", "--version"),
-            ("absent", "Absent", "locke-no-such-agent-xyzzy", "--version"),
+        // Presence-only and deterministic: `true` resolves on PATH; the bogus
+        // name never does. Nothing is executed.
+        let registry: &[(&str, &str, &str)] = &[
+            ("present", "Present", "true"),
+            ("absent", "Absent", "locke-no-such-agent-xyzzy"),
         ];
         let infos = probe_agents(registry);
         assert_eq!(infos.len(), 2);
         assert!(infos[0].detected, "binary on PATH is detected");
-        assert!(!infos[1].detected, "missing binary is reported, not an error");
-        assert!(infos[1].version.is_none());
+        assert!(infos[0].path.is_some(), "resolved path is recorded");
+        assert!(!infos[1].detected, "missing binary is absent, not an error");
+        assert!(infos[1].path.is_none());
+        assert!(infos[0].version.is_none(), "no version probe at detection");
     }
 
     #[test]
     fn detect_agents_includes_known_registry() {
-        // The real registry probe never panics and reports every known agent
-        // (each detected or not) without erroring on absent ones.
+        // The real registry resolves every known agent (each detected or not)
+        // via PATH lookup only — no process is spawned, so this is fast and safe.
         let infos = detect_agents();
         assert!(infos.iter().any(|a| a.id == "claude"), "claude is a known agent");
         assert_eq!(infos.len(), 5);
