@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ChangedFile, Commit, Hunk, Review, ReviewStatus } from "@locke/core";
+import type { ChangedFile, Commit, Hunk, PullRecord, Review } from "@locke/core";
 
 // Typed wrappers over the Rust git commands. `isTauri` lets the app run under
 // plain Vite (mock mode) without throwing when the bridge is absent.
@@ -38,9 +38,6 @@ export interface GitDiff {
   hunks: Hunk[];
 }
 
-export const listReviews = (repo: string, base: string) =>
-  invoke<GitReview[]>("list_reviews", { repo, base });
-
 export const reviewSummary = (repo: string, branch: string, base: string) =>
   invoke<GitReview | null>("review_summary", { repo, branch, base });
 
@@ -51,16 +48,6 @@ export const detectBase = (repo: string) => invoke<string>("detect_base", { repo
 
 export const deleteBranch = (repo: string, branch: string) =>
   invoke("delete_branch", { repo, branch });
-
-export interface IndexEntry {
-  branch: string;
-  base: string;
-}
-export const readReviewIndex = (repo: string) => invoke<IndexEntry[]>("read_review_index", { repo });
-export const addReviewIndex = (repo: string, branch: string, base: string) =>
-  invoke("add_review_index", { repo, branch, base });
-export const removeReviewIndex = (repo: string, branch: string) =>
-  invoke("remove_review_index", { repo, branch });
 
 export const getReview = (repo: string, branch: string, base: string) =>
   invoke<GitReviewDetail>("get_review", { repo, branch, base });
@@ -107,28 +94,29 @@ const initials = (name: string): string => {
 };
 
 /**
- * Map git facts onto the UI's Review. Fields git can't know (status, model,
- * checks) get sensible defaults here and are overridden by stored metadata in
- * the persistence layer. `agent-authored` branches use the `agent/` convention.
+ * Merge an explicit pull request (the persisted registry record) with live git
+ * stats into the UI's Review. Identity and lifecycle (id/status/verdict/author)
+ * come from the pull; size/recency (files/add/del/commits/time) come from git.
+ * `git` is null when the branch is gone (e.g. merged/deleted) — the PR still
+ * renders with zeroed stats so it can be seen and removed.
  */
-export function toReview(g: GitReview, comments: number, status: ReviewStatus = "ready"): Review {
-  const isAgent = g.branch.startsWith("agent/");
+export function toReview(pull: PullRecord, git: GitReview | null, comments: number): Review {
   return {
-    id: g.id,
-    title: g.title,
-    branch: g.branch,
-    base: g.base,
-    agent: g.author || "unknown",
+    id: String(pull.id),
+    title: pull.title || git?.title || pull.branch,
+    branch: pull.branch,
+    base: pull.base,
+    agent: pull.author || "unknown",
     model: null,
-    isAgent,
-    initials: initials(g.author || g.branch),
-    status,
-    files: g.files,
-    add: g.add,
-    del: g.del,
+    isAgent: pull.isAgent,
+    initials: initials(pull.author || pull.branch),
+    status: pull.status,
+    files: git?.files ?? 0,
+    add: git?.add ?? 0,
+    del: git?.del ?? 0,
     comments,
     checks: "pass",
-    time: g.time,
+    time: git?.time ?? "",
   };
 }
 

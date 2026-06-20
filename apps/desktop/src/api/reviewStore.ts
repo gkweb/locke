@@ -1,28 +1,27 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ReviewStatus, Thread, Verdict } from "@locke/core";
+import type { Thread } from "@locke/core";
 import { isTauri, type CheckSpec } from "./git.js";
 
-// Per-review state git can't hold — comment threads, the reviewer's verdict,
-// status, and which files were marked viewed — persisted by the Rust side to
-// files under `<repo>/.locke/`, so review history lives in the repo and can be
-// committed. No-ops in mock mode (no Tauri bridge).
+// Per-PR comment state git can't hold — comment threads (the payload future
+// agents read and respond to) plus the per-file viewed flags — persisted by the
+// Rust side to `<repo>/.locke/comments/<id>.json`, keyed by the pull request's
+// numeric id. Pull-request metadata (status/verdict) lives separately in the
+// registry (see api/pulls.ts). No-ops in mock mode (no Tauri bridge).
 
-export interface PersistedReview {
+export interface CommentsFile {
   threads: Thread[];
-  verdict: Verdict | null;
-  status: ReviewStatus;
-  viewed: Record<number, boolean>;
   nextThreadId: number;
+  viewed: Record<number, boolean>;
 }
 
-export async function loadPersistedReview(repo: string, branch: string): Promise<PersistedReview | null> {
+export async function loadComments(repo: string, id: number): Promise<CommentsFile | null> {
   if (!isTauri) return null;
-  return (await invoke<PersistedReview | null>("read_review_state", { repo, branch })) ?? null;
+  return (await invoke<CommentsFile | null>("read_comments", { repo, id })) ?? null;
 }
 
-export async function savePersistedReview(repo: string, branch: string, data: PersistedReview): Promise<void> {
+export async function saveComments(repo: string, id: number, data: CommentsFile): Promise<void> {
   if (!isTauri) return;
-  await invoke("write_review_state", { repo, branch, data });
+  await invoke("write_comments", { repo, id, data });
 }
 
 // Per-repo check overrides. When set, these replace auto-detection so you can
