@@ -6,6 +6,7 @@ import { color, font } from "../theme/tokens.js";
 import { statusMeta, fileStatusMeta, agentChipStyle, addStr, delStr, currentReview } from "../lib/meta.js";
 import { HoverButton, HoverDiv } from "../components/primitives.js";
 import { VerdictBanner } from "../components/VerdictBanner.js";
+import { buildAgentPrompt, openChangeRequests } from "../lib/agentPrompt.js";
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -285,6 +286,7 @@ function Main() {
   const selectedPR = useStore((s) => s.selectedPR);
   const files = useStore((s) => s.files);
   const detail = useStore((s) => s.detail);
+  const threads = useStore((s) => s.threads);
   const testsRunning = useStore((s) => s.testsRunning);
   const repoPath = useStore((s) => s.repoPath);
   const liveChecks = useStore((s) => s.liveChecks);
@@ -307,6 +309,13 @@ function Main() {
 
   // Auto-detected, really-executed check results (empty until the first run).
   const checks: Check[] = liveChecks;
+
+  // Open change requests drive the "Copy agent prompt" button (disabled at zero).
+  const changeRequestCount = openChangeRequests(threads).length;
+  const onCopyAgentPrompt = () => {
+    const prompt = buildAgentPrompt({ repoPath, selectedPR, reviews, files, threads });
+    void navigator.clipboard.writeText(prompt);
+  };
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, background: color.appBg }}>
@@ -340,6 +349,38 @@ function Main() {
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 9, flex: "none" }}>
+            <HoverButton
+              onClick={onCopyAgentPrompt}
+              disabled={changeRequestCount === 0}
+              title={
+                changeRequestCount === 0
+                  ? "Flag a thread as a change request to enable"
+                  : `Copy a prompt covering ${changeRequestCount} change request${changeRequestCount === 1 ? "" : "s"}`
+              }
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 7,
+                padding: "9px 13px",
+                background: "#12161d",
+                border: "1px solid #2a3140",
+                borderRadius: 9,
+                color: changeRequestCount === 0 ? color.textGhost : color.textSoft,
+                fontFamily: font.sans,
+                fontSize: 12.5,
+                fontWeight: 500,
+                cursor: changeRequestCount === 0 ? "not-allowed" : "pointer",
+                opacity: changeRequestCount === 0 ? 0.55 : 1,
+              }}
+              hoverStyle={
+                changeRequestCount === 0
+                  ? undefined
+                  : { borderColor: "#37404f", background: "#161b24" }
+              }
+            >
+              <SparkleIcon size={13} color={color.textFaint} />
+              Copy agent prompt
+            </HoverButton>
             <HoverButton
               onClick={onRunTests}
               style={{
