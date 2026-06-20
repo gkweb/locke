@@ -160,5 +160,11 @@ export interface Thread {
   file: string;
   lineId: string;
   resolved: boolean;
+  /**
+   * Triage label. `"change_request"` marks the thread as an actionable amendment for
+   * the agent; absent/`"comment"` is plain discussion. Optional for back-compat with
+   * threads written before this field existed.
+   */
+  kind?: "comment" | "change_request";
   items: CommentItem[];
 }

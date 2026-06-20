@@ -154,6 +154,7 @@ interface LockeState {
 
   // ---- threads ----
   toggleResolve: (id: number) => void;
+  toggleChangeRequest: (id: number) => void;
   setReplyOpen: (id: number | null) => void;
   setReplyDraft: (v: string) => void;
   submitReply: (id: number) => void;
@@ -394,6 +395,7 @@ export const useStore = create<LockeState>((set, get) => ({
       file: file.path,
       lineId: composerLine,
       resolved: false,
+      kind: "comment",
       items: [
         { author: "You", initials: "YO", isAgent: false, roleLabel: "AUTHOR", time: "just now", body },
       ],
@@ -410,6 +412,16 @@ export const useStore = create<LockeState>((set, get) => ({
   toggleResolve: (id) => {
     set((s) => ({
       threads: s.threads.map((t) => (t.id === id ? { ...t, resolved: !t.resolved } : t)),
+    }));
+    persistComments(get);
+  },
+  toggleChangeRequest: (id) => {
+    set((s) => ({
+      threads: s.threads.map((t) =>
+        t.id === id
+          ? { ...t, kind: t.kind === "change_request" ? "comment" : "change_request" }
+          : t,
+      ),
     }));
     persistComments(get);
   },
