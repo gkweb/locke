@@ -85,6 +85,13 @@ pub fn detect_checks(repo: String) -> Vec<actions::CheckSpec> {
     actions::detect_checks(&repo)
 }
 
+// ---- agent CLI detection (PATH-based, repo-independent) ----
+
+#[tauri::command]
+pub fn detect_agents() -> Vec<actions::AgentInfo> {
+    actions::detect_agents()
+}
+
 #[tauri::command]
 pub fn run_checks(
     repo: String,

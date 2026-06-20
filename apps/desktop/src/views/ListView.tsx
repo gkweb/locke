@@ -48,11 +48,15 @@ function Sidebar() {
   const openRepo = useStore((s) => s.openRepo);
   const trackHistory = useStore((s) => s.trackHistory);
   const setTrackHistory = useStore((s) => s.setTrackHistory);
+  const detectedAgents = useStore((s) => s.agents);
 
   const pickRepo = () => chooseRepo(openRepo);
 
   // Coding agents that authored open reviews (unique by name).
   const agents = Array.from(new Map(reviews.filter((r) => r.isAgent).map((r) => [r.agent, r])).values());
+
+  // Agent CLIs found on PATH (read-only status; toggles arrive in a later phase).
+  const installedAgents = detectedAgents.filter((a) => a.detected);
 
   return (
     <div
@@ -143,6 +147,40 @@ function Sidebar() {
           </div>
           {agents.map((a) => (
             <AgentRow key={a.agent} initials={a.initials} name={a.agent} />
+          ))}
+        </>
+      )}
+
+      {installedAgents.length > 0 && (
+        <>
+          <div style={{ height: 1, background: color.borderSubtle, margin: "16px 6px" }} />
+          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".8px", color: color.textGhost, padding: "0 8px 8px" }}>
+            DETECTED AGENTS
+          </div>
+          {installedAgents.map((a) => (
+            <div
+              key={a.id}
+              title={a.version ?? undefined}
+              style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", minWidth: 0 }}
+            >
+              <span style={{ width: 7, height: 7, borderRadius: "50%", background: color.green, flex: "none" }} />
+              <span style={{ fontSize: 12, color: color.text, flex: "none" }}>{a.name}</span>
+              {a.version && (
+                <span
+                  style={{
+                    fontSize: 10.5,
+                    fontFamily: font.mono,
+                    color: color.textGhost,
+                    marginLeft: "auto",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {a.version}
+                </span>
+              )}
+            </div>
           ))}
         </>
       )}

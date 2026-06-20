@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useStore } from "./state/store.js";
 import { color } from "./theme/tokens.js";
 import { Titlebar } from "./components/Titlebar.js";
@@ -7,6 +8,10 @@ import { ReviewView } from "./views/ReviewView.js";
 
 export function App() {
   const view = useStore((s) => s.view);
+  const detectAgents = useStore((s) => s.detectAgents);
+
+  // Probe installed agent CLIs once on launch (app-global, repo-independent).
+  useEffect(() => void detectAgents(), [detectAgents]);
 
   return (
     <div

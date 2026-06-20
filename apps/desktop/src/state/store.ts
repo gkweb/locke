@@ -23,8 +23,10 @@ import {
   setLockeTracking,
   toReview,
   toChangedFile,
+  detectAgents,
   type CheckSpec,
   type LockeConfig,
+  type AgentInfo,
 } from "../api/git.js";
 import { readPulls, createPull, updatePull, deletePull } from "../api/pulls.js";
 import {
@@ -117,12 +119,17 @@ interface LockeState {
   /** True when checkSpecs are a saved per-repo override (vs auto-detected). */
   checksAreOverride: boolean;
   editingChecks: boolean;
+  /** Known agent CLIs detected on PATH (app-global; probed once on launch). */
+  agents: AgentInfo[];
 
   // ---- navigation ----
   go: (view: View) => void;
   openPR: (id: string) => void;
   goOverview: () => void;
   goReview: () => void;
+
+  // ---- agent detection (app-global) ----
+  detectAgents: () => Promise<void>;
 
   // ---- live git loading ----
   openRepo: (path: string, base?: string) => Promise<void>;
@@ -200,6 +207,15 @@ export const useStore = create<LockeState>((set, get) => ({
   checkSpecs: [],
   checksAreOverride: false,
   editingChecks: false,
+  agents: [],
+
+  detectAgents: async () => {
+    try {
+      set({ agents: await detectAgents() });
+    } catch {
+      // Detection is best-effort status; never block the app on a failed probe.
+    }
+  },
 
   go: (view) => set({ view }),
   openPR: (id) => {

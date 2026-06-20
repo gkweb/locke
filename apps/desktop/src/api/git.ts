@@ -84,6 +84,19 @@ export const setLockeTracking = (repo: string, tracked: boolean) =>
 
 export const detectChecks = (repo: string) => invoke<CheckSpec[]>("detect_checks", { repo });
 
+/** A known coding-agent CLI and whether it was found on PATH. */
+export interface AgentInfo {
+  id: string;
+  name: string;
+  cmd: string;
+  detected: boolean;
+  version: string | null;
+}
+
+/** Probe known agent CLIs on PATH. Empty in mock mode (no Tauri bridge). */
+export const detectAgents = (): Promise<AgentInfo[]> =>
+  isTauri ? invoke<AgentInfo[]>("detect_agents") : Promise.resolve([]);
+
 export const runChecks = (repo: string, branch: string, checks: CheckSpec[]) =>
   invoke<CheckResult[]>("run_checks", { repo, branch, checks });
 
