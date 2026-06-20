@@ -9,7 +9,6 @@ import type {
   View,
 } from "@locke/core";
 import {
-  listReviews,
   reviewSummary,
   listBranches,
   detectBase,
@@ -17,9 +16,6 @@ import {
   getDiff,
   pushBranch,
   deleteBranch,
-  readReviewIndex,
-  addReviewIndex,
-  removeReviewIndex,
   detectChecks,
   runChecks,
   readConfig,
@@ -30,30 +26,41 @@ import {
   type CheckSpec,
   type LockeConfig,
 } from "../api/git.js";
+import { readPulls, createPull, updatePull, deletePull } from "../api/pulls.js";
 import {
-  loadPersistedReview,
-  savePersistedReview,
+  loadComments,
+  saveComments,
   loadCheckOverrides,
   saveCheckOverrides,
   clearCheckOverrides,
 } from "../api/reviewStore.js";
-import type { Check, ReviewStatus } from "@locke/core";
+import type { Check, PullRecord, ReviewStatus } from "@locke/core";
 
 const EMPTY_DETAIL: ReviewDetail = { prompt: "", summary: "", bullets: [], note: "", commits: [] };
 
-// Persist the current review's local-only state (comments/verdict/status/viewed)
-// when a real repo is open. No-op in mock mode.
-function persistCurrent(get: () => LockeState): void {
+// Persist the current PR's comment threads + viewed flags to
+// `.locke/comments/<id>.json`, keyed by the numeric id. No-op in mock mode.
+function persistComments(get: () => LockeState): void {
+  const s = get();
+  if (!s.repoPath || !s.selectedPR) return;
+  void saveComments(s.repoPath, Number(s.selectedPR), {
+    threads: s.threads,
+    nextThreadId: s.nextThreadId,
+    viewed: s.viewed,
+  });
+}
+
+// Persist the current PR's lifecycle (status/verdict) back to the registry,
+// preserving the rest of the record. No-op in mock mode.
+function persistPull(get: () => LockeState): void {
   const s = get();
   if (!s.repoPath) return;
-  const status = s.reviews.find((r) => r.id === s.selectedPR)?.status ?? "ready";
-  void savePersistedReview(s.repoPath, s.selectedPR, {
-    threads: s.threads,
-    verdict: s.verdict,
-    status,
-    viewed: s.viewed,
-    nextThreadId: s.nextThreadId,
-  });
+  const pull = s.pulls[s.selectedPR];
+  if (!pull) return;
+  const status = s.reviews.find((r) => r.id === s.selectedPR)?.status ?? pull.status;
+  const updated: PullRecord = { ...pull, status, verdict: s.verdict };
+  s.pulls[s.selectedPR] = updated;
+  void updatePull(s.repoPath, updated);
 }
 
 // Persist the current check list as a per-repo override.
@@ -69,6 +76,9 @@ function persistChecks(get: () => LockeState): void {
 interface LockeState {
   // ---- data (swap-in target for real git/store) ----
   reviews: Review[];
+  /** Registry records backing the queue, keyed by id (preserves fields the
+   *  display-only Review drops, e.g. body/createdAt, for round-tripping). */
+  pulls: Record<string, PullRecord>;
   files: ChangedFile[];
   detail: ReviewDetail;
   threads: Thread[];
@@ -157,6 +167,7 @@ interface LockeState {
 
 export const useStore = create<LockeState>((set, get) => ({
   reviews: [],
+  pulls: {},
   files: [],
   detail: EMPTY_DETAIL,
   threads: [],
@@ -191,14 +202,18 @@ export const useStore = create<LockeState>((set, get) => ({
 
   go: (view) => set({ view }),
   openPR: (id) => {
-    const { repoPath, reviews } = get();
-    set({ view: "overview", selectedPR: id, verdict: null });
+    const { repoPath, reviews, pulls } = get();
+    // Verdict is registry-backed; seed it from the pull so the overview reflects
+    // any prior decision.
+    set({ view: "overview", selectedPR: id, verdict: pulls[id]?.verdict ?? null });
     if (!repoPath) return;
-    // Each review carries its own base (head→base pair).
-    const base = reviews.find((r) => r.id === id)?.base ?? get().base;
+    // Each review carries its own head branch + base (the PR id is not the branch).
+    const review = reviews.find((r) => r.id === id);
+    const branch = review?.branch ?? id;
+    const base = review?.base ?? get().base;
     // Live mode: load this branch's detail + file shells, then its first diff.
     set({ loading: true, error: null });
-    Promise.all([getReview(repoPath, id, base), loadPersistedReview(repoPath, id)])
+    Promise.all([getReview(repoPath, branch, base), loadComments(repoPath, Number(id))])
       .then(async ([detail, saved]) => {
         const files = detail.fileSummary.map(toChangedFile);
         set({
@@ -206,15 +221,11 @@ export const useStore = create<LockeState>((set, get) => ({
           files,
           selectedFile: 0,
           threads: saved?.threads ?? [],
-          verdict: saved?.verdict ?? null,
           viewed: saved?.viewed ?? {},
           nextThreadId: saved?.nextThreadId ?? 100,
           liveChecks: [],
           loading: false,
         });
-        if (saved?.status) {
-          set((s) => ({ reviews: s.reviews.map((r) => (r.id === id ? { ...r, status: saved.status } : r)) }));
-        }
         if (files.length) await get().loadDiff(0);
       })
       .catch((e) => set({ loading: false, error: String(e) }));
@@ -234,33 +245,35 @@ export const useStore = create<LockeState>((set, get) => ({
       const base = config.base ?? (await detectBase(path).catch(() => baseArg));
 
       // Load these independently so one failure doesn't blank the whole repo.
-      const [overrides, tracked, branches, index] = await Promise.all([
+      const [overrides, tracked, branches, store] = await Promise.all([
         loadCheckOverrides(path).catch(() => null),
         getLockeTracking(path).catch(() => true),
         listBranches(path).catch(() => [] as string[]),
-        readReviewIndex(path).catch(() => []),
+        readPulls(path).catch(() => ({ nextId: 1, pulls: [] as PullRecord[] })),
       ]);
 
-      // Auto-derived reviews (branches ahead of base), capturing any error so
-      // the queue still shows branches/empty-state instead of silently blanking.
-      const byBranch = new Map<string, Review>();
-      let error: string | null = null;
-      try {
-        for (const g of await listReviews(path, base)) byBranch.set(g.branch, toReview(g, 0));
-      } catch (e) {
-        error = `Couldn't list reviews against "${base}": ${String(e)}`;
-      }
-      // …merged with explicitly-created reviews (their chosen base wins).
-      for (const entry of index) {
-        const g = await reviewSummary(path, entry.branch, entry.base).catch(() => null);
-        if (g) byBranch.set(g.branch, toReview(g, 0));
-      }
-      const reviews: Review[] = [...byBranch.values()];
+      // The queue is exactly the explicit pull requests. For each, fetch live git
+      // stats (null if the branch is gone) and its open-thread count, in parallel.
+      const merged = await Promise.all(
+        store.pulls.map(async (pull) => {
+          const [g, comments] = await Promise.all([
+            reviewSummary(path, pull.branch, pull.base).catch(() => null),
+            loadComments(path, pull.id).catch(() => null),
+          ]);
+          const open = comments?.threads.filter((t) => !t.resolved).length ?? 0;
+          return toReview(pull, g, open);
+        }),
+      );
+      // Newest first (highest id), matching the create-prepends-to-top behavior.
+      const reviews = merged.slice().reverse();
+      const pulls: Record<string, PullRecord> = {};
+      for (const pull of store.pulls) pulls[String(pull.id)] = pull;
 
       set({
         base,
         remote: config.remote ?? "origin",
         reviews,
+        pulls,
         threads: [],
         view: "list",
         selectedPR: reviews[0]?.id ?? "",
@@ -272,7 +285,7 @@ export const useStore = create<LockeState>((set, get) => ({
         trackHistory: tracked,
         branches,
         loading: false,
-        error,
+        error: null,
       });
     } catch (e) {
       set({ loading: false, error: String(e) });
@@ -295,9 +308,20 @@ export const useStore = create<LockeState>((set, get) => ({
         set({ loading: false, error: `${head} has no commits ahead of ${base}.` });
         return;
       }
-      await addReviewIndex(repoPath, head, base);
-      const review = toReview(g, 0);
-      set((s) => ({ reviews: [review, ...s.reviews.filter((r) => r.id !== review.id)], loading: false }));
+      // Capture title/author from the head's latest commit at create time.
+      const pull = await createPull(repoPath, {
+        branch: head,
+        base,
+        title: g.title,
+        author: g.author,
+        isAgent: head.startsWith("agent/"),
+      });
+      const review = toReview(pull, g, 0);
+      set((s) => ({
+        reviews: [review, ...s.reviews.filter((r) => r.id !== review.id)],
+        pulls: { ...s.pulls, [review.id]: pull },
+        loading: false,
+      }));
       get().openPR(review.id);
     } catch (e) {
       set({ loading: false, error: String(e) });
@@ -310,17 +334,23 @@ export const useStore = create<LockeState>((set, get) => ({
   },
 
   deleteReviewBranch: async () => {
-    const { repoPath, selectedPR } = get();
+    const { repoPath, selectedPR, reviews } = get();
     if (!repoPath || !selectedPR) return;
+    const branch = reviews.find((r) => r.id === selectedPR)?.branch ?? selectedPR;
     set({ loading: true, error: null });
     try {
-      await deleteBranch(repoPath, selectedPR);
-      await removeReviewIndex(repoPath, selectedPR); // also drops .locke review state
-      set((s) => ({
-        reviews: s.reviews.filter((r) => r.id !== selectedPR),
-        view: "list",
-        loading: false,
-      }));
+      await deleteBranch(repoPath, branch);
+      await deletePull(repoPath, Number(selectedPR)); // also drops the comments file
+      set((s) => {
+        const pulls = { ...s.pulls };
+        delete pulls[selectedPR];
+        return {
+          reviews: s.reviews.filter((r) => r.id !== selectedPR),
+          pulls,
+          view: "list",
+          loading: false,
+        };
+      });
     } catch (e) {
       set({ loading: false, error: String(e) });
     }
@@ -331,9 +361,11 @@ export const useStore = create<LockeState>((set, get) => ({
     if (!repoPath) return;
     const file = files[i];
     if (!file || file.hunks.length) return; // already loaded or out of range
-    const base = reviews.find((r) => r.id === selectedPR)?.base ?? get().base;
+    const review = reviews.find((r) => r.id === selectedPR);
+    const branch = review?.branch ?? selectedPR;
+    const base = review?.base ?? get().base;
     try {
-      const diff = await getDiff(repoPath, selectedPR, base, file.path);
+      const diff = await getDiff(repoPath, branch, base, file.path);
       set((s) => ({
         files: s.files.map((f, idx) => (idx === i ? { ...f, hunks: diff.hunks } : f)),
       }));
@@ -372,14 +404,14 @@ export const useStore = create<LockeState>((set, get) => ({
       composerLine: null,
       draft: "",
     });
-    persistCurrent(get);
+    persistComments(get);
   },
 
   toggleResolve: (id) => {
     set((s) => ({
       threads: s.threads.map((t) => (t.id === id ? { ...t, resolved: !t.resolved } : t)),
     }));
-    persistCurrent(get);
+    persistComments(get);
   },
   setReplyOpen: (id) => set({ replyOpen: id, replyDraft: "" }),
   setReplyDraft: (v) => set({ replyDraft: v }),
@@ -402,21 +434,21 @@ export const useStore = create<LockeState>((set, get) => ({
       replyOpen: null,
       replyDraft: "",
     });
-    persistCurrent(get);
+    persistComments(get);
   },
 
   toggleViewed: (i) => {
     set((s) => ({ viewed: { ...s.viewed, [i]: !s.viewed[i] } }));
-    persistCurrent(get);
+    persistComments(get);
   },
   setVerdict: (v) => {
     set({ verdict: v });
     if (v === "changes") get().setStatus("changes");
-    else persistCurrent(get);
+    else persistPull(get);
   },
   setStatus: (status) => {
     set((s) => ({ reviews: s.reviews.map((r) => (r.id === s.selectedPR ? { ...r, status } : r)) }));
-    persistCurrent(get);
+    persistPull(get);
   },
 
   toggleEditChecks: () => {
@@ -452,25 +484,28 @@ export const useStore = create<LockeState>((set, get) => ({
     }
   },
   approveAndPush: async () => {
-    const { repoPath, selectedPR, remote } = get();
+    const { repoPath, selectedPR, remote, reviews } = get();
     set({ verdict: "approve" });
     if (!repoPath) {
       set({ pushed: true });
       return;
     }
+    const branch = reviews.find((r) => r.id === selectedPR)?.branch ?? selectedPR;
     set({ loading: true, error: null });
     try {
-      await pushBranch(repoPath, selectedPR, remote);
+      await pushBranch(repoPath, branch, remote);
       set({ pushed: true, loading: false });
       get().setStatus("merged");
     } catch (e) {
       set({ loading: false, error: String(e) });
-      persistCurrent(get);
+      // Persist the approve verdict even though the push failed.
+      persistPull(get);
     }
   },
   runTests: () => {
-    const { repoPath, selectedPR, testsRunning } = get();
+    const { repoPath, selectedPR, reviews, testsRunning } = get();
     if (testsRunning || !repoPath) return;
+    const branch = reviews.find((r) => r.id === selectedPR)?.branch ?? selectedPR;
     // Use per-repo overrides if set, else auto-detect, then run.
     set({ testsRunning: true, testsRan: false });
     void (async () => {
@@ -487,7 +522,7 @@ export const useStore = create<LockeState>((set, get) => ({
         set({
           liveChecks: specs.map((s) => ({ label: s.label, detail: "running…", status: "running" as const })),
         });
-        const results = await runChecks(repoPath, selectedPR, specs);
+        const results = await runChecks(repoPath, branch, specs);
         set({ testsRunning: false, testsRan: true, liveChecks: results });
       } catch (e) {
         set({ testsRunning: false, error: String(e) });

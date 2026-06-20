@@ -23,13 +23,45 @@ export type DiffMode = "unified" | "split";
 export type View = "list" | "overview" | "review";
 
 /**
- * A "review" — Locke's unit of work. Maps to a local head branch compared
- * against a base branch. Git-derived fields (branch/base/files/add/del/commits)
- * and store-derived fields (status/agent/comments) are merged into one object
- * for the UI, exactly as the design consumes it.
+ * A persisted pull request — the explicit, on-disk record in `.locke/pulls.json`.
+ * Pull requests are opt-in: a branch only becomes a PR when one is created. The
+ * numeric `id` is stable across branch renames so future agents can reference a
+ * PR durably. Authorship and lifecycle (status/verdict) are captured here; live
+ * git stats are derived separately at load time and merged into `Review`.
+ */
+export interface PullRecord {
+  id: number;
+  /** Head branch name, e.g. "agent/webhook-idempotency". */
+  branch: string;
+  /** Base branch the head is reviewed against, e.g. "develop". */
+  base: string;
+  title: string;
+  body: string;
+  /** Display name of the author, captured at create time. */
+  author: string;
+  /** True when authored by an agent (the `agent/` branch convention). */
+  isAgent: boolean;
+  status: ReviewStatus;
+  verdict: Verdict | null;
+  /** RFC3339 timestamps, for record-keeping and agent reasoning. */
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** The whole `.locke/pulls.json` document: registry plus a monotonic id counter. */
+export interface PullStore {
+  nextId: number;
+  pulls: PullRecord[];
+}
+
+/**
+ * A "review" — Locke's unit of work. Maps to an explicit pull request (a head
+ * branch compared against a base branch). Git-derived fields
+ * (files/add/del/commits/time) and registry fields (id/status/verdict/agent) are
+ * merged into one object for the UI, exactly as the design consumes it.
  */
 export interface Review {
-  /** Stable id. For real branches this is the branch name; mocks use a number. */
+  /** Stable id — the pull request's numeric id rendered as a string. */
   id: string;
   title: string;
   /** Head branch name, e.g. "agent/webhook-idempotency". */

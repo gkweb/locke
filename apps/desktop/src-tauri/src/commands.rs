@@ -8,11 +8,6 @@ use crate::store;
 use serde_json::Value;
 
 #[tauri::command]
-pub fn list_reviews(repo: String, base: String) -> Result<Vec<git::GitReview>, String> {
-    git::list_reviews(&repo, &base)
-}
-
-#[tauri::command]
 pub fn get_review(repo: String, branch: String, base: String) -> Result<git::GitReviewDetail, String> {
     git::get_review(&repo, &branch, &base)
 }
@@ -56,21 +51,33 @@ pub fn delete_branch(repo: String, branch: String) -> Result<(), String> {
     actions::delete_branch(&repo, &branch)
 }
 
-// ---- tracked-review index (.locke/index.json) ----
+// ---- pull-request registry (.locke/pulls.json) ----
 
 #[tauri::command]
-pub fn read_review_index(repo: String) -> Result<Vec<store::IndexEntry>, String> {
-    store::read_index(&repo)
+pub fn read_pulls(repo: String) -> Result<store::PullStore, String> {
+    store::read_pulls(&repo)
 }
 
 #[tauri::command]
-pub fn add_review_index(repo: String, branch: String, base: String) -> Result<(), String> {
-    store::add_index_entry(&repo, &branch, &base)
+pub fn create_pull(
+    repo: String,
+    branch: String,
+    base: String,
+    title: String,
+    author: String,
+    is_agent: bool,
+) -> Result<store::Pull, String> {
+    store::create_pull(&repo, &branch, &base, &title, &author, is_agent)
 }
 
 #[tauri::command]
-pub fn remove_review_index(repo: String, branch: String) -> Result<(), String> {
-    store::remove_index_entry(&repo, &branch)
+pub fn update_pull(repo: String, pull: store::Pull) -> Result<(), String> {
+    store::update_pull(&repo, pull)
+}
+
+#[tauri::command]
+pub fn delete_pull(repo: String, id: u64) -> Result<(), String> {
+    store::delete_pull(&repo, id)
 }
 
 #[tauri::command]
@@ -87,17 +94,19 @@ pub fn run_checks(
     actions::run_checks(&repo, &branch, checks)
 }
 
-// ---- filesystem review state (.locke/) ----
+// ---- per-PR comments (.locke/comments/<id>.json) ----
 
 #[tauri::command]
-pub fn read_review_state(repo: String, branch: String) -> Result<Option<Value>, String> {
-    store::read_review_state(&repo, &branch)
+pub fn read_comments(repo: String, id: u64) -> Result<Option<Value>, String> {
+    store::read_comments(&repo, id)
 }
 
 #[tauri::command]
-pub fn write_review_state(repo: String, branch: String, data: Value) -> Result<(), String> {
-    store::write_review_state(&repo, &branch, data)
+pub fn write_comments(repo: String, id: u64, data: Value) -> Result<(), String> {
+    store::write_comments(&repo, id, data)
 }
+
+// ---- per-repo check overrides (.locke/checks.json) ----
 
 #[tauri::command]
 pub fn read_check_overrides(repo: String) -> Result<Option<Value>, String> {
