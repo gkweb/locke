@@ -116,6 +116,18 @@ pub fn run_checks(
     actions::run_checks(&repo, &branch, checks)
 }
 
+// ---- headless agent run (Phase 6): run an enabled agent on the branch ----
+
+#[tauri::command]
+pub fn run_agent(
+    repo: String,
+    branch: String,
+    agent_cmd: String,
+    prompt: String,
+) -> Result<String, String> {
+    actions::run_agent(&repo, &branch, &agent_cmd, &prompt)
+}
+
 // ---- per-PR comments (.locke/comments/<id>.json) ----
 
 #[tauri::command]

@@ -26,10 +26,12 @@ import {
   detectAgents,
   readAgentSettings,
   writeAgentSettings,
+  runAgent as runAgentApi,
   type CheckSpec,
   type LockeConfig,
   type AgentInfo,
 } from "../api/git.js";
+import { buildAgentPrompt } from "../lib/agentPrompt.js";
 import { readPulls, createPull, updatePull, deletePull } from "../api/pulls.js";
 import {
   loadComments,
@@ -127,6 +129,10 @@ interface LockeState {
   disabledAgents: string[];
   /** Whether the app-global Settings modal is open. */
   settingsOpen: boolean;
+  /** True while a headless agent run is in flight (Phase 6). */
+  agentRunning: boolean;
+  /** Combined output (or error) of the last agent run, for display. */
+  agentOutput: string | null;
 
   // ---- navigation ----
   go: (view: View) => void;
@@ -139,6 +145,10 @@ interface LockeState {
   loadAgentSettings: () => Promise<void>;
   toggleAgentEnabled: (id: string) => void;
   setSettingsOpen: (open: boolean) => void;
+  /** Run the first enabled agent against the current review's open change
+   *  requests, then refresh the diff to show its commit (Phase 6). */
+  runAgent: () => Promise<void>;
+  clearAgentOutput: () => void;
 
   // ---- live git loading ----
   openRepo: (path: string, base?: string) => Promise<void>;
@@ -219,6 +229,8 @@ export const useStore = create<LockeState>((set, get) => ({
   agents: [],
   disabledAgents: [],
   settingsOpen: false,
+  agentRunning: false,
+  agentOutput: null,
 
   detectAgents: async () => {
     try {
@@ -245,6 +257,29 @@ export const useStore = create<LockeState>((set, get) => ({
   },
 
   setSettingsOpen: (open) => set({ settingsOpen: open }),
+
+  runAgent: async () => {
+    const { repoPath, selectedPR, reviews, files, threads, agents, disabledAgents } = get();
+    const review = reviews.find((r) => r.id === selectedPR);
+    // Only ever run a detected, enabled (not opted-out) agent.
+    const agent = agents.find((a) => a.detected && !disabledAgents.includes(a.id));
+    if (!repoPath || !review || !agent) return;
+
+    const prompt = buildAgentPrompt({ repoPath, selectedPR, reviews, files, threads });
+    set({ agentRunning: true, agentOutput: null });
+    try {
+      const output = await runAgentApi(repoPath, review.branch, agent.cmd, prompt);
+      set({ agentOutput: output || "Agent finished with no output." });
+      // Refresh the review so the agent's commit + new diff show up.
+      get().openPR(selectedPR);
+    } catch (e) {
+      set({ agentOutput: `Agent run failed:\n${String(e)}` });
+    } finally {
+      set({ agentRunning: false });
+    }
+  },
+
+  clearAgentOutput: () => set({ agentOutput: null }),
 
   go: (view) => set({ view }),
   openPR: (id) => {

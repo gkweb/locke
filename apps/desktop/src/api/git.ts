@@ -125,6 +125,14 @@ export const writeAgentSettings = (settings: AgentSettings): Promise<void> =>
 export const runChecks = (repo: string, branch: string, checks: CheckSpec[]) =>
   invoke<CheckResult[]>("run_checks", { repo, branch, checks });
 
+/**
+ * Run an enabled agent headlessly against `branch` with `prompt`, committing its
+ * work onto the branch (Phase 6). Returns the agent's combined output. Throws in
+ * mock mode (no Tauri bridge) — callers gate on `isTauri`.
+ */
+export const runAgent = (repo: string, branch: string, agentCmd: string, prompt: string) =>
+  invoke<string>("run_agent", { repo, branch, agentCmd, prompt });
+
 const initials = (name: string): string => {
   const parts = name.trim().split(/[\s/_-]+/).filter(Boolean);
   if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();

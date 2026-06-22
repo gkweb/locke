@@ -30,6 +30,7 @@ pub fn run() {
             commands::read_agent_settings,
             commands::write_agent_settings,
             commands::run_checks,
+            commands::run_agent,
             commands::read_comments,
             commands::write_comments,
             commands::read_check_overrides,

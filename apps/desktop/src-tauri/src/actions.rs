@@ -254,6 +254,83 @@ fn run_in(dir: &Path, checks: Vec<CheckSpec>) -> Vec<CheckResult> {
     results
 }
 
+/// Headless argv for an agent binary. The prompt is passed as one argument and
+/// never shell-interpolated, so its markdown/quotes can't inject. We aim for
+/// "edit autonomously without a TTY"; Locke commits the result afterward, so the
+/// agent needs only edit permission (not shell/commit access).
+fn agent_argv(cmd: &str, prompt: &str) -> Vec<String> {
+    match cmd {
+        "claude" => vec![
+            "-p".into(),
+            prompt.into(),
+            "--permission-mode".into(),
+            "acceptEdits".into(),
+        ],
+        "codex" => vec!["exec".into(), prompt.into()],
+        "aider" => vec!["--message".into(), prompt.into(), "--yes-always".into()],
+        // Best-effort default — most one-shot CLIs accept `-p <prompt>`.
+        _ => vec!["-p".into(), prompt.into()],
+    }
+}
+
+/// Run an enabled agent headlessly against the reviewed branch, then commit its
+/// work onto that branch — closing the review loop inside Locke.
+///
+/// Mirrors `run_checks`' isolation (temp git worktree, `node_modules` symlink)
+/// but checks the branch out **non-detached** so commits advance it. After the
+/// agent finishes we stage and commit any changes it left (a no-op if it already
+/// committed or changed nothing), so the work survives worktree removal. The
+/// caller is responsible for only invoking this for a detected, enabled agent.
+pub fn run_agent(repo: &str, branch: &str, agent_cmd: &str, prompt: &str) -> R<String> {
+    let wt = std::env::temp_dir().join(format!("locke-agent-{}", sanitize(branch)));
+    let wt_str = wt.to_string_lossy().to_string();
+
+    let _ = run_git(repo, &["worktree", "remove", "--force", &wt_str]);
+    let _ = std::fs::remove_dir_all(&wt);
+    run_git(repo, &["worktree", "add", &wt_str, branch])
+        .map_err(|e| format!("create worktree for {branch} (is it checked out elsewhere?): {e}"))?;
+
+    #[cfg(unix)]
+    {
+        let nm = Path::new(repo).join("node_modules");
+        if nm.exists() && !wt.join("node_modules").exists() {
+            let _ = std::os::unix::fs::symlink(&nm, wt.join("node_modules"));
+        }
+    }
+
+    let argv = agent_argv(agent_cmd, prompt);
+    let run = Command::new(agent_cmd).args(&argv).current_dir(&wt).output();
+
+    // Persist whatever the agent changed onto the branch (no-op if it already
+    // committed or made no edits), so removing the worktree keeps the work.
+    if let Ok(o) = &run {
+        if o.status.success() {
+            let _ = run_git(&wt_str, &["add", "-A"]);
+            let _ = run_git(&wt_str, &["commit", "-m", "agent: address review change requests"]);
+        }
+    }
+
+    let _ = run_git(repo, &["worktree", "remove", "--force", &wt_str]);
+    let _ = std::fs::remove_dir_all(&wt);
+    let _ = run_git(repo, &["worktree", "prune"]);
+
+    match run {
+        Ok(o) => {
+            let combined = format!(
+                "{}{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            );
+            if o.status.success() {
+                Ok(combined.trim().to_string())
+            } else {
+                Err(format!("agent exited {}: {}", o.status.code().unwrap_or(-1), combined.trim()))
+            }
+        }
+        Err(e) => Err(format!("could not run {agent_cmd}: {e}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,6 +377,57 @@ mod tests {
         assert_eq!(results[0].status, "pass");
         assert_eq!(results[0].detail, "feature");
         assert_eq!(results[1].status, "fail");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn agent_edits_in_worktree_and_locke_commits_to_branch() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("locke-agent-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str]| {
+            let st = Command::new("git")
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(&dir)
+                .env("GIT_AUTHOR_NAME", "T").env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "T").env("GIT_COMMITTER_EMAIL", "t@t")
+                .status().unwrap();
+            assert!(st.success());
+        };
+        g(&["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("seed.txt"), "seed").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "seed"]);
+        g(&["checkout", "-q", "-b", "feature"]);
+        g(&["checkout", "-q", "main"]); // feature exists but is not checked out
+
+        // run_agent commits via plain `git` (no env), so identity + no-sign must
+        // live in the repo's own config for the commit to succeed hermetically.
+        g(&["config", "user.name", "Agent Test"]);
+        g(&["config", "user.email", "agent@test"]);
+        g(&["config", "commit.gpgsign", "false"]);
+
+        // Fake agent: makes an edit but does NOT commit — Locke must commit it.
+        let agent = dir.join("fake-agent.sh");
+        std::fs::write(&agent, "#!/bin/sh\nprintf 'fixed by agent\\n' > agent-edit.txt\n").unwrap();
+        std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let repo = dir.to_str().unwrap();
+        run_agent(repo, "feature", agent.to_str().unwrap(), "address the change requests").unwrap();
+
+        // The edit landed as a commit on `feature` (visible without checkout)…
+        let show = Command::new("git").arg("-C").arg(repo)
+            .args(["show", "feature:agent-edit.txt"]).output().unwrap();
+        assert!(show.status.success(), "agent edit is committed on feature");
+        assert_eq!(String::from_utf8_lossy(&show.stdout).trim(), "fixed by agent");
+
+        // …and main is untouched (isolation).
+        let on_main = Command::new("git").arg("-C").arg(repo)
+            .args(["show", "main:agent-edit.txt"]).output().unwrap();
+        assert!(!on_main.status.success(), "main must not have the agent's file");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
