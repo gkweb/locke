@@ -2,10 +2,12 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 import type { Check } from "@locke/core";
 import { useStore } from "../state/store.js";
 import { isTauri } from "../api/git.js";
-import { color, font } from "../theme/tokens.js";
+import { color, font, alpha } from "../theme/tokens.js";
 import { statusMeta, fileStatusMeta, agentChipStyle, addStr, delStr, currentReview } from "../lib/meta.js";
 import { HoverButton, HoverDiv } from "../components/primitives.js";
 import { VerdictBanner } from "../components/VerdictBanner.js";
+import { buildAgentPrompt, openChangeRequests } from "../lib/agentPrompt.js";
+import { writeAgentPrompt } from "../api/reviewStore.js";
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -285,6 +287,13 @@ function Main() {
   const selectedPR = useStore((s) => s.selectedPR);
   const files = useStore((s) => s.files);
   const detail = useStore((s) => s.detail);
+  const threads = useStore((s) => s.threads);
+  const agents = useStore((s) => s.agents);
+  const disabledAgents = useStore((s) => s.disabledAgents);
+  const agentRunning = useStore((s) => s.agentRunning);
+  const agentOutput = useStore((s) => s.agentOutput);
+  const runAgent = useStore((s) => s.runAgent);
+  const clearAgentOutput = useStore((s) => s.clearAgentOutput);
   const testsRunning = useStore((s) => s.testsRunning);
   const repoPath = useStore((s) => s.repoPath);
   const liveChecks = useStore((s) => s.liveChecks);
@@ -307,6 +316,21 @@ function Main() {
 
   // Auto-detected, really-executed check results (empty until the first run).
   const checks: Check[] = liveChecks;
+
+  // Open change requests drive the "Copy agent prompt" button (disabled at zero).
+  const changeRequestCount = openChangeRequests(threads).length;
+  const onCopyAgentPrompt = () => {
+    const prompt = buildAgentPrompt({ repoPath, selectedPR, reviews, files, threads });
+    void navigator.clipboard.writeText(prompt);
+    // Also leave a durable artifact under .locke/requests/<id>.md. Best-effort:
+    // the clipboard copy must never depend on the disk write succeeding.
+    if (repoPath && selectedPR) void writeAgentPrompt(repoPath, Number(selectedPR), prompt);
+  };
+
+  // First enabled (detected & not opted-out) agent drives the "Send to agent"
+  // action. Phase 6: Locke runs it headlessly on the branch.
+  const enabledAgent = agents.find((a) => a.detected && !disabledAgents.includes(a.id));
+  const canSend = changeRequestCount > 0 && !!enabledAgent && !agentRunning;
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, background: color.appBg }}>
@@ -340,6 +364,77 @@ function Main() {
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 9, flex: "none" }}>
+            <HoverButton
+              onClick={onCopyAgentPrompt}
+              disabled={changeRequestCount === 0}
+              title={
+                changeRequestCount === 0
+                  ? "Flag a thread as a change request to enable"
+                  : `Copy a prompt covering ${changeRequestCount} change request${changeRequestCount === 1 ? "" : "s"}`
+              }
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 7,
+                padding: "9px 13px",
+                background: "#12161d",
+                border: "1px solid #2a3140",
+                borderRadius: 9,
+                color: changeRequestCount === 0 ? color.textGhost : color.textSoft,
+                fontFamily: font.sans,
+                fontSize: 12.5,
+                fontWeight: 500,
+                cursor: changeRequestCount === 0 ? "not-allowed" : "pointer",
+                opacity: changeRequestCount === 0 ? 0.55 : 1,
+              }}
+              hoverStyle={
+                changeRequestCount === 0
+                  ? undefined
+                  : { borderColor: "#37404f", background: "#161b24" }
+              }
+            >
+              <SparkleIcon size={13} color={color.textFaint} />
+              Copy agent prompt
+            </HoverButton>
+            <HoverButton
+              onClick={() => canSend && void runAgent()}
+              disabled={!canSend}
+              title={
+                changeRequestCount === 0
+                  ? "Flag a thread as a change request to enable"
+                  : !enabledAgent
+                    ? "No enabled agent — install/enable one in Settings"
+                    : `Run ${enabledAgent.name} on this branch to address ${changeRequestCount} change request${changeRequestCount === 1 ? "" : "s"}`
+              }
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 7,
+                padding: "9px 13px",
+                background: canSend ? alpha.teal(0.12) : "#12161d",
+                border: `1px solid ${canSend ? alpha.teal(0.5) : "#2a3140"}`,
+                borderRadius: 9,
+                color: canSend ? color.teal : color.textGhost,
+                fontFamily: font.sans,
+                fontSize: 12.5,
+                fontWeight: 600,
+                cursor: canSend ? "pointer" : "not-allowed",
+                opacity: canSend || agentRunning ? 1 : 0.55,
+              }}
+              hoverStyle={canSend ? { background: alpha.teal(0.2), borderColor: color.teal } : undefined}
+            >
+              {agentRunning ? (
+                <>
+                  <SpinnerIcon size={13} color={color.teal} stroke={1.6} />
+                  {enabledAgent ? `${enabledAgent.name} working…` : "Working…"}
+                </>
+              ) : (
+                <>
+                  <SparkleIcon size={13} color={canSend ? color.teal : color.textFaint} />
+                  {enabledAgent ? `Send to ${enabledAgent.name}` : "Send to agent"}
+                </>
+              )}
+            </HoverButton>
             <HoverButton
               onClick={onRunTests}
               style={{
@@ -415,6 +510,57 @@ function Main() {
           </div>
         </div>
       </div>
+
+      {agentOutput && (
+        <div
+          style={{
+            margin: "14px 32px 0",
+            padding: "12px 14px",
+            background: alpha.teal(0.08),
+            border: `1px solid ${alpha.teal(0.35)}`,
+            borderRadius: 10,
+            display: "flex",
+            gap: 12,
+            alignItems: "flex-start",
+          }}
+        >
+          <SparkleIcon size={14} color={color.teal} style={{ marginTop: 2, flex: "none" }} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: color.teal, marginBottom: 5 }}>Agent run</div>
+            <pre
+              style={{
+                margin: 0,
+                maxHeight: 160,
+                overflow: "auto",
+                fontFamily: font.mono,
+                fontSize: 11.5,
+                lineHeight: 1.5,
+                color: color.textSoft,
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+              }}
+            >
+              {agentOutput}
+            </pre>
+          </div>
+          <button
+            onClick={clearAgentOutput}
+            title="Dismiss"
+            style={{
+              flex: "none",
+              background: "transparent",
+              border: "none",
+              color: color.textGhost,
+              cursor: "pointer",
+              fontSize: 16,
+              lineHeight: 1,
+              padding: 2,
+            }}
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       <div style={{ flex: 1, overflowY: "auto", padding: "24px 32px 40px" }}>
         <div style={{ maxWidth: 880, display: "flex", flexDirection: "column", gap: 18 }}>

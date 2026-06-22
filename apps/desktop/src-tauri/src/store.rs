@@ -69,6 +69,10 @@ fn comments_path(repo: &str, id: u64) -> PathBuf {
     locke_dir(repo).join("comments").join(format!("{id}.json"))
 }
 
+fn requests_path(repo: &str, id: u64) -> PathBuf {
+    locke_dir(repo).join("requests").join(format!("{id}.md"))
+}
+
 /// Ensure `.locke/` exists and carries an explanatory README on first write.
 fn ensure_locke(repo: &str) -> R<()> {
     let dir = locke_dir(repo);
@@ -81,6 +85,8 @@ fn ensure_locke(repo: &str) -> R<()> {
              - `pulls.json` — the pull-request registry (id, branch, base, title,\n  \
              status, verdict, …) plus a monotonic id counter.\n\
              - `comments/<id>.json` — per-PR comment threads, plus viewed-file state.\n\
+             - `requests/<id>.md` — per-PR agent prompts generated from open change\n  \
+             requests (a durable, diffable record of what was asked).\n\
              - `checks.json` — per-repo check-command overrides.\n\n\
              Commit this folder to share review history (and let agents respond to\n\
              comments) via git, or add it to `.gitignore` to keep it local.\n",
@@ -123,6 +129,35 @@ pub fn clear_check_overrides(repo: &str) -> R<()> {
         fs::remove_file(&p).map_err(|e| format!("remove {}: {e}", p.display()))?;
     }
     Ok(())
+}
+
+// ---- per-PR agent request artifacts (.locke/requests/<id>.md) ----
+
+/// Persist a generated agent prompt as a durable markdown artifact, keyed by the
+/// pull request's numeric id. Mirrors `write_check_overrides`, but writes raw
+/// markdown rather than JSON.
+pub fn write_agent_prompt(repo: &str, id: u64, content: &str) -> R<()> {
+    ensure_locke(repo)?;
+    let path = requests_path(repo, id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create dir: {e}"))?;
+    }
+    fs::write(&path, content).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+// ---- app-global agent settings (<app_config_dir>/agents.json) ----
+//
+// The first state in Locke that is NOT keyed by repo: which detected agents the
+// user has explicitly opted out of, persisted app-wide. The caller resolves the
+// OS config dir (Tauri's `app_config_dir`); store.rs stays Tauri-free and just
+// reads/writes JSON under it. `write_json` creates the dir if absent.
+
+pub fn read_agent_settings(config_dir: &Path) -> R<Option<Value>> {
+    read_json(&config_dir.join("agents.json"))
+}
+
+pub fn write_agent_settings(config_dir: &Path, data: Value) -> R<()> {
+    write_json(&config_dir.join("agents.json"), &data)
 }
 
 // ---- pull-request registry (.locke/pulls.json) ----
@@ -399,6 +434,48 @@ mod tests {
         assert!(read_check_overrides(repo).unwrap().is_some());
         clear_check_overrides(repo).unwrap();
         assert!(read_check_overrides(repo).unwrap().is_none());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn writes_agent_prompt_artifact() {
+        let dir = tmp("requests");
+        let repo = dir.to_str().unwrap();
+
+        let body = "# Address review change requests\n\nGuard against count === 0.\n";
+        write_agent_prompt(repo, 7, body).unwrap();
+
+        let path = dir.join(".locke/requests/7.md");
+        assert!(path.exists(), "artifact written under requests/");
+        assert_eq!(fs::read_to_string(&path).unwrap(), body, "content is raw markdown");
+        assert!(dir.join(".locke/README.md").exists(), "ensure_locke ran");
+
+        // Re-writing overwrites in place (no duplication).
+        write_agent_prompt(repo, 7, "updated\n").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "updated\n");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn agent_settings_opt_out_round_trip() {
+        let dir = tmp("agent-settings");
+
+        // No file yet → None, i.e. defaults (nothing disabled, every agent on).
+        assert!(read_agent_settings(&dir).unwrap().is_none());
+
+        // Disable one agent; it persists.
+        write_agent_settings(&dir, json!({ "disabled": ["codex"] })).unwrap();
+        assert!(dir.join("agents.json").exists());
+        let got = read_agent_settings(&dir).unwrap().unwrap();
+        assert_eq!(got["disabled"][0], "codex");
+
+        // A never-seen agent is absent from the disabled set, so the opt-out
+        // model leaves it enabled by default — re-enabling codex empties the set.
+        write_agent_settings(&dir, json!({ "disabled": [] })).unwrap();
+        let reread = read_agent_settings(&dir).unwrap().unwrap();
+        assert_eq!(reread["disabled"].as_array().unwrap().len(), 0);
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -23,9 +23,15 @@ import {
   setLockeTracking,
   toReview,
   toChangedFile,
+  detectAgents,
+  readAgentSettings,
+  writeAgentSettings,
+  runAgent as runAgentApi,
   type CheckSpec,
   type LockeConfig,
+  type AgentInfo,
 } from "../api/git.js";
+import { buildAgentPrompt } from "../lib/agentPrompt.js";
 import { readPulls, createPull, updatePull, deletePull } from "../api/pulls.js";
 import {
   loadComments,
@@ -117,12 +123,32 @@ interface LockeState {
   /** True when checkSpecs are a saved per-repo override (vs auto-detected). */
   checksAreOverride: boolean;
   editingChecks: boolean;
+  /** Known agent CLIs detected on PATH (app-global; probed once on launch). */
+  agents: AgentInfo[];
+  /** Agent ids the user has explicitly opted out of (app-global, persisted). */
+  disabledAgents: string[];
+  /** Whether the app-global Settings modal is open. */
+  settingsOpen: boolean;
+  /** True while a headless agent run is in flight (Phase 6). */
+  agentRunning: boolean;
+  /** Combined output (or error) of the last agent run, for display. */
+  agentOutput: string | null;
 
   // ---- navigation ----
   go: (view: View) => void;
   openPR: (id: string) => void;
   goOverview: () => void;
   goReview: () => void;
+
+  // ---- agents + settings (app-global) ----
+  detectAgents: () => Promise<void>;
+  loadAgentSettings: () => Promise<void>;
+  toggleAgentEnabled: (id: string) => void;
+  setSettingsOpen: (open: boolean) => void;
+  /** Run the first enabled agent against the current review's open change
+   *  requests, then refresh the diff to show its commit (Phase 6). */
+  runAgent: () => Promise<void>;
+  clearAgentOutput: () => void;
 
   // ---- live git loading ----
   openRepo: (path: string, base?: string) => Promise<void>;
@@ -154,6 +180,7 @@ interface LockeState {
 
   // ---- threads ----
   toggleResolve: (id: number) => void;
+  toggleChangeRequest: (id: number) => void;
   setReplyOpen: (id: number | null) => void;
   setReplyDraft: (v: string) => void;
   submitReply: (id: number) => void;
@@ -199,6 +226,60 @@ export const useStore = create<LockeState>((set, get) => ({
   checkSpecs: [],
   checksAreOverride: false,
   editingChecks: false,
+  agents: [],
+  disabledAgents: [],
+  settingsOpen: false,
+  agentRunning: false,
+  agentOutput: null,
+
+  detectAgents: async () => {
+    try {
+      set({ agents: await detectAgents() });
+    } catch {
+      // Detection is best-effort status; never block the app on a failed probe.
+    }
+  },
+
+  loadAgentSettings: async () => {
+    try {
+      set({ disabledAgents: (await readAgentSettings()).disabled });
+    } catch {
+      // Missing/unreadable settings just means defaults (nothing disabled).
+    }
+  },
+
+  toggleAgentEnabled: (id) => {
+    const disabled = get().disabledAgents;
+    // Opt-out model: flip membership in the disabled set, then persist app-wide.
+    const next = disabled.includes(id) ? disabled.filter((d) => d !== id) : [...disabled, id];
+    set({ disabledAgents: next });
+    void writeAgentSettings({ disabled: next });
+  },
+
+  setSettingsOpen: (open) => set({ settingsOpen: open }),
+
+  runAgent: async () => {
+    const { repoPath, selectedPR, reviews, files, threads, agents, disabledAgents } = get();
+    const review = reviews.find((r) => r.id === selectedPR);
+    // Only ever run a detected, enabled (not opted-out) agent.
+    const agent = agents.find((a) => a.detected && !disabledAgents.includes(a.id));
+    if (!repoPath || !review || !agent) return;
+
+    const prompt = buildAgentPrompt({ repoPath, selectedPR, reviews, files, threads });
+    set({ agentRunning: true, agentOutput: null });
+    try {
+      const output = await runAgentApi(repoPath, review.branch, agent.cmd, prompt);
+      set({ agentOutput: output || "Agent finished with no output." });
+      // Refresh the review so the agent's commit + new diff show up.
+      get().openPR(selectedPR);
+    } catch (e) {
+      set({ agentOutput: `Agent run failed:\n${String(e)}` });
+    } finally {
+      set({ agentRunning: false });
+    }
+  },
+
+  clearAgentOutput: () => set({ agentOutput: null }),
 
   go: (view) => set({ view }),
   openPR: (id) => {
@@ -394,6 +475,7 @@ export const useStore = create<LockeState>((set, get) => ({
       file: file.path,
       lineId: composerLine,
       resolved: false,
+      kind: "comment",
       items: [
         { author: "You", initials: "YO", isAgent: false, roleLabel: "AUTHOR", time: "just now", body },
       ],
@@ -410,6 +492,16 @@ export const useStore = create<LockeState>((set, get) => ({
   toggleResolve: (id) => {
     set((s) => ({
       threads: s.threads.map((t) => (t.id === id ? { ...t, resolved: !t.resolved } : t)),
+    }));
+    persistComments(get);
+  },
+  toggleChangeRequest: (id) => {
+    set((s) => ({
+      threads: s.threads.map((t) =>
+        t.id === id
+          ? { ...t, kind: t.kind === "change_request" ? "comment" : "change_request" }
+          : t,
+      ),
     }));
     persistComments(get);
   },

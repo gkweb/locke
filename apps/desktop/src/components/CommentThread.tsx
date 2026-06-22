@@ -1,6 +1,6 @@
 import type { Thread } from "@locke/core";
 import { useStore } from "../state/store.js";
-import { color, font } from "../theme/tokens.js";
+import { alpha, color, font } from "../theme/tokens.js";
 import { HoverButton } from "./primitives.js";
 import { ChatIcon, CheckIcon, CommentIcon } from "./icons.js";
 
@@ -11,6 +11,8 @@ export function CommentThread({ thread }: { thread: Thread }) {
   const setReplyDraft = useStore((s) => s.setReplyDraft);
   const submitReply = useStore((s) => s.submitReply);
   const toggleResolve = useStore((s) => s.toggleResolve);
+  const toggleChangeRequest = useStore((s) => s.toggleChangeRequest);
+  const isChangeRequest = thread.kind === "change_request";
 
   return (
     <div
@@ -57,24 +59,61 @@ export function CommentThread({ thread }: { thread: Thread }) {
               Resolved
             </span>
           )}
+          {isChangeRequest && (
+            <span
+              style={{
+                fontSize: 10,
+                color: color.amber,
+                background: alpha.amber(0.12),
+                border: `1px solid ${alpha.amber(0.3)}`,
+                padding: "1px 7px",
+                borderRadius: 20,
+                fontWeight: 600,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+              }}
+            >
+              Change request
+            </span>
+          )}
         </div>
-        <HoverButton
-          onClick={() => toggleResolve(thread.id)}
-          style={{
-            fontFamily: font.sans,
-            fontSize: 11,
-            color: color.textSoft,
-            background: "#1d232e",
-            border: "1px solid #2c333f",
-            padding: "4px 10px",
-            borderRadius: 6,
-            cursor: "pointer",
-            fontWeight: 500,
-          }}
-          hoverStyle={{ background: "#252c39" }}
-        >
-          {thread.resolved ? "Reopen" : "Resolve"}
-        </HoverButton>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <HoverButton
+            onClick={() => toggleChangeRequest(thread.id)}
+            style={{
+              fontFamily: font.sans,
+              fontSize: 11,
+              color: isChangeRequest ? color.amber : color.textSoft,
+              background: isChangeRequest ? alpha.amber(0.1) : "#1d232e",
+              border: `1px solid ${isChangeRequest ? alpha.amber(0.32) : "#2c333f"}`,
+              padding: "4px 10px",
+              borderRadius: 6,
+              cursor: "pointer",
+              fontWeight: 500,
+            }}
+            hoverStyle={{ background: isChangeRequest ? alpha.amber(0.16) : "#252c39" }}
+          >
+            {isChangeRequest ? "Unmark" : "Request change"}
+          </HoverButton>
+          <HoverButton
+            onClick={() => toggleResolve(thread.id)}
+            style={{
+              fontFamily: font.sans,
+              fontSize: 11,
+              color: color.textSoft,
+              background: "#1d232e",
+              border: "1px solid #2c333f",
+              padding: "4px 10px",
+              borderRadius: 6,
+              cursor: "pointer",
+              fontWeight: 500,
+            }}
+            hoverStyle={{ background: "#252c39" }}
+          >
+            {thread.resolved ? "Reopen" : "Resolve"}
+          </HoverButton>
+        </div>
       </div>
 
       <div style={{ padding: "2px 0" }}>

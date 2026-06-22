@@ -6,6 +6,7 @@ use crate::config;
 use crate::git;
 use crate::store;
 use serde_json::Value;
+use tauri::Manager;
 
 #[tauri::command]
 pub fn get_review(repo: String, branch: String, base: String) -> Result<git::GitReviewDetail, String> {
@@ -85,6 +86,27 @@ pub fn detect_checks(repo: String) -> Vec<actions::CheckSpec> {
     actions::detect_checks(&repo)
 }
 
+// ---- agent CLI detection (PATH-based, repo-independent) ----
+
+#[tauri::command]
+pub fn detect_agents() -> Vec<actions::AgentInfo> {
+    actions::detect_agents()
+}
+
+// ---- app-global agent settings (<app_config_dir>/agents.json) ----
+
+#[tauri::command]
+pub fn read_agent_settings(app: tauri::AppHandle) -> Result<Option<Value>, String> {
+    let dir = app.path().app_config_dir().map_err(|e| format!("config dir: {e}"))?;
+    store::read_agent_settings(&dir)
+}
+
+#[tauri::command]
+pub fn write_agent_settings(app: tauri::AppHandle, settings: Value) -> Result<(), String> {
+    let dir = app.path().app_config_dir().map_err(|e| format!("config dir: {e}"))?;
+    store::write_agent_settings(&dir, settings)
+}
+
 #[tauri::command]
 pub fn run_checks(
     repo: String,
@@ -92,6 +114,18 @@ pub fn run_checks(
     checks: Vec<actions::CheckSpec>,
 ) -> Result<Vec<actions::CheckResult>, String> {
     actions::run_checks(&repo, &branch, checks)
+}
+
+// ---- headless agent run (Phase 6): run an enabled agent on the branch ----
+
+#[tauri::command]
+pub fn run_agent(
+    repo: String,
+    branch: String,
+    agent_cmd: String,
+    prompt: String,
+) -> Result<String, String> {
+    actions::run_agent(&repo, &branch, &agent_cmd, &prompt)
 }
 
 // ---- per-PR comments (.locke/comments/<id>.json) ----
@@ -121,6 +155,13 @@ pub fn write_check_overrides(repo: String, data: Value) -> Result<(), String> {
 #[tauri::command]
 pub fn clear_check_overrides(repo: String) -> Result<(), String> {
     store::clear_check_overrides(&repo)
+}
+
+// ---- per-PR agent request artifacts (.locke/requests/<id>.md) ----
+
+#[tauri::command]
+pub fn write_agent_prompt(repo: String, id: u64, content: String) -> Result<(), String> {
+    store::write_agent_prompt(&repo, id, &content)
 }
 
 #[tauri::command]

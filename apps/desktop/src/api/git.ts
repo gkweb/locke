@@ -84,8 +84,54 @@ export const setLockeTracking = (repo: string, tracked: boolean) =>
 
 export const detectChecks = (repo: string) => invoke<CheckSpec[]>("detect_checks", { repo });
 
+/** A known coding-agent CLI and whether it was found on PATH. */
+export interface AgentInfo {
+  id: string;
+  name: string;
+  cmd: string;
+  detected: boolean;
+  /** Resolved location on PATH when detected (presence-only; nothing is run). */
+  path: string | null;
+  version: string | null;
+}
+
+/**
+ * Detect known agent CLIs by presence on PATH — a filesystem lookup, never an
+ * execution (so it can't trip Gatekeeper or run an untrusted binary). Empty in
+ * mock mode (no Tauri bridge).
+ */
+export const detectAgents = (): Promise<AgentInfo[]> =>
+  isTauri ? invoke<AgentInfo[]>("detect_agents") : Promise.resolve([]);
+
+/**
+ * App-global agent preferences (not repo-keyed): the ids the user has explicitly
+ * opted out of. Opt-out by design — a newly-installed agent the user has never
+ * toggled is enabled by default. Persisted to `<app_config_dir>/agents.json`.
+ */
+export interface AgentSettings {
+  disabled: string[];
+}
+
+export const readAgentSettings = (): Promise<AgentSettings> =>
+  isTauri
+    ? invoke<{ disabled?: string[] } | null>("read_agent_settings").then((s) => ({
+        disabled: s?.disabled ?? [],
+      }))
+    : Promise.resolve({ disabled: [] });
+
+export const writeAgentSettings = (settings: AgentSettings): Promise<void> =>
+  isTauri ? invoke("write_agent_settings", { settings }) : Promise.resolve();
+
 export const runChecks = (repo: string, branch: string, checks: CheckSpec[]) =>
   invoke<CheckResult[]>("run_checks", { repo, branch, checks });
+
+/**
+ * Run an enabled agent headlessly against `branch` with `prompt`, committing its
+ * work onto the branch (Phase 6). Returns the agent's combined output. Throws in
+ * mock mode (no Tauri bridge) — callers gate on `isTauri`.
+ */
+export const runAgent = (repo: string, branch: string, agentCmd: string, prompt: string) =>
+  invoke<string>("run_agent", { repo, branch, agentCmd, prompt });
 
 const initials = (name: string): string => {
   const parts = name.trim().split(/[\s/_-]+/).filter(Boolean);

@@ -2,7 +2,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { color, font } from "../theme/tokens.js";
 import { useStore } from "../state/store.js";
 import { repoBasename } from "../api/git.js";
-import { FileIcon, BranchIcon, LogoMark } from "./icons.js";
+import { FileIcon, BranchIcon, LogoMark, GearIcon } from "./icons.js";
+import { HoverButton } from "./primitives.js";
 
 // Window controls are no-ops when running outside a Tauri shell (e.g. plain
 // `vite` for quick UI checks), so the bar never throws in a browser.
@@ -29,6 +30,7 @@ export function Titlebar() {
   const reviews = useStore((s) => s.reviews);
   const selectedPR = useStore((s) => s.selectedPR);
   const repoPath = useStore((s) => s.repoPath);
+  const openSettings = useStore((s) => s.setSettingsOpen);
   const repoName = repoBasename(repoPath);
   const pr = reviews.find((p) => p.id === selectedPR) ?? reviews[0];
 
@@ -111,6 +113,26 @@ export function Titlebar() {
           </>
         )}
       </div>
+
+      <HoverButton
+        onClick={() => openSettings(true)}
+        title="Settings"
+        style={{
+          flex: "none",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 28,
+          height: 28,
+          borderRadius: 7,
+          background: "transparent",
+          border: "none",
+          cursor: "pointer",
+        }}
+        hoverStyle={{ background: "#1a212b" }}
+      >
+        <GearIcon size={15} color={color.textFaint} />
+      </HoverButton>
     </div>
   );
 }

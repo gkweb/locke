@@ -48,11 +48,17 @@ function Sidebar() {
   const openRepo = useStore((s) => s.openRepo);
   const trackHistory = useStore((s) => s.trackHistory);
   const setTrackHistory = useStore((s) => s.setTrackHistory);
+  const detectedAgents = useStore((s) => s.agents);
+  const disabledAgents = useStore((s) => s.disabledAgents);
 
   const pickRepo = () => chooseRepo(openRepo);
 
   // Coding agents that authored open reviews (unique by name).
   const agents = Array.from(new Map(reviews.filter((r) => r.isAgent).map((r) => [r.agent, r])).values());
+
+  // Agent CLIs that are both installed and not opted out in Settings — i.e. the
+  // ones offered for the copy-prompt handoff. Toggling in Settings updates this.
+  const enabledAgents = detectedAgents.filter((a) => a.detected && !disabledAgents.includes(a.id));
 
   return (
     <div
@@ -143,6 +149,38 @@ function Sidebar() {
           </div>
           {agents.map((a) => (
             <AgentRow key={a.agent} initials={a.initials} name={a.agent} />
+          ))}
+        </>
+      )}
+
+      {enabledAgents.length > 0 && (
+        <>
+          <div style={{ height: 1, background: color.borderSubtle, margin: "16px 6px" }} />
+          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".8px", color: color.textGhost, padding: "0 8px 8px" }}>
+            DETECTED AGENTS
+          </div>
+          {enabledAgents.map((a) => (
+            <div
+              key={a.id}
+              title={a.path ?? undefined}
+              style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", minWidth: 0 }}
+            >
+              <span style={{ width: 7, height: 7, borderRadius: "50%", background: color.green, flex: "none" }} />
+              <span style={{ fontSize: 12, color: color.text, flex: "none" }}>{a.name}</span>
+              <span
+                style={{
+                  fontSize: 10.5,
+                  fontFamily: font.mono,
+                  color: color.textGhost,
+                  marginLeft: "auto",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {a.cmd}
+              </span>
+            </div>
           ))}
         </>
       )}

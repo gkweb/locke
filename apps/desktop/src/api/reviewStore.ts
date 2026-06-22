@@ -40,3 +40,11 @@ export async function clearCheckOverrides(repo: string): Promise<void> {
   if (!isTauri) return;
   await invoke("clear_check_overrides", { repo });
 }
+
+// Persist a generated agent prompt to `<repo>/.locke/requests/<id>.md` — a
+// durable, diffable record of what was asked, beyond the clipboard copy.
+// No-op in mock mode.
+export async function writeAgentPrompt(repo: string, id: number, content: string): Promise<void> {
+  if (!isTauri) return;
+  await invoke("write_agent_prompt", { repo, id, content });
+}
