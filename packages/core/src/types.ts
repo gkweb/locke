@@ -151,6 +151,14 @@ export interface Review {
   checks: CheckState;
   /** Human-relative time, e.g. "8 min ago". */
   time: string;
+  /** Id of the latest agent run on this review, when one exists (fleet surfaces). */
+  runId?: string;
+  /** Live agent-run state, when a run is active/recent (drives fleet grouping
+   *  and the in-flight cards). Absent for reviews with no run. */
+  runState?: RunState;
+  /** One-line description of the agent's most recent action, e.g.
+   *  "editing src/types/stripe.d.ts (+12)" (Activity in-flight card). */
+  lastAction?: string;
 }
 
 /** One line in a diff hunk: [kind, oldLineNo, newLineNo, text]. 0 means absent. */
