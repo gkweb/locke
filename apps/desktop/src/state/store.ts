@@ -183,10 +183,17 @@ interface LockeState {
   /** Set the global "Agent control" vs "Reviews only" mode and persist it. */
   setAgentMode: (on: boolean) => void;
   setSettingsOpen: (open: boolean) => void;
+  /** Toggle the action-bar settings popover (closes the approvals tray). */
+  toggleSettings: () => void;
   /** Run the first enabled agent against the current review's open change
    *  requests, then refresh the diff to show its commit (Phase 6). */
   runAgent: () => Promise<void>;
   clearAgentOutput: () => void;
+
+  // ---- prototype run actions (Phase 5 fills in the hero-flow) ----
+  /** Approve / deny a pending permission from the tray. */
+  allowApproval: (id: string) => void;
+  denyApproval: (id: string) => void;
 
   // ---- live git loading ----
   openRepo: (path: string, base?: string) => Promise<void>;
@@ -321,6 +328,8 @@ export const useStore = create<LockeState>((set, get) => ({
 
   setSettingsOpen: (open) => set({ settingsOpen: open }),
 
+  toggleSettings: () => set({ settingsOpen: !get().settingsOpen, approvalsOpen: false }),
+
   runAgent: async () => {
     const { repoPath, selectedPR, reviews, files, threads, agents, disabledAgents } = get();
     const review = reviews.find((r) => r.id === selectedPR);
@@ -343,6 +352,11 @@ export const useStore = create<LockeState>((set, get) => ({
   },
 
   clearAgentOutput: () => set({ agentOutput: null }),
+
+  // Phase 2: just clear the approval. Phase 5 replaces these with the scripted
+  // run hero-flow (append events, chain the next approval, settle the run).
+  allowApproval: (id) => set((s) => ({ pending: s.pending.filter((a) => a.id !== id) })),
+  denyApproval: (id) => set((s) => ({ pending: s.pending.filter((a) => a.id !== id) })),
 
   go: (view) => set({ view, approvalsOpen: false, settingsOpen: false }),
   openReview: (id, tab = "diff") => {

@@ -10,6 +10,12 @@ export const color = {
   panelBg: "#0e1117",
   panelHeaderBg: "#0c0f15",
   inputBg: "#0a0c11",
+  // Mission Control surfaces
+  popoverBg: "#10131a", // popovers, pills, action-bar/side-panel inputs
+  navPillBg: "#090b0f", // segmented nav container
+  terminalBg: "#06070a", // run-tab mock terminal
+  borderPopover: "#2a3140", // popover/tray outline
+  borderRail: "#1c2330", // popover dividers, rails
   chipBg: "#12161d",
   rowActiveBg: "#1b2230",
   rowHoverBg: "#11151d",
@@ -21,6 +27,8 @@ export const color = {
   borderRowFaint: "#131820",
   borderInput: "#2c333f",
   borderChip: "#232a35",
+  borderChip2: "#242a35", // action-bar approvals/settings button outline
+  borderRow2: "#181d26", // nav-pill / faint card outline
 
   // Text
   textBright: "#f3f5f8",
