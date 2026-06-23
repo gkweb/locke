@@ -1,4 +1,4 @@
-import type { Approval, Review, RunRow } from "@locke/core";
+import type { Approval, ChangedFile, Check, HistoryEntry, Review, RunRow, Thread } from "@locke/core";
 import type { AgentInfo } from "../api/git.js";
 
 // The design's `payments-service` fleet, seeded in mock mode (plain `vite`, no
@@ -154,3 +154,107 @@ export const MOCK_AGENTS: AgentInfo[] = [
 ];
 
 export const MOCK_DISABLED: string[] = ["aider", "cursor"];
+
+// ---- workspace mock data (the design details review #142) ----
+
+const f = (path: string, st: ChangedFile["st"], add: number, del: number, hunks: ChangedFile["hunks"]): ChangedFile => {
+  const slash = path.lastIndexOf("/");
+  return { path, dir: path.slice(0, slash + 1), name: path.slice(slash + 1), st, add, del, hunks };
+};
+
+const FILES_142: ChangedFile[] = [
+  f("src/webhooks/retryHandler.ts", "M", 10, 6, [
+    {
+      hdr: "@@ -14,15 +14,22 @@ async handleEvent(event: WebhookEvent)",
+      lines: [
+        ["ctx", 14, 14, "  async handleEvent(event: WebhookEvent): Promise<void> {"],
+        ["ctx", 15, 15, "    const key = idempotencyKey(event);"],
+        ["del", 16, 0, "    if (await this.store.has(key)) {"],
+        ["del", 17, 0, "      return;"],
+        ["del", 18, 0, "    }"],
+        ["add", 0, 16, "    await this.store.transaction(async (tx) => {"],
+        ["add", 0, 17, "      if (await tx.has(key)) return DUP;"],
+        ["add", 0, 18, "      await tx.save(key, attempt + 1);"],
+        ["add", 0, 19, "    });"],
+        ["ctx", 19, 20, "    await this.dispatch(event);"],
+      ],
+    },
+  ]),
+  f("src/webhooks/idempotency.ts", "A", 14, 0, [
+    {
+      hdr: "@@ -0,0 +1,4 @@",
+      lines: [
+        ["add", 0, 1, "export function idempotencyKey(e: WebhookEvent): string {"],
+        ["add", 0, 2, "  return `${e.type}:${e.id}`;"],
+        ["add", 0, 3, "}"],
+      ],
+    },
+  ]),
+  f("src/webhooks/webhook.ts", "M", 4, 2, [
+    {
+      hdr: "@@ -8,6 +8,8 @@",
+      lines: [
+        ["ctx", 8, 8, "import { idempotencyKey } from './idempotency';"],
+        ["del", 9, 0, "// TODO: dedupe retries"],
+        ["add", 0, 9, "const DUP = Symbol('duplicate');"],
+      ],
+    },
+  ]),
+  f("tests/webhooks/retry.test.ts", "M", 12, 1, [
+    {
+      hdr: "@@ -40,6 +40,17 @@ describe('retry handler')",
+      lines: [
+        ["ctx", 40, 40, "  it('handles concurrent delivery exactly once', async () => {"],
+        ["add", 0, 41, "    await Promise.all([fire(evt), fire(evt)]);"],
+        ["add", 0, 42, "    expect(store.save).toHaveBeenCalledTimes(1);"],
+        ["ctx", 41, 43, "  });"],
+      ],
+    },
+  ]),
+];
+
+const THREADS_142: Thread[] = [
+  {
+    id: 1,
+    file: "src/webhooks/retryHandler.ts",
+    lineId: "n19",
+    resolved: false,
+    kind: "change_request",
+    items: [
+      {
+        author: "You",
+        initials: "YO",
+        isAgent: false,
+        roleLabel: "AUTHOR",
+        time: "8 min ago",
+        body: "`store.has` then `store.save` isn't atomic — two webhooks delivered in parallel can both pass the check before either saves. Wrap it in a single transaction.",
+      },
+      {
+        author: "Claude",
+        initials: "CL",
+        isAgent: true,
+        time: "just now",
+        body: "Good catch — wrapped both calls in a Redis MULTI transaction and added a concurrent-delivery test. Re-running the suite now.",
+      },
+    ],
+  },
+];
+
+const HISTORY_142: HistoryEntry[] = [
+  { runId: "run #R7", title: "Address review change requests", time: "just now", duration: "live", state: "awaiting", artifacts: ["log.txt", "diff.patch", "test-output"] },
+  { runId: "run #R4", title: "Initial implementation of idempotency keys", time: "19 min ago", duration: "2:03", state: "done", artifacts: ["log.txt", "diff.patch", "test-output"] },
+  { runId: "run #R2", title: "Scaffold webhook types", time: "24 min ago", duration: "0:38", state: "done", artifacts: ["log.txt", "diff.patch"] },
+];
+
+export const MOCK_CHECKS: Check[] = [
+  { label: "eslint", detail: "0 problems", status: "pass" },
+  { label: "tsc --noEmit", detail: "no type errors", status: "pass" },
+  { label: "vitest run", detail: "142 passed in 3.1s", status: "pass" },
+  { label: "build", detail: "bundle ok", status: "pass" },
+];
+
+/** Per-review workspace data, keyed by review id. Only #142 is detailed in the
+ *  design; other reviews open with an empty diff in mock mode. */
+export const MOCK_FILES_BY_ID: Record<string, ChangedFile[]> = { "142": FILES_142 };
+export const MOCK_THREADS_BY_ID: Record<string, Thread[]> = { "142": THREADS_142 };
+export const MOCK_HISTORY_BY_ID: Record<string, HistoryEntry[]> = { "142": HISTORY_142 };
