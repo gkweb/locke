@@ -32,10 +32,18 @@ import {
   readAgentSettings,
   writeAgentSettings,
   runAgent as runAgentApi,
+  isTauri,
   type CheckSpec,
   type LockeConfig,
   type AgentInfo,
 } from "../api/git.js";
+import {
+  MOCK_REVIEWS,
+  MOCK_PENDING,
+  MOCK_RUN_ROWS,
+  MOCK_AGENTS,
+  MOCK_DISABLED,
+} from "../lib/mockFleet.js";
 import { buildAgentPrompt } from "../lib/agentPrompt.js";
 import { readPulls, createPull, updatePull, deletePull } from "../api/pulls.js";
 import {
@@ -237,8 +245,12 @@ interface LockeState {
   push: () => void;
 }
 
+// Mock mode (plain `vite`, no Tauri bridge) seeds the design's fleet so the app
+// matches the design with no repo open; a real Tauri session loads live git data.
+const MOCK = !isTauri;
+
 export const useStore = create<LockeState>((set, get) => ({
-  reviews: [],
+  reviews: MOCK ? MOCK_REVIEWS : [],
   pulls: {},
   files: [],
   detail: EMPTY_DETAIL,
@@ -278,21 +290,22 @@ export const useStore = create<LockeState>((set, get) => ({
   checkSpecs: [],
   checksAreOverride: false,
   editingChecks: false,
-  agents: [],
-  disabledAgents: [],
+  agents: MOCK ? MOCK_AGENTS : [],
+  disabledAgents: MOCK ? MOCK_DISABLED : [],
   settingsOpen: false,
   agentRunning: false,
   agentOutput: null,
 
-  pending: [],
+  pending: MOCK ? MOCK_PENDING : [],
   runEvents: [],
-  runRows: [],
+  runRows: MOCK ? MOCK_RUN_ROWS : [],
   history: [],
   showPermission: false,
   runDone: false,
   runPaused: false,
 
   detectAgents: async () => {
+    if (MOCK) return; // keep the seeded mock fleet's agents
     try {
       set({ agents: await detectAgents() });
     } catch {
@@ -301,6 +314,7 @@ export const useStore = create<LockeState>((set, get) => ({
   },
 
   loadAgentSettings: async () => {
+    if (MOCK) return; // keep the seeded mock opt-outs + default agent mode
     try {
       const s = await readAgentSettings();
       set({ disabledAgents: s.disabled, agentMode: s.enabled });
@@ -321,9 +335,15 @@ export const useStore = create<LockeState>((set, get) => ({
   },
 
   setAgentMode: (on) => {
-    // Leaving agent control closes any agent-only surface that's open.
-    set({ agentMode: on, approvalsOpen: on ? get().approvalsOpen : false });
-    void writeAgentSettings({ disabled: get().disabledAgents, enabled: on });
+    // Leaving agent control closes any agent-only surface that's open and steps
+    // off the Agents destination (its nav entry disappears).
+    const { view, approvalsOpen, disabledAgents } = get();
+    set({
+      agentMode: on,
+      approvalsOpen: on ? approvalsOpen : false,
+      view: !on && view === "agents" ? "activity" : view,
+    });
+    void writeAgentSettings({ disabled: disabledAgents, enabled: on });
   },
 
   setSettingsOpen: (open) => set({ settingsOpen: open }),

@@ -4,22 +4,17 @@ import { color, font } from "./theme/tokens.js";
 import { ActionBar } from "./components/ActionBar.js";
 import { SidePanel } from "./components/SidePanel.js";
 import { StatusBar } from "./components/StatusBar.js";
+import { ActivityView } from "./views/ActivityView.js";
+import { ReviewsView } from "./views/ReviewsView.js";
+import { RunsView } from "./views/RunsView.js";
+import { AgentsView } from "./views/AgentsView.js";
 import type { View } from "@locke/core";
 
 // The Mission Control shell: three stacked regions — top ActionBar · middle
-// [SidePanel + main router] · bottom StatusBar. The fleet screens (Activity /
-// Reviews / Runs / Agents) and the Review Workspace land in Phase 3–4; for now
-// the main area renders a stub per `view`.
+// [SidePanel + main router] · bottom StatusBar. The Review Workspace lands in
+// Phase 4; for now `workspace` renders a stub.
 
-const VIEW_LABEL: Record<View, string> = {
-  activity: "Activity",
-  reviews: "Reviews",
-  runs: "Runs",
-  agents: "Agents",
-  workspace: "Review Workspace",
-};
-
-function StubScreen({ view }: { view: View }) {
+function WorkspaceStub() {
   return (
     <div
       style={{
@@ -34,12 +29,25 @@ function StubScreen({ view }: { view: View }) {
         color: color.textFaint,
       }}
     >
-      <div style={{ fontSize: 20, fontWeight: 700, color: color.textBright, letterSpacing: "-.4px" }}>
-        {VIEW_LABEL[view]}
-      </div>
-      <div style={{ fontSize: 12, color: color.textGhost }}>Mission Control — coming together, phase by phase.</div>
+      <div style={{ fontSize: 20, fontWeight: 700, color: color.textBright, letterSpacing: "-.4px" }}>Review Workspace</div>
+      <div style={{ fontSize: 12, color: color.textGhost }}>Diff · Run · Checks · History — landing in the next phase.</div>
     </div>
   );
+}
+
+function Main({ view }: { view: View }) {
+  switch (view) {
+    case "activity":
+      return <ActivityView />;
+    case "reviews":
+      return <ReviewsView />;
+    case "runs":
+      return <RunsView />;
+    case "agents":
+      return <AgentsView />;
+    case "workspace":
+      return <WorkspaceStub />;
+  }
 }
 
 export function App() {
@@ -81,7 +89,7 @@ export function App() {
         }}
       >
         {panelOpen && <SidePanel />}
-        <StubScreen view={view} />
+        <Main view={view} />
       </div>
 
       <StatusBar />

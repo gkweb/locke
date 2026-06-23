@@ -25,6 +25,8 @@ export const color = {
   borderPanel: "#1f2733",
   borderRow: "#1a212b",
   borderRowFaint: "#131820",
+  borderRowFaint2: "#19202b", // card/table section dividers
+  borderRowFaint3: "#141a22", // table row dividers
   borderInput: "#2c333f",
   borderChip: "#232a35",
   borderChip2: "#242a35", // action-bar approvals/settings button outline
@@ -119,6 +121,15 @@ export const agentAccent: Record<"claude" | "codex" | "human", string> = {
   claude: color.teal,
   codex: color.codex,
   human: color.violetLight,
+};
+
+/** Per-agent accent keyed by CLI id (Agents screen chips). Falls back to violet. */
+export const agentIdAccent: Record<string, string> = {
+  claude: color.teal,
+  codex: color.codex,
+  aider: color.blue,
+  cursor: color.amber,
+  gemini: color.blue,
 };
 
 /** Map a two-letter author initial to an AgentMark `kind` (matches the design's
