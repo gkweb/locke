@@ -1,15 +1,15 @@
 import { useEffect } from "react";
 import { useStore } from "./state/store.js";
 import { color, font } from "./theme/tokens.js";
-import { Titlebar } from "./components/Titlebar.js";
-import { SettingsModal } from "./components/SettingsModal.js";
+import { ActionBar } from "./components/ActionBar.js";
+import { SidePanel } from "./components/SidePanel.js";
+import { StatusBar } from "./components/StatusBar.js";
 import type { View } from "@locke/core";
 
-// Phase 1 scaffolding: the Mission Control shell is three stacked regions —
-// top action bar · middle [side panel + main router] · bottom status bar. The
-// ActionBar / SidePanel / StatusBar components (Phase 2) and the real fleet
-// screens (Phase 3–4) replace the placeholders below; for now the main area
-// renders a stub per `view` so the new nav model compiles and runs end-to-end.
+// The Mission Control shell: three stacked regions — top ActionBar · middle
+// [SidePanel + main router] · bottom StatusBar. The fleet screens (Activity /
+// Reviews / Runs / Agents) and the Review Workspace land in Phase 3–4; for now
+// the main area renders a stub per `view`.
 
 const VIEW_LABEL: Record<View, string> = {
   activity: "Activity",
@@ -44,12 +44,13 @@ function StubScreen({ view }: { view: View }) {
 
 export function App() {
   const view = useStore((s) => s.view);
+  const panelOpen = useStore((s) => s.panelOpen);
+  const panelSide = useStore((s) => s.panelSide);
   const detectAgents = useStore((s) => s.detectAgents);
   const loadAgentSettings = useStore((s) => s.loadAgentSettings);
-  const settingsOpen = useStore((s) => s.settingsOpen);
 
   // Probe installed agent CLIs and load app-global opt-outs + mode once on launch
-  // (repo-independent — Settings is reachable with no repo open).
+  // (repo-independent — the agents directory is reachable with no repo open).
   useEffect(() => {
     void detectAgents();
     void loadAgentSettings();
@@ -68,33 +69,22 @@ export function App() {
         overflow: "hidden",
       }}
     >
-      {/* Top region — ActionBar lands in Phase 2; Titlebar is the placeholder. */}
-      <Titlebar />
+      <ActionBar />
 
-      {/* Middle region — SidePanel + main router. SidePanel lands in Phase 2. */}
-      <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+      <div
+        style={{
+          flex: 1,
+          display: "flex",
+          // Same DOM order renders mirrored when the panel is docked right.
+          flexDirection: panelSide === "right" ? "row-reverse" : "row",
+          minHeight: 0,
+        }}
+      >
+        {panelOpen && <SidePanel />}
         <StubScreen view={view} />
       </div>
 
-      {/* Bottom region — StatusBar lands in Phase 2. */}
-      <div
-        style={{
-          height: 30,
-          flex: "none",
-          display: "flex",
-          alignItems: "center",
-          padding: "0 13px",
-          background: color.titlebarBg,
-          borderTop: `1px solid ${color.borderSubtle}`,
-          fontSize: 11,
-          color: color.textGhost,
-          fontFamily: font.mono,
-        }}
-      >
-        Locke · local
-      </div>
-
-      {settingsOpen && <SettingsModal />}
+      <StatusBar />
     </div>
   );
 }
