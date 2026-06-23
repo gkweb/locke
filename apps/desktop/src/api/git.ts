@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ChangedFile, Commit, Hunk, PullRecord, Review } from "@locke/core";
+import type { ChangedFile, Commit, FileNode, Hunk, PullRecord, Review } from "@locke/core";
 
 // Typed wrappers over the Rust git commands. `isTauri` lets the app run under
 // plain Vite (mock mode) without throwing when the bridge is absent.
@@ -54,6 +54,16 @@ export const getReview = (repo: string, branch: string, base: string) =>
 
 export const getDiff = (repo: string, branch: string, base: string, file: string) =>
   invoke<GitDiff>("get_diff", { repo, branch, base, file });
+
+/** List the repo's working tree as a nested node list (`.gitignore`-respecting,
+ *  `.git` excluded). Empty in mock mode (no Tauri bridge). */
+export const listFileTree = (repo: string): Promise<FileNode[]> =>
+  isTauri ? invoke<FileNode[]>("list_file_tree", { repo }) : Promise.resolve([]);
+
+/** Read one working-tree file's full contents (path-confined to the repo).
+ *  Tauri-only — callers gate on `isTauri`/mock. */
+export const readRepoFile = (repo: string, file: string) =>
+  invoke<string>("read_repo_file", { repo, file });
 
 export const pushBranch = (repo: string, branch: string, remote?: string) =>
   invoke<string>("push_branch", { repo, branch, remote });

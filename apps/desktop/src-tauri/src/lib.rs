@@ -21,6 +21,8 @@ pub fn run() {
             commands::detect_base,
             commands::get_review,
             commands::get_diff,
+            commands::list_file_tree,
+            commands::read_repo_file,
             commands::push_branch,
             commands::delete_branch,
             commands::read_pulls,

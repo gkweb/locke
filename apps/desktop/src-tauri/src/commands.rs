@@ -33,6 +33,18 @@ pub fn review_summary(
     git::review_summary(&repo, &branch, &base)
 }
 
+// ---- repo file explorer (Files screen) ----
+
+#[tauri::command]
+pub fn list_file_tree(repo: String) -> Result<Vec<git::FileNode>, String> {
+    git::list_file_tree(&repo)
+}
+
+#[tauri::command]
+pub fn read_repo_file(repo: String, file: String) -> Result<String, String> {
+    git::read_repo_file(&repo, &file)
+}
+
 #[tauri::command]
 pub fn list_branches(repo: String) -> Result<Vec<String>, String> {
     git::list_branches(&repo)

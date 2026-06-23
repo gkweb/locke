@@ -1,5 +1,5 @@
-import type { Approval, ChangedFile, Check, HistoryEntry, Review, RunEvent, RunRow, Thread } from "@locke/core";
-import type { AgentInfo } from "../api/git.js";
+import type { Approval, ChangedFile, Check, FileNode, HistoryEntry, Review, RunEvent, RunRow, Thread } from "@locke/core";
+import { isTauri, type AgentInfo } from "../api/git.js";
 
 // The design's `payments-service` fleet, seeded in mock mode (plain `vite`, no
 // Tauri bridge) so Locke matches the design out of the box. In a real Tauri
@@ -279,15 +279,6 @@ export const MOCK_RUN_EVENTS_BY_ID: Record<string, RunEvent[]> = { "142": RUN_EV
 // mode. In a real Tauri session these come from the backend (a later phase); the
 // front-end-now surface renders them here so the screen works in plain `vite`.
 
-/** One node in the explorer tree. `depth` drives the row indent. */
-export interface FileNode {
-  t: "dir" | "file";
-  name: string;
-  path: string;
-  depth: number;
-  children?: FileNode[];
-}
-
 export const MOCK_FILE_TREE: FileNode[] = [
   {
     t: "dir",
@@ -477,11 +468,14 @@ class WebhookController
 };
 
 /** Resolve a diff file's repo-relative path to a full-file path in the explorer,
- *  or null when no full-file preview exists (which also keeps the "see full file"
- *  affordance hidden for files the mock tree doesn't carry). The design's diff
- *  paths are repo-relative (`src/…`) while the tree is rooted at the service dir,
- *  so try both. */
+ *  or null when no full-file preview exists (which keeps the "see full file"
+ *  affordance hidden when there's nothing to show). In a live Tauri session the
+ *  diff path is already the real repo-relative path, so it maps straight through
+ *  (the backend reads it on demand). In mock mode the design's diff paths are
+ *  repo-relative (`src/…`) while the tree is rooted at the service dir, so try
+ *  both and gate on a seeded preview existing. */
 export function fullFilePath(diffPath: string): string | null {
+  if (isTauri) return diffPath;
   if (MOCK_FILE_CONTENTS[diffPath] !== undefined) return diffPath;
   const prefixed = `payments-service/${diffPath}`;
   if (MOCK_FILE_CONTENTS[prefixed] !== undefined) return prefixed;

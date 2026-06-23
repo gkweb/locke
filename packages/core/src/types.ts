@@ -189,6 +189,17 @@ export interface Hunk {
   lines: DiffLine[];
 }
 
+/** One node in the repo file-explorer tree (Files screen). Directories carry
+ *  their `children`; files omit it. `path` is repo-relative, forward-slashed. */
+export interface FileNode {
+  t: "dir" | "file";
+  name: string;
+  path: string;
+  /** Nesting depth from the tree root, driving the row indent. */
+  depth: number;
+  children?: FileNode[];
+}
+
 /** A changed file with its parsed diff. */
 export interface ChangedFile {
   /** Repo-relative path, e.g. "src/webhooks/retryHandler.ts". */

@@ -3,6 +3,7 @@ import type {
   Approval,
   ChangedFile,
   DiffMode,
+  FileNode,
   HistoryEntry,
   NavKey,
   NavPlacement,
@@ -21,6 +22,8 @@ import {
   detectBase,
   getReview,
   getDiff,
+  listFileTree,
+  readRepoFile,
   pushBranch,
   deleteBranch,
   detectChecks,
@@ -58,6 +61,8 @@ import {
   MOCK_THREADS_BY_ID,
   MOCK_HISTORY_BY_ID,
   MOCK_RUN_EVENTS_BY_ID,
+  MOCK_FILE_TREE,
+  MOCK_FILE_CONTENTS,
 } from "../lib/mockFleet.js";
 import { buildAgentPrompt } from "../lib/agentPrompt.js";
 import { lockeLang } from "../lib/lockeLang.js";
@@ -81,6 +86,19 @@ function relTime(epochSecs: number): string {
   if (diff < 3600) return `${Math.floor(diff / 60)} min ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)} hours ago`;
   return `${Math.floor(diff / 86400)} days ago`;
+}
+
+// First file in a tree (depth-first), so the explorer can open with something
+// shown rather than a blank viewer.
+function firstFilePath(nodes: FileNode[]): string | null {
+  for (const n of nodes) {
+    if (n.t === "file") return n.path;
+    if (n.children) {
+      const found = firstFilePath(n.children);
+      if (found) return found;
+    }
+  }
+  return null;
 }
 
 // Map a persisted run record to a History timeline entry.
@@ -173,6 +191,10 @@ interface LockeState {
   nextThreadId: number;
 
   // ---- files explorer + language extensions ----
+  /** The repo's working-tree file tree (live in Tauri mode, mock otherwise). */
+  fileTree: FileNode[];
+  /** Cache of full file contents by repo-relative path (lazy-loaded). */
+  fileContents: Record<string, string>;
   /** Repo-relative path of the file open in the Files screen's code viewer. */
   filePath: string;
   /** When the Files screen was opened from a review's diff ("see full file"),
@@ -266,6 +288,10 @@ interface LockeState {
   goExtensions: () => void;
   /** Dismiss the Extensions screen back to its origin. */
   backFromExt: () => void;
+  /** Load the repo's working-tree file tree (Tauri mode; no-op in mock). */
+  loadFileTree: () => Promise<void>;
+  /** Lazily fetch + cache a file's full contents (Tauri mode; no-op in mock). */
+  loadFileContent: (path: string) => Promise<void>;
   /** Expand / collapse an explorer directory. */
   toggleDir: (path: string) => void;
   /** Select a file in the explorer's code viewer. */
@@ -393,6 +419,8 @@ export const useStore = create<LockeState>((set, get) => ({
   viewed: {},
   nextThreadId: 100,
 
+  fileTree: MOCK ? MOCK_FILE_TREE : [],
+  fileContents: MOCK ? MOCK_FILE_CONTENTS : {},
   filePath: "payments-service/src/webhooks/retryHandler.ts",
   fileFromReview: null,
   expandedDirs: {
@@ -779,7 +807,7 @@ export const useStore = create<LockeState>((set, get) => ({
   setQuery: (q) => set({ query: q }),
   setNavPlace: (key, place) => set((s) => ({ navPlace: { ...s.navPlace, [key]: place } })),
 
-  openFullFile: (path, review) =>
+  openFullFile: (path, review) => {
     set({
       view: "files",
       filePath: path,
@@ -787,7 +815,9 @@ export const useStore = create<LockeState>((set, get) => ({
       langMenuOpen: false,
       settingsOpen: false,
       approvalsOpen: false,
-    }),
+    });
+    void get().loadFileContent(path);
+  },
   backToReview: () => {
     const f = get().fileFromReview;
     if (f) {
@@ -813,8 +843,40 @@ export const useStore = create<LockeState>((set, get) => ({
       get().go(extReturn === "workspace" ? "activity" : extReturn);
     }
   },
+  loadFileTree: async () => {
+    const { repoPath } = get();
+    if (MOCK || !repoPath) return;
+    try {
+      const tree = await listFileTree(repoPath);
+      set({ fileTree: tree });
+      // Open the explorer on the first file so the viewer isn't blank (the
+      // default filePath is a mock path that won't exist in a real repo).
+      const first = firstFilePath(tree);
+      if (first) {
+        set({ filePath: first });
+        void get().loadFileContent(first);
+      }
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+  loadFileContent: async (path) => {
+    const { repoPath, fileContents } = get();
+    if (MOCK || !repoPath || !path) return;
+    if (fileContents[path] !== undefined) return; // cached
+    try {
+      const text = await readRepoFile(repoPath, path);
+      set((s) => ({ fileContents: { ...s.fileContents, [path]: text } }));
+    } catch (e) {
+      // Show a readable placeholder rather than blanking the viewer.
+      set((s) => ({ fileContents: { ...s.fileContents, [path]: `// Could not read ${path}\n// ${String(e)}` } }));
+    }
+  },
   toggleDir: (path) => set((s) => ({ expandedDirs: { ...s.expandedDirs, [path]: !s.expandedDirs[path] } })),
-  selectFilePath: (path) => set({ filePath: path, langMenuOpen: false }),
+  selectFilePath: (path) => {
+    set({ filePath: path, langMenuOpen: false });
+    void get().loadFileContent(path);
+  },
   toggleLangMenu: () => set((s) => ({ langMenuOpen: !s.langMenuOpen })),
   toggleAddLang: () => set((s) => ({ addLangOpen: !s.addLangOpen })),
   setLangExpanded: (id) => set((s) => ({ langExpanded: s.langExpanded === id ? null : id })),
@@ -864,6 +926,9 @@ export const useStore = create<LockeState>((set, get) => ({
         threads: [],
         view: "activity",
         selectedPR: reviews[0]?.id ?? "",
+        // The explorer reloads for the newly-opened repo.
+        fileTree: [],
+        fileContents: {},
         liveChecks: [],
         // Check precedence: per-repo override (.locke/checks.json) > config > auto-detect.
         checkSpecs: overrides ?? config.checks ?? [],
@@ -874,6 +939,8 @@ export const useStore = create<LockeState>((set, get) => ({
         loading: false,
         error: null,
       });
+      // Populate the Files explorer for the opened repo (best-effort).
+      void get().loadFileTree();
     } catch (e) {
       set({ loading: false, error: String(e) });
     }

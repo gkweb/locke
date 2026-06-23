@@ -1,18 +1,15 @@
+import type { FileNode } from "@locke/core";
 import { useStore } from "../state/store.js";
 import { color, font } from "../theme/tokens.js";
-import { isTauri } from "../api/git.js";
 import { lockeLang } from "../lib/lockeLang.js";
-import { MOCK_FILE_TREE, MOCK_FILE_CONTENTS, type FileNode } from "../lib/mockFleet.js";
 import { ChevronRightIcon, FolderIcon, FolderTreeIcon, FileSimpleIcon } from "../components/icons.js";
 import { HoverButton } from "../components/primitives.js";
 
 // The Files screen: a repo explorer (left) beside a syntax-highlighted full-file
 // viewer (right), powered by the pluggable `lockeLang` host. Reached from the nav
-// or via "see full file" on a review's diff (which sets a back-to-review pill). In
-// mock mode the tree + contents are seeded; a real Tauri file backend lands in a
-// later phase, so live sessions show an empty explorer for now.
-
-const MOCK = !isTauri;
+// or via "see full file" on a review's diff (which sets a back-to-review pill).
+// The tree + file contents come from the store — live git in a Tauri session,
+// the seeded mock fleet under plain `vite`.
 
 function flatten(nodes: FileNode[], expanded: Record<string, boolean>, out: FileNode[]): FileNode[] {
   for (const n of nodes) {
@@ -31,14 +28,14 @@ export function FilesView() {
   const selectFilePath = useStore((s) => s.selectFilePath);
   const fileFromReview = useStore((s) => s.fileFromReview);
   const backToReview = useStore((s) => s.backToReview);
+  const fileTree = useStore((s) => s.fileTree);
+  const fileContents = useStore((s) => s.fileContents);
   // Re-render the badges + viewer when a language is enabled/disabled.
   useStore((s) => s.langEnabled);
 
-  const tree = MOCK ? MOCK_FILE_TREE : [];
-  const contents = MOCK ? MOCK_FILE_CONTENTS : {};
-  const rows = flatten(tree, expandedDirs, []);
+  const rows = flatten(fileTree, expandedDirs, []);
 
-  const content = contents[filePath] ?? "";
+  const content = fileContents[filePath] ?? "";
   const fileExt = extOf(filePath);
   const { lines } = lockeLang.highlight(content, fileExt);
 

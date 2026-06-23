@@ -4,6 +4,8 @@
 
 use git2::{Branch, BranchType, Commit, Diff, DiffOptions, Oid, Patch, Repository, Tree};
 use serde::Serialize;
+use std::fs;
+use std::path::{Component, Path, PathBuf};
 
 /// Git-derived facts about one review (a head branch ahead of a base branch).
 /// The frontend merges this with locally-stored metadata (status, agent, …).
@@ -402,6 +404,109 @@ pub fn get_diff(repo_path: &str, branch: &str, base: &str, file: &str) -> R<GitD
     Ok(GitDiff { hunks })
 }
 
+/// One node in the repo file-explorer tree. Mirrors the frontend `FileNode`:
+/// directories carry their `children`; files omit it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileNode {
+    pub t: String,
+    pub name: String,
+    /// Repo-relative, forward-slashed.
+    pub path: String,
+    pub depth: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub children: Option<Vec<FileNode>>,
+}
+
+/// Walk the repo's working tree into a nested `FileNode` list, honoring
+/// `.gitignore` (via libgit2) and always skipping `.git`. Entries are sorted
+/// directories-first, then case-insensitively by name. The walk is eager: a
+/// later phase can make it lazy if very large repos need it.
+pub fn list_file_tree(repo_path: &str) -> R<Vec<FileNode>> {
+    let repo = open(repo_path)?;
+    let root = repo
+        .workdir()
+        .ok_or_else(|| "bare repository has no working tree".to_string())?
+        .to_path_buf();
+    build_tree(&repo, &root, &root, 0)
+}
+
+fn build_tree(repo: &Repository, root: &Path, dir: &Path, depth: usize) -> R<Vec<FileNode>> {
+    let mut entries: Vec<(bool, String, PathBuf)> = Vec::new();
+    for entry in fs::read_dir(dir).map_err(|e| format!("read dir: {e}"))? {
+        let entry = entry.map_err(|e| format!("read entry: {e}"))?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == ".git" {
+            continue;
+        }
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let rel = path.strip_prefix(root).unwrap_or(&path);
+        // libgit2 applies the repo's ignore rules (node_modules/, target/, …).
+        if repo.status_should_ignore(rel).unwrap_or(false) {
+            continue;
+        }
+        entries.push((is_dir, name, path));
+    }
+    entries.sort_by(|a, b| match (a.0, b.0) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.1.to_lowercase().cmp(&b.1.to_lowercase()),
+    });
+
+    let mut out = Vec::with_capacity(entries.len());
+    for (is_dir, name, path) in entries {
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if is_dir {
+            let children = build_tree(repo, root, &path, depth + 1)?;
+            out.push(FileNode { t: "dir".into(), name, path: rel, depth, children: Some(children) });
+        } else {
+            out.push(FileNode { t: "file".into(), name, path: rel, depth, children: None });
+        }
+    }
+    Ok(out)
+}
+
+/// Read one working-tree file's full contents. The path is repo-relative and
+/// confined to the working tree: absolute paths, `..` components, and symlinks
+/// that resolve outside the repo are rejected, and a size cap avoids loading
+/// huge/binary blobs into the UI.
+pub fn read_repo_file(repo_path: &str, file: &str) -> R<String> {
+    const MAX_BYTES: u64 = 2 * 1024 * 1024; // 2 MiB
+
+    let repo = open(repo_path)?;
+    let root = repo
+        .workdir()
+        .ok_or_else(|| "bare repository has no working tree".to_string())?
+        .canonicalize()
+        .map_err(|e| format!("resolve repo root: {e}"))?;
+
+    let rel = Path::new(file);
+    if rel.is_absolute() || rel.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(format!("invalid path: {file}"));
+    }
+
+    // canonicalize() resolves symlinks; the prefix check then guarantees the
+    // target stays inside the repo even if a symlink points elsewhere.
+    let full = root.join(rel).canonicalize().map_err(|e| format!("resolve file: {e}"))?;
+    if !full.starts_with(&root) {
+        return Err("path escapes repository".to_string());
+    }
+
+    let meta = fs::metadata(&full).map_err(|e| format!("stat file: {e}"))?;
+    if !meta.is_file() {
+        return Err("not a regular file".to_string());
+    }
+    if meta.len() > MAX_BYTES {
+        return Err(format!("file too large to preview ({} bytes)", meta.len()));
+    }
+    fs::read_to_string(&full).map_err(|e| format!("read file: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,6 +616,42 @@ mod tests {
         let reviews = list_reviews(path, "master").unwrap();
         assert_eq!(reviews.len(), 1);
         assert_eq!(reviews[0].branch, "feature");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lists_tree_and_reads_files_safely() {
+        let dir = std::env::temp_dir().join(format!("locke-files-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src/webhooks")).unwrap();
+        std::fs::create_dir_all(dir.join("node_modules/pkg")).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        write(&dir, ".gitignore", "node_modules/\n");
+        std::fs::write(dir.join("src/webhooks/handler.ts"), "export const x = 1;\n").unwrap();
+        std::fs::write(dir.join("node_modules/pkg/index.js"), "module.exports = {};\n").unwrap();
+        let path = dir.to_str().unwrap();
+
+        let tree = list_file_tree(path).expect("list_file_tree");
+        let names: Vec<&str> = tree.iter().map(|n| n.name.as_str()).collect();
+        assert!(names.contains(&"src"), "src present: {names:?}");
+        assert!(!names.contains(&"node_modules"), "node_modules is gitignored");
+        assert!(!names.contains(&".git"), ".git is always skipped");
+
+        // Nested structure carries forward-slashed repo-relative paths + depth.
+        let src = tree.iter().find(|n| n.name == "src").unwrap();
+        assert_eq!(src.t, "dir");
+        let webhooks = src.children.as_ref().unwrap().iter().find(|n| n.name == "webhooks").unwrap();
+        let handler = webhooks.children.as_ref().unwrap().iter().find(|n| n.name == "handler.ts").unwrap();
+        assert_eq!(handler.t, "file");
+        assert_eq!(handler.path, "src/webhooks/handler.ts");
+        assert_eq!(handler.depth, 2);
+
+        // A confined read works; traversal + absolute paths are rejected.
+        let body = read_repo_file(path, "src/webhooks/handler.ts").expect("read file");
+        assert!(body.contains("export const x"));
+        assert!(read_repo_file(path, "../etc/passwd").is_err());
+        assert!(read_repo_file(path, "/etc/passwd").is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
