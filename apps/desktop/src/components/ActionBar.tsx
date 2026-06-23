@@ -2,17 +2,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { View } from "@locke/core";
 import { useStore } from "../state/store.js";
 import { color, font } from "../theme/tokens.js";
-import {
-  BrandMark,
-  SidebarIcon,
-  ActivityIcon,
-  ReviewsIcon,
-  RunsIcon,
-  AgentsIcon,
-  SearchIcon,
-  ShieldIcon,
-  GearIcon,
-} from "./icons.js";
+import { BrandMark, SidebarIcon, SearchIcon, ShieldIcon, GearIcon } from "./icons.js";
+import { NAV_ITEMS } from "../lib/nav.js";
 import { HoverButton } from "./primitives.js";
 import { ApprovalsTray } from "./ApprovalsTray.js";
 import { SettingsPopover } from "./SettingsPopover.js";
@@ -76,6 +67,7 @@ export function ActionBar() {
   const view = useStore((s) => s.view);
   const go = useStore((s) => s.go);
   const agentMode = useStore((s) => s.agentMode);
+  const navPlace = useStore((s) => s.navPlace);
   const panelOpen = useStore((s) => s.panelOpen);
   const togglePanel = useStore((s) => s.togglePanel);
   const query = useStore((s) => s.query);
@@ -90,6 +82,11 @@ export function ActionBar() {
   // The fleet nav highlights the matching destination; the workspace counts as
   // "reviews" so the nav still reads sensibly while drilled in.
   const navActive = (v: View) => view === v || (v === "reviews" && view === "workspace");
+
+  // Destinations the user has placed on the top bar (Agents only in agent mode).
+  const topItems = NAV_ITEMS.filter(
+    (item) => (!item.agentOnly || agentMode) && navPlace[item.key] === "top",
+  );
 
   return (
     <div
@@ -140,33 +137,32 @@ export function ActionBar() {
         <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: "-.2px" }}>Locke</span>
       </div>
 
-      {/* view nav — compact icon segmented control */}
-      <div
-        style={{
-          display: "flex",
-          gap: 2,
-          padding: 3,
-          background: color.navPillBg,
-          border: `1px solid ${color.borderRow2}`,
-          borderRadius: 10,
-          marginLeft: 8,
-        }}
-      >
-        <NavButton active={navActive("activity")} title="Activity" onClick={() => go("activity")}>
-          <ActivityIcon size={16} stroke={1.5} />
-        </NavButton>
-        <NavButton active={navActive("reviews")} title="Reviews" onClick={() => go("reviews")}>
-          <ReviewsIcon size={16} stroke={1.5} />
-        </NavButton>
-        <NavButton active={navActive("runs")} title="Runs" onClick={() => go("runs")}>
-          <RunsIcon size={16} stroke={1.5} />
-        </NavButton>
-        {agentMode && (
-          <NavButton active={navActive("agents")} title="Agents" onClick={() => go("agents")} dot>
-            <AgentsIcon size={16} stroke={1.5} />
-          </NavButton>
-        )}
-      </div>
+      {/* view nav — compact icon segmented control, top-placed destinations only */}
+      {topItems.length > 0 && (
+        <div
+          style={{
+            display: "flex",
+            gap: 2,
+            padding: 3,
+            background: color.navPillBg,
+            border: `1px solid ${color.borderRow2}`,
+            borderRadius: 10,
+            marginLeft: 8,
+          }}
+        >
+          {topItems.map((item) => (
+            <NavButton
+              key={item.key}
+              active={navActive(item.key)}
+              title={item.label}
+              onClick={() => go(item.key)}
+              dot={item.key === "agents"}
+            >
+              <item.Icon size={16} stroke={1.5} />
+            </NavButton>
+          ))}
+        </div>
+      )}
 
       {/* center search */}
       <div style={{ flex: 1, display: "flex", justifyContent: "center", padding: "0 14px", minWidth: 0 }}>
