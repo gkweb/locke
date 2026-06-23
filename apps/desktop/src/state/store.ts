@@ -43,6 +43,10 @@ import {
   MOCK_RUN_ROWS,
   MOCK_AGENTS,
   MOCK_DISABLED,
+  MOCK_CHECKS,
+  MOCK_FILES_BY_ID,
+  MOCK_THREADS_BY_ID,
+  MOCK_HISTORY_BY_ID,
 } from "../lib/mockFleet.js";
 import { buildAgentPrompt } from "../lib/agentPrompt.js";
 import { readPulls, createPull, updatePull, deletePull } from "../api/pulls.js";
@@ -394,6 +398,18 @@ export const useStore = create<LockeState>((set, get) => ({
       runPaused: false,
       showPermission: false,
     });
+    if (MOCK) {
+      // Seed the design's workspace data for the opened review (only #142 is
+      // detailed; others open with an empty diff).
+      set({
+        files: MOCK_FILES_BY_ID[id] ?? [],
+        threads: MOCK_THREADS_BY_ID[id] ?? [],
+        history: MOCK_HISTORY_BY_ID[id] ?? [],
+        liveChecks: MOCK_CHECKS,
+        selectedFile: 0,
+      });
+      return;
+    }
     if (!repoPath) return;
     // Each review carries its own head branch + base (the PR id is not the branch).
     const review = reviews.find((r) => r.id === id);
