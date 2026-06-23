@@ -273,3 +273,217 @@ export const MOCK_FILES_BY_ID: Record<string, ChangedFile[]> = { "142": FILES_14
 export const MOCK_THREADS_BY_ID: Record<string, Thread[]> = { "142": THREADS_142 };
 export const MOCK_HISTORY_BY_ID: Record<string, HistoryEntry[]> = { "142": HISTORY_142 };
 export const MOCK_RUN_EVENTS_BY_ID: Record<string, RunEvent[]> = { "142": RUN_EVENTS_142 };
+
+// ---- Files explorer (mock) -------------------------------------------------
+// The repo file tree + sample file contents shown on the Files screen in mock
+// mode. In a real Tauri session these come from the backend (a later phase); the
+// front-end-now surface renders them here so the screen works in plain `vite`.
+
+/** One node in the explorer tree. `depth` drives the row indent. */
+export interface FileNode {
+  t: "dir" | "file";
+  name: string;
+  path: string;
+  depth: number;
+  children?: FileNode[];
+}
+
+export const MOCK_FILE_TREE: FileNode[] = [
+  {
+    t: "dir",
+    name: "payments-service",
+    path: "payments-service",
+    depth: 0,
+    children: [
+      {
+        t: "dir",
+        name: "src",
+        path: "payments-service/src",
+        depth: 1,
+        children: [
+          {
+            t: "dir",
+            name: "webhooks",
+            path: "payments-service/src/webhooks",
+            depth: 2,
+            children: [
+              { t: "file", name: "retryHandler.ts", path: "payments-service/src/webhooks/retryHandler.ts", depth: 3 },
+              { t: "file", name: "idempotency.ts", path: "payments-service/src/webhooks/idempotency.ts", depth: 3 },
+            ],
+          },
+          {
+            t: "dir",
+            name: "types",
+            path: "payments-service/src/types",
+            depth: 2,
+            children: [{ t: "file", name: "stripe.d.ts", path: "payments-service/src/types/stripe.d.ts", depth: 3 }],
+          },
+          {
+            t: "dir",
+            name: "components",
+            path: "payments-service/src/components",
+            depth: 2,
+            children: [
+              { t: "file", name: "Checkout.vue", path: "payments-service/src/components/Checkout.vue", depth: 3 },
+              { t: "file", name: "StatusBadge.svelte", path: "payments-service/src/components/StatusBadge.svelte", depth: 3 },
+            ],
+          },
+          { t: "file", name: "dispatch.js", path: "payments-service/src/dispatch.js", depth: 2 },
+          { t: "file", name: "server.php", path: "payments-service/src/server.php", depth: 2 },
+        ],
+      },
+      {
+        t: "dir",
+        name: "public",
+        path: "payments-service/public",
+        depth: 1,
+        children: [{ t: "file", name: "index.html", path: "payments-service/public/index.html", depth: 2 }],
+      },
+    ],
+  },
+];
+
+export const MOCK_FILE_CONTENTS: Record<string, string> = {
+  "payments-service/src/webhooks/retryHandler.ts": `import { Redis } from "../store/redis";
+import { idempotencyKey } from "./idempotency";
+import type { WebhookEvent } from "../types/stripe";
+
+const DUP = Symbol("duplicate");
+
+export class RetryHandler {
+  constructor(private store: Redis) {}
+
+  // Process a single webhook exactly once, even under concurrent delivery.
+  async handleEvent(event: WebhookEvent): Promise<void> {
+    const key = idempotencyKey(event);
+    const attempt = event.attempt ?? 0;
+
+    const result = await this.store.transaction(async (tx) => {
+      if (await tx.has(key)) return DUP;
+      await tx.save(key, attempt + 1);
+      return "ok";
+    });
+
+    if (result === DUP) {
+      console.warn(\`Skipping duplicate webhook \${key}\`);
+      return;
+    }
+
+    await this.dispatch(event);
+  }
+}`,
+  "payments-service/src/webhooks/idempotency.ts": `import type { WebhookEvent } from "../types/stripe";
+
+const PREFIX = "wh";
+
+/* Stable key for a webhook so retries collapse to one. */
+export function idempotencyKey(event: WebhookEvent): string {
+  return \`\${PREFIX}:\${event.id}:\${event.type}\`;
+}`,
+  "payments-service/src/types/stripe.d.ts": `export interface WebhookEvent {
+  id: string;
+  type: "payment_intent.succeeded" | "charge.refunded";
+  attempt?: number;
+  created: number;
+  data: Record<string, unknown>;
+}
+
+export type Handler = (event: WebhookEvent) => Promise<void>;`,
+  "payments-service/src/components/Checkout.vue": `<script setup lang="ts">
+import { ref, computed } from "vue";
+
+const amount = ref(0);
+const currency = ref("usd");
+const label = computed(() => \`\${currency.value.toUpperCase()} \${amount.value}\`);
+</script>
+
+<template>
+  <section class="checkout">
+    <h2>Pay {{ label }}</h2>
+    <button :disabled="amount <= 0" @click="$emit('pay')">
+      Confirm payment
+    </button>
+  </section>
+</template>`,
+  "payments-service/src/components/StatusBadge.svelte": `<script>
+  export let status = "pending";
+  $: color = status === "paid" ? "green" : "amber";
+</script>
+
+<span class="badge {color}">
+  {status}
+</span>
+
+<style>
+  .badge { padding: 2px 8px; border-radius: 999px; }
+</style>`,
+  "payments-service/src/dispatch.js": `import { RetryHandler } from "./webhooks/retryHandler";
+
+const handlers = new Map();
+
+export function register(type, fn) {
+  if (!handlers.has(type)) handlers.set(type, []);
+  handlers.get(type).push(fn);
+}
+
+export async function dispatch(event) {
+  const fns = handlers.get(event.type) ?? [];
+  for (const fn of fns) {
+    await fn(event); // fan out to every subscriber
+  }
+  return fns.length;
+}`,
+  "payments-service/src/server.php": `<?php
+
+namespace App\\Webhooks;
+
+use App\\Store\\Redis;
+
+class WebhookController
+{
+    private Redis $store;
+
+    public function __construct(Redis $store)
+    {
+        $this->store = $store;
+    }
+
+    // Verify signature, then enqueue for processing.
+    public function handle(array $payload): bool
+    {
+        $key = "wh:" . $payload['id'];
+
+        if ($this->store->has($key)) {
+            return false; # already processed
+        }
+
+        $this->store->save($key, time());
+        return true;
+    }
+}`,
+  "payments-service/public/index.html": `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Payments Service</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <!-- mounted by the client bundle -->
+    <div id="app"></div>
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>`,
+};
+
+/** Resolve a diff file's repo-relative path to a full-file path in the explorer,
+ *  or null when no full-file preview exists (which also keeps the "see full file"
+ *  affordance hidden for files the mock tree doesn't carry). The design's diff
+ *  paths are repo-relative (`src/…`) while the tree is rooted at the service dir,
+ *  so try both. */
+export function fullFilePath(diffPath: string): string | null {
+  if (MOCK_FILE_CONTENTS[diffPath] !== undefined) return diffPath;
+  const prefixed = `payments-service/${diffPath}`;
+  if (MOCK_FILE_CONTENTS[prefixed] !== undefined) return prefixed;
+  return null;
+}

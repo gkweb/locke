@@ -10,6 +10,8 @@ import { ActivityView } from "./views/ActivityView.js";
 import { ReviewsView } from "./views/ReviewsView.js";
 import { RunsView } from "./views/RunsView.js";
 import { AgentsView } from "./views/AgentsView.js";
+import { FilesView } from "./views/FilesView.js";
+import { ExtensionsView } from "./views/ExtensionsView.js";
 import { WorkspaceView } from "./views/WorkspaceView.js";
 import { NewReviewModal } from "./components/NewReviewModal.js";
 import { OpenRepoEmpty } from "./components/OpenRepoEmpty.js";
@@ -37,6 +39,10 @@ function Main() {
       return <RunsView />;
     case "agents":
       return <AgentsView />;
+    case "files":
+      return <FilesView />;
+    case "extensions":
+      return <ExtensionsView />;
     case "workspace":
       return <WorkspaceView />;
   }
@@ -45,6 +51,7 @@ function Main() {
 export function App() {
   const panelOpen = useStore((s) => s.panelOpen);
   const panelSide = useStore((s) => s.panelSide);
+  const view = useStore((s) => s.view);
   const newReviewOpen = useStore((s) => s.newReviewOpen);
   const detectAgents = useStore((s) => s.detectAgents);
   const loadAgentSettings = useStore((s) => s.loadAgentSettings);
@@ -95,7 +102,8 @@ export function App() {
           minHeight: 0,
         }}
       >
-        {panelOpen && <SidePanel />}
+        {/* The Files screen carries its own explorer, so the review panel hides there. */}
+        {panelOpen && view !== "files" && <SidePanel />}
         <Main />
       </div>
 

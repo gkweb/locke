@@ -4,6 +4,8 @@ import type {
   ChangedFile,
   DiffMode,
   HistoryEntry,
+  NavKey,
+  NavPlacement,
   Review,
   ReviewDetail,
   RunEvent,
@@ -58,6 +60,7 @@ import {
   MOCK_RUN_EVENTS_BY_ID,
 } from "../lib/mockFleet.js";
 import { buildAgentPrompt } from "../lib/agentPrompt.js";
+import { lockeLang } from "../lib/lockeLang.js";
 import { readPulls, createPull, updatePull, deletePull } from "../api/pulls.js";
 import {
   loadComments,
@@ -152,6 +155,8 @@ interface LockeState {
   query: string;
   /** "Agent control" (true) vs "Reviews only" (false). Persisted app-global. */
   agentMode: boolean;
+  /** Where each nav destination is surfaced: top bar / bottom bar / hidden. */
+  navPlace: Record<NavKey, NavPlacement>;
   selectedPR: string;
   selectedFile: number;
   diffMode: DiffMode;
@@ -166,6 +171,26 @@ interface LockeState {
   testsRan: boolean;
   viewed: Record<number, boolean>;
   nextThreadId: number;
+
+  // ---- files explorer + language extensions ----
+  /** Repo-relative path of the file open in the Files screen's code viewer. */
+  filePath: string;
+  /** When the Files screen was opened from a review's diff ("see full file"),
+   *  the originating review so a back-pill can return to it. */
+  fileFromReview: { id: string; branch: string } | null;
+  /** Which explorer directories are expanded, keyed by path. */
+  expandedDirs: Record<string, boolean>;
+  /** Extensions screen: id of the expanded language card (snippet shown). */
+  langExpanded: string | null;
+  /** Extensions screen: the "Add a language" example is open. */
+  addLangOpen: boolean;
+  /** Bottom-bar language chip popover open (Files screen). */
+  langMenuOpen: boolean;
+  /** Where the Extensions screen returns to when dismissed. */
+  extReturn: View;
+  /** Per-language enabled flags, mirrored into `lockeLang` so highlighting and
+   *  the Extensions list stay in sync (seeded from the host's defaults). */
+  langEnabled: Record<string, boolean>;
 
   // ---- repo (live git) ----
   repoPath: string | null;
@@ -229,6 +254,30 @@ interface LockeState {
   setPanelWidth: (w: number) => void;
   toggleApprovals: () => void;
   setQuery: (q: string) => void;
+  /** Set where a nav destination is surfaced (top / bottom / off). */
+  setNavPlace: (key: NavKey, place: NavPlacement) => void;
+
+  // ---- files explorer + extensions navigation ----
+  /** Open the Files screen on a full file, optionally from a review's diff. */
+  openFullFile: (path: string, review?: { id: string; branch: string }) => void;
+  /** Return from a full-file view to the originating review (or Activity). */
+  backToReview: () => void;
+  /** Open the Extensions screen, remembering where to return. */
+  goExtensions: () => void;
+  /** Dismiss the Extensions screen back to its origin. */
+  backFromExt: () => void;
+  /** Expand / collapse an explorer directory. */
+  toggleDir: (path: string) => void;
+  /** Select a file in the explorer's code viewer. */
+  selectFilePath: (path: string) => void;
+  /** Toggle the bottom-bar language chip popover. */
+  toggleLangMenu: () => void;
+  /** Toggle the Extensions "Add a language" example. */
+  toggleAddLang: () => void;
+  /** Expand / collapse a language card on the Extensions screen. */
+  setLangExpanded: (id: string | null) => void;
+  /** Enable / disable a language plugin (mirrored into `lockeLang`). */
+  setLangEnabled: (id: string, on: boolean) => void;
 
   // ---- agents + settings (app-global) ----
   detectAgents: () => Promise<void>;
@@ -328,6 +377,7 @@ export const useStore = create<LockeState>((set, get) => ({
   approvalsOpen: false,
   query: "",
   agentMode: true,
+  navPlace: { activity: "top", reviews: "top", runs: "bottom", files: "bottom", agents: "bottom" },
   selectedPR: "",
   selectedFile: 0,
   diffMode: "unified",
@@ -342,6 +392,20 @@ export const useStore = create<LockeState>((set, get) => ({
   testsRan: false,
   viewed: {},
   nextThreadId: 100,
+
+  filePath: "payments-service/src/webhooks/retryHandler.ts",
+  fileFromReview: null,
+  expandedDirs: {
+    "payments-service": true,
+    "payments-service/src": true,
+    "payments-service/src/webhooks": true,
+    "payments-service/src/components": true,
+  },
+  langExpanded: null,
+  addLangOpen: false,
+  langMenuOpen: false,
+  extReturn: "activity",
+  langEnabled: Object.fromEntries(lockeLang.list().map((p) => [p.id, p.enabled])),
 
   repoPath: null,
   base: "main",
@@ -646,7 +710,8 @@ export const useStore = create<LockeState>((set, get) => ({
     set({ pending: pending.filter((x) => x.id !== id), runEvents: events, runPaused: paused });
   },
 
-  go: (view) => set({ view, approvalsOpen: false, settingsOpen: false }),
+  go: (view) =>
+    set({ view, approvalsOpen: false, settingsOpen: false, fileFromReview: null, langMenuOpen: false }),
   openReview: (id, tab = "diff") => {
     const { repoPath, reviews, pulls } = get();
     // Verdict is registry-backed; seed it from the pull so the workspace reflects
@@ -712,6 +777,51 @@ export const useStore = create<LockeState>((set, get) => ({
   setPanelWidth: (w) => set({ panelWidth: Math.max(240, Math.min(560, Math.round(w))) }),
   toggleApprovals: () => set({ approvalsOpen: !get().approvalsOpen, settingsOpen: false }),
   setQuery: (q) => set({ query: q }),
+  setNavPlace: (key, place) => set((s) => ({ navPlace: { ...s.navPlace, [key]: place } })),
+
+  openFullFile: (path, review) =>
+    set({
+      view: "files",
+      filePath: path,
+      fileFromReview: review ?? null,
+      langMenuOpen: false,
+      settingsOpen: false,
+      approvalsOpen: false,
+    }),
+  backToReview: () => {
+    const f = get().fileFromReview;
+    if (f) {
+      set({ fileFromReview: null });
+      get().openReview(f.id, "diff");
+    } else {
+      get().go("activity");
+    }
+  },
+  goExtensions: () =>
+    set((s) => ({
+      extReturn: s.view === "extensions" ? s.extReturn : s.view,
+      view: "extensions",
+      settingsOpen: false,
+      langMenuOpen: false,
+      approvalsOpen: false,
+    })),
+  backFromExt: () => {
+    const { extReturn, selectedPR } = get();
+    if (extReturn === "workspace" && selectedPR) {
+      get().openReview(selectedPR, get().workspaceTab);
+    } else {
+      get().go(extReturn === "workspace" ? "activity" : extReturn);
+    }
+  },
+  toggleDir: (path) => set((s) => ({ expandedDirs: { ...s.expandedDirs, [path]: !s.expandedDirs[path] } })),
+  selectFilePath: (path) => set({ filePath: path, langMenuOpen: false }),
+  toggleLangMenu: () => set((s) => ({ langMenuOpen: !s.langMenuOpen })),
+  toggleAddLang: () => set((s) => ({ addLangOpen: !s.addLangOpen })),
+  setLangExpanded: (id) => set((s) => ({ langExpanded: s.langExpanded === id ? null : id })),
+  setLangEnabled: (id, on) => {
+    lockeLang.setEnabled(id, on);
+    set((s) => ({ langEnabled: { ...s.langEnabled, [id]: on } }));
+  },
 
   openRepo: async (path, baseArg = "main") => {
     set({ loading: true, error: null, repoPath: path });

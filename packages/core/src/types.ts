@@ -20,11 +20,27 @@ export type Verdict = "approve" | "changes";
 export type DiffMode = "unified" | "split";
 
 /**
- * Which top-level screen is active. The Mission Control IA: four fleet
- * destinations plus the per-review `workspace`. (Replaces the old
- * list/overview/review trio.)
+ * Which top-level screen is active. The Mission Control IA: the fleet
+ * destinations plus the per-review `workspace`, the repo-wide `files`
+ * explorer and the `extensions` (language plugins) screen. (Replaces the
+ * old list/overview/review trio.)
  */
-export type View = "activity" | "reviews" | "runs" | "agents" | "workspace";
+export type View =
+  | "activity"
+  | "reviews"
+  | "runs"
+  | "agents"
+  | "files"
+  | "extensions"
+  | "workspace";
+
+/** A configurable navigation destination (excludes `workspace`/`extensions`,
+ *  which are reached contextually, not from the nav). */
+export type NavKey = "activity" | "reviews" | "runs" | "files" | "agents";
+
+/** Where a nav destination is surfaced: the top action bar, the bottom
+ *  action bar, or hidden. Configured per destination in Settings. */
+export type NavPlacement = "top" | "bottom" | "off";
 
 /** The tab shown inside the Review Workspace. */
 export type WorkspaceTab = "diff" | "run" | "checks" | "history";

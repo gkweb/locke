@@ -198,6 +198,37 @@ export const AgentsIcon = ({ size = 16, color = "currentColor", stroke = 1.5, st
   </svg>
 );
 
+// Nav: Files (folder + diverging arrows — the repo explorer).
+export const FilesIcon = ({ size = 16, color = "currentColor", stroke = 1.5, style }: IconProps) => (
+  <svg {...strokeBase(size, color, stroke, style)}>
+    <path d="M2.5 3.5h3l1.2 1.5H13.5v7.5H2.5z" />
+    <path d="M9 8.5l1.8 1.8L9 12" />
+    <path d="M6.5 8.5L4.7 10.3 6.5 12" />
+  </svg>
+);
+
+// Extensions (puzzle piece) — the language-plugin directory.
+export const ExtensionsIcon = ({ size = 16, color = "currentColor", stroke = 1.4, style }: IconProps) => (
+  <svg {...strokeBase(size, color, stroke, style)}>
+    <path d="M6 2.5h4v2.2a1.3 1.3 0 0 0 2.6 0V2.5h.9v3.4h-2.2a1.3 1.3 0 0 0 0 2.6h2.2v4.9H9.4v-2.2a1.3 1.3 0 0 0-2.6 0v2.2H2.5V8.5h2.2a1.3 1.3 0 0 0 0-2.6H2.5z" />
+  </svg>
+);
+
+// Folder (open, for the file-tree explorer rows).
+export const FolderTreeIcon = ({ size = 14, color = "currentColor", stroke = 1.3, style }: IconProps) => (
+  <svg {...strokeBase(size, color, stroke, style)}>
+    <path d="M2 4.5a1 1 0 0 1 1-1h2.6l1.3 1.5H14a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" />
+  </svg>
+);
+
+// "See full file" — a file/folder with an inset plus.
+export const FullFileIcon = ({ size = 12, color = "currentColor", stroke = 1.4, style }: IconProps) => (
+  <svg {...strokeBase(size, color, stroke, style)}>
+    <path d="M2.5 4.5h6l1 1.2H13.5v6.3H2.5z" />
+    <path d="M8 8v3M6.5 9.5h3" />
+  </svg>
+);
+
 export const FolderIcon = ({ size = 11, color = "currentColor", stroke = 1.3, style }: IconProps) => (
   <svg {...strokeBase(size, color, stroke, style)}>
     <path d="M2 4.5a1 1 0 0 1 1-1h3l1.5 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" />
