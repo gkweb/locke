@@ -47,6 +47,7 @@ import {
   MOCK_FILES_BY_ID,
   MOCK_THREADS_BY_ID,
   MOCK_HISTORY_BY_ID,
+  MOCK_RUN_EVENTS_BY_ID,
 } from "../lib/mockFleet.js";
 import { buildAgentPrompt } from "../lib/agentPrompt.js";
 import { readPulls, createPull, updatePull, deletePull } from "../api/pulls.js";
@@ -377,10 +378,66 @@ export const useStore = create<LockeState>((set, get) => ({
 
   clearAgentOutput: () => set({ agentOutput: null }),
 
-  // Phase 2: just clear the approval. Phase 5 replaces these with the scripted
-  // run hero-flow (append events, chain the next approval, settle the run).
-  allowApproval: (id) => set((s) => ({ pending: s.pending.filter((a) => a.id !== id) })),
-  denyApproval: (id) => set((s) => ({ pending: s.pending.filter((a) => a.id !== id) })),
+  // The design's scripted run hero-flow on review #142: allowing `npm test` (a1)
+  // streams the result + a follow-up edit and queues the commit approval (a3);
+  // allowing the commit (a3) settles the run as done. Denying any #142 step
+  // pauses the run. Other reviews' approvals just clear (not scripted).
+  allowApproval: (id) => {
+    const { pending, runEvents, runDone } = get();
+    const p = pending.find((x) => x.id === id);
+    if (!p) return;
+    let nextPending = pending.filter((x) => x.id !== id);
+    const events = runEvents.slice();
+    let done = runDone;
+    if (id === "a1") {
+      events.push({
+        key: "e4",
+        kind: "result",
+        text: "npm test — 142 passed in 3.1s",
+        sub: "PASS  webhooks/retry.test.ts (concurrent delivery handled exactly once)",
+        time: "0:34",
+      });
+      events.push({
+        key: "e5",
+        kind: "edit",
+        text: "Edited tests/webhooks/retry.test.ts",
+        sub: "+ fires two identical events in parallel, asserts store.save called once",
+        time: "0:41",
+      });
+      nextPending = [
+        ...nextPending,
+        {
+          id: "a3",
+          reviewId: "142",
+          runId: "run #R7",
+          agent: "Claude",
+          initials: "CL",
+          branch: "agent/webhook-idempotency",
+          cmd: 'git commit -am "Make webhook dedupe atomic; add concurrency test"',
+          tool: "git",
+          why: "Commit the atomic fix and the new test to the branch.",
+          scope: "local repo · no push",
+        },
+      ];
+    } else if (id === "a3") {
+      events.push({ key: "e6", kind: "result", text: "Committed 9c1d77a · pushed to agent/webhook-idempotency", sub: "2 files changed, +10 −2", time: "0:48" });
+      events.push({ key: "e7", kind: "done", text: "Done. Both change requests addressed — the diff is updated and ready to re-review.", time: "0:49" });
+      done = true;
+    }
+    set({ pending: nextPending, runEvents: events, runDone: done });
+  },
+  denyApproval: (id) => {
+    const { pending, runEvents, runPaused } = get();
+    const p = pending.find((x) => x.id === id);
+    if (!p) return;
+    const events = runEvents.slice();
+    let paused = runPaused;
+    if (p.reviewId === "142") {
+      events.push({ key: "ed", kind: "denied", text: "Denied `" + p.cmd + "` — run paused.", time: "—" });
+      paused = true;
+    }
+    set({ pending: pending.filter((x) => x.id !== id), runEvents: events, runPaused: paused });
+  },
 
   go: (view) => set({ view, approvalsOpen: false, settingsOpen: false }),
   openReview: (id, tab = "diff") => {
@@ -405,6 +462,7 @@ export const useStore = create<LockeState>((set, get) => ({
         files: MOCK_FILES_BY_ID[id] ?? [],
         threads: MOCK_THREADS_BY_ID[id] ?? [],
         history: MOCK_HISTORY_BY_ID[id] ?? [],
+        runEvents: MOCK_RUN_EVENTS_BY_ID[id] ?? [],
         liveChecks: MOCK_CHECKS,
         selectedFile: 0,
       });
