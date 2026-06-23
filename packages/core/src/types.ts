@@ -19,8 +19,71 @@ export type Verdict = "approve" | "changes";
 /** The diff layout the review pane is showing. */
 export type DiffMode = "unified" | "split";
 
-/** Which top-level screen is active. */
-export type View = "list" | "overview" | "review";
+/**
+ * Which top-level screen is active. The Mission Control IA: four fleet
+ * destinations plus the per-review `workspace`. (Replaces the old
+ * list/overview/review trio.)
+ */
+export type View = "activity" | "reviews" | "runs" | "agents" | "workspace";
+
+/** The tab shown inside the Review Workspace. */
+export type WorkspaceTab = "diff" | "run" | "checks" | "history";
+
+/** Agent-run lifecycle, shared across the fleet surfaces (design state model). */
+export type RunState = "idle" | "running" | "awaiting" | "done" | "failed";
+
+/** One line in a live agent-run event stream (Run tab). */
+export interface RunEvent {
+  /** Stable key for list rendering. */
+  key: string;
+  kind: "msg" | "read" | "edit" | "result" | "done" | "denied";
+  text: string;
+  /** Optional monospace sub-block (e.g. a command or output snippet). */
+  sub?: string;
+  time: string;
+}
+
+/** A pending permission request an agent is blocked on (approvals tray). */
+export interface Approval {
+  id: string;
+  /** Review the run belongs to (so the tray can open it). */
+  reviewId: string;
+  runId: string;
+  agent: string;
+  initials: string;
+  branch: string;
+  /** The command the agent wants to run, e.g. `npm test -- webhooks`. */
+  cmd: string;
+  /** Tool family for "Always allow {tool}", e.g. "npm", "git". */
+  tool: string;
+  /** Human explanation of why the agent wants this. */
+  why: string;
+  /** Scope note, e.g. "sandboxed · repo dir only". */
+  scope: string;
+}
+
+/** A row in the global Runs table. */
+export interface RunRow {
+  runId: string;
+  agent: string;
+  initials: string;
+  branch: string;
+  state: RunState;
+  duration: string;
+  /** The review id this run belongs to. */
+  rev: string;
+}
+
+/** A saved run in a review's History timeline. */
+export interface HistoryEntry {
+  runId: string;
+  title: string;
+  time: string;
+  duration: string;
+  state: RunState;
+  /** Saved artifacts, e.g. ["log.txt", "diff.patch", "test-output"]. */
+  artifacts: string[];
+}
 
 /**
  * A persisted pull request — the explicit, on-disk record in `.locke/pulls.json`.
