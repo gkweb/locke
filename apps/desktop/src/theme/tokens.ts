@@ -27,6 +27,7 @@ export const color = {
   borderRowFaint: "#131820",
   borderRowFaint2: "#19202b", // card/table section dividers
   borderRowFaint3: "#141a22", // table row dividers
+  borderRail2: "#161c25", // run-stream sub-blocks, terminal, rail insets
   borderInput: "#2c333f",
   borderChip: "#232a35",
   borderChip2: "#242a35", // action-bar approvals/settings button outline
