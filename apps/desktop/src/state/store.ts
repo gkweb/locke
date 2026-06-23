@@ -32,10 +32,18 @@ import {
   readAgentSettings,
   writeAgentSettings,
   runAgent as runAgentApi,
+  startRun as startRunApi,
+  respondPermission,
+  cancelRun as cancelRunApi,
+  readRuns,
   isTauri,
   type CheckSpec,
   type LockeConfig,
   type AgentInfo,
+  type RunEventPayload,
+  type RunPermissionPayload,
+  type RunDonePayload,
+  type RunRecord,
 } from "../api/git.js";
 import {
   MOCK_REVIEWS,
@@ -61,6 +69,29 @@ import {
 import type { Check, PullRecord, ReviewStatus } from "@locke/core";
 
 const EMPTY_DETAIL: ReviewDetail = { prompt: "", summary: "", bullets: [], note: "", commits: [] };
+
+// Human-relative time from an epoch-seconds stamp (best-effort, coarse buckets).
+function relTime(epochSecs: number): string {
+  if (!epochSecs) return "";
+  const diff = Math.max(0, Math.floor(Date.now() / 1000) - epochSecs);
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)} min ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} hours ago`;
+  return `${Math.floor(diff / 86400)} days ago`;
+}
+
+// Map a persisted run record to a History timeline entry.
+function runToHistory(r: RunRecord): HistoryEntry {
+  const state = r.state === "done" ? "done" : "failed";
+  return {
+    runId: r.runId,
+    title: r.result ? r.result.split("\n")[0].slice(0, 80) : "Agent run",
+    time: relTime(r.endedAt),
+    duration: r.duration || "—",
+    state,
+    artifacts: ["log.txt"],
+  };
+}
 
 // Persist the current PR's comment threads + viewed flags to
 // `.locke/comments/<id>.json`, keyed by the numeric id. No-op in mock mode.
@@ -166,7 +197,8 @@ interface LockeState {
   /** Combined output (or error) of the last agent run, for display. */
   agentOutput: string | null;
 
-  // ---- prototype run surface (design hero-flow; real streaming is a later phase) ----
+  // ---- run surface (real streaming via the Claude stream-json protocol; the
+  //      design hero-flow is kept only in mock mode) ----
   /** Pending permission approvals across the fleet (drives the tray + counts). */
   pending: Approval[];
   /** Live event stream for the open review's run (Run tab). */
@@ -179,6 +211,13 @@ interface LockeState {
   showPermission: boolean;
   runDone: boolean;
   runPaused: boolean;
+  /** The live run currently shown in the open review's Run tab (real mode). */
+  currentRunId: string | null;
+  /** runId → reviewId, so streamed events can be routed to their review. */
+  runReviewMap: Record<string, string>;
+  /** Whether a streaming run executes in an isolated worktree (true, committed
+   *  onto the branch) or directly in the repo's working tree (false). */
+  runUseWorktree: boolean;
 
   // ---- navigation ----
   go: (view: View) => void;
@@ -202,12 +241,29 @@ interface LockeState {
   toggleSettings: () => void;
   setNewReviewOpen: (open: boolean) => void;
   /** Run the first enabled agent against the current review's open change
-   *  requests, then refresh the diff to show its commit (Phase 6). */
+   *  requests, then refresh the diff to show its commit (Phase 6, headless). */
   runAgent: () => Promise<void>;
   clearAgentOutput: () => void;
 
-  // ---- prototype run actions (Phase 5 fills in the hero-flow) ----
-  /** Approve / deny a pending permission from the tray. */
+  // ---- live streaming run (Phase 7) ----
+  /** Start a streaming run for the open review with the first enabled agent.
+   *  Claude streams live with in-app permissions; other agents fall back to a
+   *  one-shot headless run surfaced as a single event. */
+  startRun: () => Promise<void>;
+  /** Cancel the open review's in-flight run. */
+  cancelRun: () => Promise<void>;
+  setRunUseWorktree: (on: boolean) => void;
+  /** Stream-event handlers, driven by the Tauri `run:*` event listeners. */
+  onRunEvent: (e: RunEventPayload) => void;
+  onRunPermission: (e: RunPermissionPayload) => void;
+  onRunDone: (e: RunDonePayload) => void;
+  /** After a run ends, refresh the diff + History for the review without
+   *  clearing the completed run's event stream. */
+  reloadAfterRun: (reviewId: string) => Promise<void>;
+
+  // ---- run permission decisions ----
+  /** Approve / deny a pending permission. Real round-trip in Tauri mode; the
+   *  scripted hero-flow in mock mode. */
   allowApproval: (id: string) => void;
   denyApproval: (id: string) => void;
 
@@ -312,6 +368,9 @@ export const useStore = create<LockeState>((set, get) => ({
   showPermission: false,
   runDone: false,
   runPaused: false,
+  currentRunId: null,
+  runReviewMap: {},
+  runUseWorktree: true,
 
   detectAgents: async () => {
     if (MOCK) return; // keep the seeded mock fleet's agents
@@ -384,11 +443,141 @@ export const useStore = create<LockeState>((set, get) => ({
 
   clearAgentOutput: () => set({ agentOutput: null }),
 
-  // The design's scripted run hero-flow on review #142: allowing `npm test` (a1)
-  // streams the result + a follow-up edit and queues the commit approval (a3);
-  // allowing the commit (a3) settles the run as done. Denying any #142 step
-  // pauses the run. Other reviews' approvals just clear (not scripted).
+  setRunUseWorktree: (on) => set({ runUseWorktree: on }),
+
+  startRun: async () => {
+    const { repoPath, selectedPR, reviews, files, threads, agents, disabledAgents, runUseWorktree } = get();
+    const review = reviews.find((r) => r.id === selectedPR);
+    const agent = agents.find((a) => a.detected && !disabledAgents.includes(a.id));
+    // Always switch to the Run tab so the user sees what happens.
+    set({ workspaceTab: "run" });
+    if (!repoPath || !review || !agent) {
+      set({ runEvents: [{ key: "x", kind: "denied", text: "No enabled agent detected to run.", time: "" }], runDone: false, runPaused: true });
+      return;
+    }
+    const prompt = buildAgentPrompt({ repoPath, selectedPR, reviews, files, threads });
+    const runId = `run-${Date.now()}`;
+    set((s) => ({
+      runEvents: [],
+      runDone: false,
+      runPaused: false,
+      currentRunId: runId,
+      runReviewMap: { ...s.runReviewMap, [runId]: review.id },
+      reviews: s.reviews.map((r) => (r.id === review.id ? { ...r, runId, runState: "running" } : r)),
+    }));
+    try {
+      if (agent.id === "claude") {
+        // Live streaming with in-app permissions; events arrive via listeners.
+        await startRunApi(runId, repoPath, review.branch, agent.cmd, prompt, runUseWorktree);
+      } else {
+        // Fallback: one-shot headless run, surfaced as a single event pair.
+        get().onRunEvent({ runId, key: "h0", kind: "msg", text: `Running ${agent.name} headlessly (no live stream)…`, time: "0:00" });
+        const output = await runAgentApi(repoPath, review.branch, agent.cmd, prompt);
+        get().onRunEvent({ runId, key: "h1", kind: "result", text: (output || "Agent finished.").split("\n")[0].slice(0, 120), sub: output || undefined, time: "" });
+        get().onRunDone({ runId, state: "done", result: output, duration: "", branch: review.branch });
+      }
+    } catch (e) {
+      get().onRunEvent({ runId, key: "err", kind: "denied", text: `Run failed: ${String(e)}`, time: "" });
+      get().onRunDone({ runId, state: "failed", result: String(e), duration: "", branch: review.branch });
+    }
+  },
+
+  cancelRun: async () => {
+    const { currentRunId } = get();
+    if (!currentRunId || MOCK) return;
+    try {
+      await cancelRunApi(currentRunId);
+    } catch {
+      // Best-effort; the run:done handler settles UI state regardless.
+    }
+  },
+
+  onRunEvent: (e) => {
+    const { runReviewMap, selectedPR, runEvents } = get();
+    const reviewId = runReviewMap[e.runId];
+    // Only the open review streams into the live view; background runs persist
+    // to disk and surface later via History.
+    if (reviewId !== selectedPR) return;
+    set({ runEvents: [...runEvents, { key: e.key, kind: e.kind, text: e.text, sub: e.sub, time: e.time }] });
+  },
+
+  onRunPermission: (e) => {
+    const { runReviewMap, reviews, pending } = get();
+    const reviewId = runReviewMap[e.runId];
+    if (!reviewId) return;
+    const review = reviews.find((r) => r.id === reviewId);
+    set({
+      // id is the CLI request_id — the key for the control_response round-trip.
+      pending: [
+        ...pending.filter((p) => p.id !== e.requestId),
+        {
+          id: e.requestId,
+          reviewId,
+          runId: e.runId,
+          agent: "Claude",
+          initials: "CL",
+          branch: review?.branch ?? "",
+          cmd: e.cmd,
+          tool: e.tool,
+          why: e.why,
+          scope: e.scope,
+        },
+      ],
+    });
+  },
+
+  onRunDone: (e) => {
+    const { runReviewMap, selectedPR } = get();
+    const reviewId = runReviewMap[e.runId];
+    const finalState = e.state === "done" ? "done" : "failed";
+    set((s) => ({
+      reviews: s.reviews.map((r) => (r.id === reviewId ? { ...r, runState: finalState } : r)),
+      // Clear any stale permission cards for this run.
+      pending: s.pending.filter((p) => p.runId !== e.runId),
+    }));
+    if (reviewId !== selectedPR) return;
+    set({
+      currentRunId: null,
+      runDone: e.state === "done",
+      runPaused: e.state !== "done",
+    });
+    // Reload the diff (the agent may have edited/committed) and the history list.
+    void get().reloadAfterRun(reviewId);
+  },
+
+  reloadAfterRun: async (reviewId) => {
+    const { repoPath, reviews } = get();
+    if (!repoPath || MOCK) return;
+    const review = reviews.find((r) => r.id === reviewId);
+    if (!review) return;
+    try {
+      const [detail, runs] = await Promise.all([
+        getReview(repoPath, review.branch, review.base),
+        readRuns(repoPath),
+      ]);
+      const files = detail.fileSummary.map(toChangedFile);
+      set({
+        detail: { ...EMPTY_DETAIL, commits: detail.commits },
+        files,
+        selectedFile: 0,
+        history: runs.filter((r) => r.branch === review.branch).map(runToHistory),
+      });
+      if (files.length) await get().loadDiff(0);
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
+  // Real mode: answer the live permission prompt via the stream-json control
+  // protocol (Allow → control_response behavior:allow). Mock mode keeps the
+  // design's scripted hero-flow on review #142 below.
   allowApproval: (id) => {
+    if (!MOCK) {
+      const p = get().pending.find((x) => x.id === id);
+      if (p) void respondPermission(p.runId, id, true);
+      set((s) => ({ pending: s.pending.filter((x) => x.id !== id) }));
+      return;
+    }
     const { pending, runEvents, runDone } = get();
     const p = pending.find((x) => x.id === id);
     if (!p) return;
@@ -433,6 +622,12 @@ export const useStore = create<LockeState>((set, get) => ({
     set({ pending: nextPending, runEvents: events, runDone: done });
   },
   denyApproval: (id) => {
+    if (!MOCK) {
+      const p = get().pending.find((x) => x.id === id);
+      if (p) void respondPermission(p.runId, id, false);
+      set((s) => ({ pending: s.pending.filter((x) => x.id !== id) }));
+      return;
+    }
     const { pending, runEvents, runPaused } = get();
     const p = pending.find((x) => x.id === id);
     if (!p) return;
@@ -460,6 +655,7 @@ export const useStore = create<LockeState>((set, get) => ({
       runDone: false,
       runPaused: false,
       showPermission: false,
+      currentRunId: null,
     });
     if (MOCK) {
       // Seed the design's workspace data for the opened review (only #142 is
@@ -479,10 +675,11 @@ export const useStore = create<LockeState>((set, get) => ({
     const review = reviews.find((r) => r.id === id);
     const branch = review?.branch ?? id;
     const base = review?.base ?? get().base;
-    // Live mode: load this branch's detail + file shells, then its first diff.
+    // Live mode: load this branch's detail + file shells + run history, then its
+    // first diff.
     set({ loading: true, error: null });
-    Promise.all([getReview(repoPath, branch, base), loadComments(repoPath, Number(id))])
-      .then(async ([detail, saved]) => {
+    Promise.all([getReview(repoPath, branch, base), loadComments(repoPath, Number(id)), readRuns(repoPath)])
+      .then(async ([detail, saved, runs]) => {
         const files = detail.fileSummary.map(toChangedFile);
         set({
           detail: { ...EMPTY_DETAIL, commits: detail.commits },
@@ -492,6 +689,7 @@ export const useStore = create<LockeState>((set, get) => ({
           viewed: saved?.viewed ?? {},
           nextThreadId: saved?.nextThreadId ?? 100,
           liveChecks: [],
+          history: runs.filter((r) => r.branch === branch).map(runToHistory),
           loading: false,
         });
         if (files.length) await get().loadDiff(0);

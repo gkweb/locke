@@ -137,6 +137,85 @@ export const runChecks = (repo: string, branch: string, checks: CheckSpec[]) =>
 export const runAgent = (repo: string, branch: string, agentCmd: string, prompt: string) =>
   invoke<string>("run_agent", { repo, branch, agentCmd, prompt });
 
+// ---- live streaming agent runs (Claude stream-json control protocol) ----
+
+/** A run-stream event emitted by the backend (`run:event`), already shaped like
+ *  the UI's RunEvent plus the owning runId. */
+export interface RunEventPayload {
+  runId: string;
+  key: string;
+  kind: "msg" | "read" | "edit" | "result" | "done" | "denied";
+  text: string;
+  sub?: string;
+  time: string;
+}
+
+/** A tool-permission prompt the agent is blocked on (`run:permission`). Answer it
+ *  with `respondPermission(runId, requestId, allow)`. */
+export interface RunPermissionPayload {
+  runId: string;
+  requestId: string;
+  tool: string;
+  cmd: string;
+  why: string;
+  scope: string;
+  suggestions: unknown;
+}
+
+/** A run finishing (`run:done`). */
+export interface RunDonePayload {
+  runId: string;
+  state: "done" | "failed" | "canceled";
+  result: string;
+  duration: string;
+  branch: string;
+}
+
+/** A persisted run record (`.locke/runs/<runId>.json`), for the History tab. */
+export interface RunRecord {
+  runId: string;
+  branch: string;
+  agent: string;
+  startedAt: number;
+  endedAt: number;
+  duration: string;
+  state: "done" | "failed" | "canceled";
+  permissions: number;
+  result: string;
+  events: RunEventPayload[];
+}
+
+/**
+ * Start a live streaming Claude run. Returns immediately; the run streams via the
+ * `run:event` / `run:permission` / `run:done` Tauri events keyed by `runId`. The
+ * agent runs in an isolated worktree (committed onto the branch on success) when
+ * `useWorktree`, else directly in the repo's working tree.
+ */
+export const startRun = (
+  runId: string,
+  repo: string,
+  branch: string,
+  agentCmd: string,
+  prompt: string,
+  useWorktree: boolean,
+) => invoke<void>("start_run", { runId, repo, branch, agentCmd, prompt, useWorktree });
+
+/** Answer a pending tool-permission prompt (Allow/Deny) for a live run. */
+export const respondPermission = (
+  runId: string,
+  requestId: string,
+  allow: boolean,
+  updatedInput?: unknown,
+  message?: string,
+) => invoke<void>("respond_permission", { runId, requestId, allow, updatedInput, message });
+
+/** Cancel an in-flight run (kills the agent process). */
+export const cancelRun = (runId: string) => invoke<void>("cancel_run", { runId });
+
+/** Read all persisted run records (newest first). Empty in mock mode. */
+export const readRuns = (repo: string): Promise<RunRecord[]> =>
+  isTauri ? invoke<RunRecord[]>("read_runs", { repo }) : Promise.resolve([]);
+
 const initials = (name: string): string => {
   const parts = name.trim().split(/[\s/_-]+/).filter(Boolean);
   if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
