@@ -9,12 +9,23 @@ import { ReviewsView } from "./views/ReviewsView.js";
 import { RunsView } from "./views/RunsView.js";
 import { AgentsView } from "./views/AgentsView.js";
 import { WorkspaceView } from "./views/WorkspaceView.js";
-import type { View } from "@locke/core";
+import { NewReviewModal } from "./components/NewReviewModal.js";
+import { OpenRepoEmpty } from "./components/OpenRepoEmpty.js";
 
 // The Mission Control shell: three stacked regions — top ActionBar · middle
 // [SidePanel + main router] · bottom StatusBar.
 
-function Main({ view }: { view: View }) {
+function Main() {
+  const view = useStore((s) => s.view);
+  const reviews = useStore((s) => s.reviews);
+
+  // The fleet home/list hand off to the empty state when there are no reviews —
+  // prompting to open a repository (none open) or start one (repo open, no
+  // reviews yet). Runs/Agents/Workspace keep their own states.
+  if (reviews.length === 0 && (view === "activity" || view === "reviews")) {
+    return <OpenRepoEmpty />;
+  }
+
   switch (view) {
     case "activity":
       return <ActivityView />;
@@ -30,9 +41,9 @@ function Main({ view }: { view: View }) {
 }
 
 export function App() {
-  const view = useStore((s) => s.view);
   const panelOpen = useStore((s) => s.panelOpen);
   const panelSide = useStore((s) => s.panelSide);
+  const newReviewOpen = useStore((s) => s.newReviewOpen);
   const detectAgents = useStore((s) => s.detectAgents);
   const loadAgentSettings = useStore((s) => s.loadAgentSettings);
 
@@ -68,10 +79,11 @@ export function App() {
         }}
       >
         {panelOpen && <SidePanel />}
-        <Main view={view} />
+        <Main />
       </div>
 
       <StatusBar />
+      {newReviewOpen && <NewReviewModal />}
     </div>
   );
 }

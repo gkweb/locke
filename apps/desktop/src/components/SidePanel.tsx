@@ -2,8 +2,9 @@ import type { Review } from "@locke/core";
 import { useStore } from "../state/store.js";
 import { color, font, statusMeta, runStateMeta } from "../theme/tokens.js";
 import { fleetGroup, reviewKind, reviewAccent, type FleetGroup } from "../lib/fleet.js";
+import { chooseRepo } from "../lib/repo.js";
 import { AgentMark } from "./AgentMark.js";
-import { SearchIcon, FlipIcon, PlusIcon } from "./icons.js";
+import { SearchIcon, FlipIcon, PlusIcon, FolderIcon } from "./icons.js";
 import { HoverButton } from "./primitives.js";
 
 // Left (or right) review list. Groups reviews by fleet bucket, supports flipping
@@ -110,6 +111,9 @@ export function SidePanel() {
   const agentMode = useStore((s) => s.agentMode);
   const query = useStore((s) => s.query);
   const setQuery = useStore((s) => s.setQuery);
+  const repoPath = useStore((s) => s.repoPath);
+  const openRepo = useStore((s) => s.openRepo);
+  const setNewReviewOpen = useStore((s) => s.setNewReviewOpen);
 
   const q = query.trim().toLowerCase();
   const filtered = q
@@ -222,7 +226,8 @@ export function SidePanel() {
             <FlipIcon size={14} stroke={1.4} />
           </HoverButton>
           <HoverButton
-            title="New review"
+            title={repoPath ? "New review" : "Open repository"}
+            onClick={() => (repoPath ? setNewReviewOpen(true) : void chooseRepo(openRepo))}
             style={{
               width: 30,
               height: 30,
@@ -238,18 +243,42 @@ export function SidePanel() {
             }}
             hoverStyle={{ borderColor: color.borderPopover, color: color.text }}
           >
-            <PlusIcon size={14} stroke={1.5} />
+            {repoPath ? <PlusIcon size={14} stroke={1.5} /> : <FolderIcon size={14} stroke={1.5} />}
           </HoverButton>
         </div>
       </div>
 
       {/* list */}
       <div style={{ flex: 1, overflowY: "auto", padding: "9px 8px 14px" }}>
-        {groups.length === 0 && (
-          <div style={{ padding: "16px 10px", fontSize: 12, color: color.textGhost }}>
-            {reviews.length === 0 ? "No reviews yet." : "No matches."}
-          </div>
-        )}
+        {groups.length === 0 &&
+          (reviews.length === 0 && !repoPath ? (
+            <HoverButton
+              onClick={() => void chooseRepo(openRepo)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                width: "calc(100% - 16px)",
+                margin: "10px 8px",
+                padding: "9px 11px",
+                background: "transparent",
+                border: `1px dashed ${color.borderInput}`,
+                borderRadius: 9,
+                color: color.textFaint,
+                cursor: "pointer",
+                fontFamily: font.sans,
+                fontSize: 12,
+              }}
+              hoverStyle={{ borderColor: color.borderPopover, color: color.text }}
+            >
+              <FolderIcon size={13} stroke={1.5} />
+              Open repository…
+            </HoverButton>
+          ) : (
+            <div style={{ padding: "16px 10px", fontSize: 12, color: color.textGhost }}>
+              {reviews.length === 0 ? "No reviews yet." : "No matches."}
+            </div>
+          ))}
         {groups.map((g) => (
           <div key={g.key}>
             <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "9px 8px 7px" }}>

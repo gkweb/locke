@@ -1,5 +1,6 @@
 import { useStore } from "../state/store.js";
 import { color, font, alpha } from "../theme/tokens.js";
+import { chooseRepo } from "../lib/repo.js";
 import { FolderIcon, BranchIcon, ShieldIcon } from "./icons.js";
 import { HoverButton } from "./primitives.js";
 
@@ -37,6 +38,7 @@ export function StatusBar() {
   const pending = useStore((s) => s.pending);
   const toggleApprovals = useStore((s) => s.toggleApprovals);
   const pushed = useStore((s) => s.pushed);
+  const openRepo = useStore((s) => s.openRepo);
 
   const selected = reviews.find((r) => r.id === selectedPR);
   const branch = selected?.branch ?? base;
@@ -57,10 +59,22 @@ export function StatusBar() {
         fontSize: 11,
       }}
     >
-      <span style={{ ...pill, color: color.textFaint }}>
-        <FolderIcon size={11} color={color.textFainter} stroke={1.3} />
-        {tildePath(repoPath)}
-      </span>
+      {repoPath ? (
+        <span style={{ ...pill, color: color.textFaint }}>
+          <FolderIcon size={11} color={color.textFainter} stroke={1.3} />
+          {tildePath(repoPath)}
+        </span>
+      ) : (
+        <HoverButton
+          onClick={() => void chooseRepo(openRepo)}
+          title="Open a git repository"
+          style={{ ...pill, color: color.textFaint, cursor: "pointer" }}
+          hoverStyle={{ borderColor: color.borderPopover, color: color.textSoft }}
+        >
+          <FolderIcon size={11} color={color.textFainter} stroke={1.3} />
+          open repository…
+        </HoverButton>
+      )}
       <span style={{ ...pill, color: color.greenText }}>
         <BranchIcon size={11} color="#7b8494" stroke={1.4} />
         {branch}

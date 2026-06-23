@@ -159,6 +159,8 @@ interface LockeState {
   disabledAgents: string[];
   /** Whether the app-global Settings modal is open. */
   settingsOpen: boolean;
+  /** Whether the New-review modal (branch pickers) is open. */
+  newReviewOpen: boolean;
   /** True while a headless agent run is in flight (Phase 6). */
   agentRunning: boolean;
   /** Combined output (or error) of the last agent run, for display. */
@@ -198,6 +200,7 @@ interface LockeState {
   setSettingsOpen: (open: boolean) => void;
   /** Toggle the action-bar settings popover (closes the approvals tray). */
   toggleSettings: () => void;
+  setNewReviewOpen: (open: boolean) => void;
   /** Run the first enabled agent against the current review's open change
    *  requests, then refresh the diff to show its commit (Phase 6). */
   runAgent: () => Promise<void>;
@@ -298,6 +301,7 @@ export const useStore = create<LockeState>((set, get) => ({
   agents: MOCK ? MOCK_AGENTS : [],
   disabledAgents: MOCK ? MOCK_DISABLED : [],
   settingsOpen: false,
+  newReviewOpen: false,
   agentRunning: false,
   agentOutput: null,
 
@@ -354,6 +358,8 @@ export const useStore = create<LockeState>((set, get) => ({
   setSettingsOpen: (open) => set({ settingsOpen: open }),
 
   toggleSettings: () => set({ settingsOpen: !get().settingsOpen, approvalsOpen: false }),
+
+  setNewReviewOpen: (open) => set({ newReviewOpen: open }),
 
   runAgent: async () => {
     const { repoPath, selectedPR, reviews, files, threads, agents, disabledAgents } = get();
