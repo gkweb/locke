@@ -1,12 +1,17 @@
 import { create } from "zustand";
 import type {
+  Approval,
   ChangedFile,
   DiffMode,
+  HistoryEntry,
   Review,
   ReviewDetail,
+  RunEvent,
+  RunRow,
   Thread,
   Verdict,
   View,
+  WorkspaceTab,
 } from "@locke/core";
 import {
   reviewSummary,
@@ -91,6 +96,18 @@ interface LockeState {
 
   // ---- UI state ----
   view: View;
+  /** Active tab within the Review Workspace. */
+  workspaceTab: WorkspaceTab;
+  /** Side panel (review list) visibility, side, and width (clamped 240–560). */
+  panelOpen: boolean;
+  panelSide: "left" | "right";
+  panelWidth: number;
+  /** Action-bar approvals tray open. */
+  approvalsOpen: boolean;
+  /** Global search query (action bar + side panel). */
+  query: string;
+  /** "Agent control" (true) vs "Reviews only" (false). Persisted app-global. */
+  agentMode: boolean;
   selectedPR: string;
   selectedFile: number;
   diffMode: DiffMode;
@@ -134,16 +151,37 @@ interface LockeState {
   /** Combined output (or error) of the last agent run, for display. */
   agentOutput: string | null;
 
+  // ---- prototype run surface (design hero-flow; real streaming is a later phase) ----
+  /** Pending permission approvals across the fleet (drives the tray + counts). */
+  pending: Approval[];
+  /** Live event stream for the open review's run (Run tab). */
+  runEvents: RunEvent[];
+  /** Global runs table rows. */
+  runRows: RunRow[];
+  /** Saved runs for the open review (History tab). */
+  history: HistoryEntry[];
+  /** Whether the inline permission card is showing in the Run tab. */
+  showPermission: boolean;
+  runDone: boolean;
+  runPaused: boolean;
+
   // ---- navigation ----
   go: (view: View) => void;
-  openPR: (id: string) => void;
-  goOverview: () => void;
-  goReview: () => void;
+  /** Open a review in the workspace on the given tab (default "diff"). */
+  openReview: (id: string, tab?: WorkspaceTab) => void;
+  setWorkspaceTab: (tab: WorkspaceTab) => void;
+  togglePanel: () => void;
+  flipPanel: () => void;
+  setPanelWidth: (w: number) => void;
+  toggleApprovals: () => void;
+  setQuery: (q: string) => void;
 
   // ---- agents + settings (app-global) ----
   detectAgents: () => Promise<void>;
   loadAgentSettings: () => Promise<void>;
   toggleAgentEnabled: (id: string) => void;
+  /** Set the global "Agent control" vs "Reviews only" mode and persist it. */
+  setAgentMode: (on: boolean) => void;
   setSettingsOpen: (open: boolean) => void;
   /** Run the first enabled agent against the current review's open change
    *  requests, then refresh the diff to show its commit (Phase 6). */
@@ -199,7 +237,14 @@ export const useStore = create<LockeState>((set, get) => ({
   detail: EMPTY_DETAIL,
   threads: [],
 
-  view: "list",
+  view: "activity",
+  workspaceTab: "diff",
+  panelOpen: true,
+  panelSide: "left",
+  panelWidth: 300,
+  approvalsOpen: false,
+  query: "",
+  agentMode: true,
   selectedPR: "",
   selectedFile: 0,
   diffMode: "unified",
@@ -232,6 +277,14 @@ export const useStore = create<LockeState>((set, get) => ({
   agentRunning: false,
   agentOutput: null,
 
+  pending: [],
+  runEvents: [],
+  runRows: [],
+  history: [],
+  showPermission: false,
+  runDone: false,
+  runPaused: false,
+
   detectAgents: async () => {
     try {
       set({ agents: await detectAgents() });
@@ -242,18 +295,28 @@ export const useStore = create<LockeState>((set, get) => ({
 
   loadAgentSettings: async () => {
     try {
-      set({ disabledAgents: (await readAgentSettings()).disabled });
+      const s = await readAgentSettings();
+      set({ disabledAgents: s.disabled, agentMode: s.enabled });
     } catch {
-      // Missing/unreadable settings just means defaults (nothing disabled).
+      // Missing/unreadable settings just means defaults (nothing disabled, agents on).
     }
   },
 
   toggleAgentEnabled: (id) => {
-    const disabled = get().disabledAgents;
-    // Opt-out model: flip membership in the disabled set, then persist app-wide.
-    const next = disabled.includes(id) ? disabled.filter((d) => d !== id) : [...disabled, id];
+    const { disabledAgents, agentMode } = get();
+    // Opt-out model: flip membership in the disabled set, then persist app-wide
+    // (preserving the global mode).
+    const next = disabledAgents.includes(id)
+      ? disabledAgents.filter((d) => d !== id)
+      : [...disabledAgents, id];
     set({ disabledAgents: next });
-    void writeAgentSettings({ disabled: next });
+    void writeAgentSettings({ disabled: next, enabled: agentMode });
+  },
+
+  setAgentMode: (on) => {
+    // Leaving agent control closes any agent-only surface that's open.
+    set({ agentMode: on, approvalsOpen: on ? get().approvalsOpen : false });
+    void writeAgentSettings({ disabled: get().disabledAgents, enabled: on });
   },
 
   setSettingsOpen: (open) => set({ settingsOpen: open }),
@@ -271,7 +334,7 @@ export const useStore = create<LockeState>((set, get) => ({
       const output = await runAgentApi(repoPath, review.branch, agent.cmd, prompt);
       set({ agentOutput: output || "Agent finished with no output." });
       // Refresh the review so the agent's commit + new diff show up.
-      get().openPR(selectedPR);
+      get().openReview(selectedPR, get().workspaceTab);
     } catch (e) {
       set({ agentOutput: `Agent run failed:\n${String(e)}` });
     } finally {
@@ -281,12 +344,22 @@ export const useStore = create<LockeState>((set, get) => ({
 
   clearAgentOutput: () => set({ agentOutput: null }),
 
-  go: (view) => set({ view }),
-  openPR: (id) => {
+  go: (view) => set({ view, approvalsOpen: false, settingsOpen: false }),
+  openReview: (id, tab = "diff") => {
     const { repoPath, reviews, pulls } = get();
-    // Verdict is registry-backed; seed it from the pull so the overview reflects
-    // any prior decision.
-    set({ view: "overview", selectedPR: id, verdict: pulls[id]?.verdict ?? null });
+    // Verdict is registry-backed; seed it from the pull so the workspace reflects
+    // any prior decision. Reset the (prototype) run surface for the new review.
+    set({
+      view: "workspace",
+      workspaceTab: tab,
+      selectedPR: id,
+      verdict: pulls[id]?.verdict ?? null,
+      approvalsOpen: false,
+      runEvents: [],
+      runDone: false,
+      runPaused: false,
+      showPermission: false,
+    });
     if (!repoPath) return;
     // Each review carries its own head branch + base (the PR id is not the branch).
     const review = reviews.find((r) => r.id === id);
@@ -311,11 +384,16 @@ export const useStore = create<LockeState>((set, get) => ({
       })
       .catch((e) => set({ loading: false, error: String(e) }));
   },
-  goOverview: () => set({ view: "overview" }),
-  goReview: () => {
-    set({ view: "review" });
-    void get().loadDiff(get().selectedFile);
+  setWorkspaceTab: (tab) => {
+    set({ workspaceTab: tab });
+    // Entering the Diff tab lazily loads the selected file's hunks.
+    if (tab === "diff") void get().loadDiff(get().selectedFile);
   },
+  togglePanel: () => set({ panelOpen: !get().panelOpen }),
+  flipPanel: () => set({ panelSide: get().panelSide === "left" ? "right" : "left" }),
+  setPanelWidth: (w) => set({ panelWidth: Math.max(240, Math.min(560, Math.round(w))) }),
+  toggleApprovals: () => set({ approvalsOpen: !get().approvalsOpen, settingsOpen: false }),
+  setQuery: (q) => set({ query: q }),
 
   openRepo: async (path, baseArg = "main") => {
     set({ loading: true, error: null, repoPath: path });
@@ -356,7 +434,7 @@ export const useStore = create<LockeState>((set, get) => ({
         reviews,
         pulls,
         threads: [],
-        view: "list",
+        view: "activity",
         selectedPR: reviews[0]?.id ?? "",
         liveChecks: [],
         // Check precedence: per-repo override (.locke/checks.json) > config > auto-detect.
@@ -403,7 +481,7 @@ export const useStore = create<LockeState>((set, get) => ({
         pulls: { ...s.pulls, [review.id]: pull },
         loading: false,
       }));
-      get().openPR(review.id);
+      get().openReview(review.id);
     } catch (e) {
       set({ loading: false, error: String(e) });
     }
@@ -411,7 +489,7 @@ export const useStore = create<LockeState>((set, get) => ({
 
   closeReview: () => {
     get().setStatus("closed");
-    set({ view: "list" });
+    set({ view: "activity" });
   },
 
   deleteReviewBranch: async () => {
@@ -428,7 +506,7 @@ export const useStore = create<LockeState>((set, get) => ({
         return {
           reviews: s.reviews.filter((r) => r.id !== selectedPR),
           pulls,
-          view: "list",
+          view: "activity",
           loading: false,
         };
       });

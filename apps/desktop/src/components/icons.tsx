@@ -160,7 +160,82 @@ export const SplitIcon = ({ size = 13, color = "currentColor", stroke = 1.4, sty
   </svg>
 );
 
+// Sidebar / panel toggle: a rounded rect with a vertical divider near the left.
+export const SidebarIcon = ({ size = 16, color = "currentColor", stroke = 1.4, style }: IconProps) => (
+  <svg {...strokeBase(size, color, stroke, style)}>
+    <rect x="2" y="3" width="12" height="10" rx="2" />
+    <path d="M6.4 3v10" />
+  </svg>
+);
+
+// Nav: Activity (pulse line).
+export const ActivityIcon = ({ size = 16, color = "currentColor", stroke = 1.5, style }: IconProps) => (
+  <svg {...strokeBase(size, color, stroke, style)}>
+    <path d="M1.5 9h3l2-5 3 9 2-4h3" />
+  </svg>
+);
+
+// Nav: Reviews (document + check).
+export const ReviewsIcon = ({ size = 16, color = "currentColor", stroke = 1.5, style }: IconProps) => (
+  <svg {...strokeBase(size, color, stroke, style)}>
+    <path d="M3 2.5h7l2 2V13H3z" />
+    <path d="M5.5 7l1.5 1.5L10 5.5" />
+  </svg>
+);
+
+// Nav: Runs (play + list).
+export const RunsIcon = ({ size = 16, color = "currentColor", stroke = 1.5, style }: IconProps) => (
+  <svg {...strokeBase(size, color, stroke, style)}>
+    <path d="M3 3l5 3.5L3 10M8.5 11h4.5" />
+  </svg>
+);
+
+// Nav: Agents (robot head).
+export const AgentsIcon = ({ size = 16, color = "currentColor", stroke = 1.5, style }: IconProps) => (
+  <svg {...strokeBase(size, color, stroke, style)}>
+    <rect x="3" y="4.5" width="10" height="8" rx="2" />
+    <path d="M8 4.5V2.5M5.5 8h.01M10.5 8h.01M6 11h4" />
+  </svg>
+);
+
+export const PlusIcon = ({ size = 14, color = "currentColor", stroke = 1.5, style }: IconProps) => (
+  <svg {...strokeBase(size, color, stroke, style)}>
+    <path d="M8 3v10M3 8h10" />
+  </svg>
+);
+
+// Double-chevron, for flipping the side panel left↔right.
+export const FlipIcon = ({ size = 14, color = "currentColor", stroke = 1.5, style }: IconProps) => (
+  <svg {...strokeBase(size, color, stroke, style)}>
+    <path d="M6 4L2 8l4 4M10 4l4 4-4 4" />
+  </svg>
+);
+
+export const StopIcon = ({ size = 13, color = "currentColor", stroke = 1.5, style }: IconProps) => (
+  <svg {...strokeBase(size, color, stroke, style)}>
+    <rect x="4" y="4" width="8" height="8" rx="1.5" />
+  </svg>
+);
+
+export const PauseIcon = ({ size = 13, color = "currentColor", stroke = 1.6, style }: IconProps) => (
+  <svg {...strokeBase(size, color, stroke, style)}>
+    <path d="M6 3.5v9M10 3.5v9" />
+  </svg>
+);
+
 // Fill icons.
+
+// The Mission Control brand mark — interlocking links (violet + teal), one
+// filled violet node. Colors are intrinsic to the mark, so it ignores `color`.
+export const BrandMark = ({ size = 18, style }: { size?: number; style?: React.CSSProperties }) => (
+  <svg width={size} height={size} viewBox="0 0 64 64" fill="none" style={style}>
+    <path d="M19 18v17a8 8 0 0 0 8 8h11" stroke="#7b6cff" strokeWidth={5} strokeLinecap="round" />
+    <path d="M19 27c0-5 4-9 9-9h6" stroke="#3fd0c0" strokeWidth={5} strokeLinecap="round" />
+    <circle cx="19" cy="18" r="7.5" fill="#0c0e13" stroke="#7b6cff" strokeWidth={5} />
+    <circle cx="42" cy="18" r="7.5" fill="#0c0e13" stroke="#3fd0c0" strokeWidth={5} />
+    <circle cx="42" cy="43" r="7.5" fill="#7b6cff" />
+  </svg>
+);
 
 export const SparkleIcon = ({ size = 14, color = "#3fd0c0", style }: IconProps) => (
   <svg width={size} height={size} viewBox="0 0 16 16" fill={color} style={style}>
