@@ -198,6 +198,12 @@ export const AgentsIcon = ({ size = 16, color = "currentColor", stroke = 1.5, st
   </svg>
 );
 
+export const FolderIcon = ({ size = 11, color = "currentColor", stroke = 1.3, style }: IconProps) => (
+  <svg {...strokeBase(size, color, stroke, style)}>
+    <path d="M2 4.5a1 1 0 0 1 1-1h3l1.5 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" />
+  </svg>
+);
+
 export const PlusIcon = ({ size = 14, color = "currentColor", stroke = 1.5, style }: IconProps) => (
   <svg {...strokeBase(size, color, stroke, style)}>
     <path d="M8 3v10M3 8h10" />
