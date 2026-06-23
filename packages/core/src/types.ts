@@ -159,6 +159,8 @@ export interface Review {
   /** One-line description of the agent's most recent action, e.g.
    *  "editing src/types/stripe.d.ts (+12)" (Activity in-flight card). */
   lastAction?: string;
+  /** Elapsed time of the active run, e.g. "1:12" (in-flight card footer). */
+  elapsed?: string;
 }
 
 /** One line in a diff hunk: [kind, oldLineNo, newLineNo, text]. 0 means absent. */
