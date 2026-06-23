@@ -4,6 +4,7 @@ import { color, font, alpha, runStateMeta } from "../theme/tokens.js";
 import { reviewKind, reviewAccent, reviewStatusMeta } from "../lib/fleet.js";
 import { AgentMark } from "../components/AgentMark.js";
 import { DiffViewer } from "../components/DiffViewer.js";
+import { RunTab } from "../components/RunTab.js";
 import {
   ChevronLeftIcon,
   ArrowRightIcon,
@@ -199,15 +200,6 @@ function HistoryTab() {
   );
 }
 
-function RunTabPlaceholder() {
-  return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, color: color.textFaint }}>
-      <div style={{ fontSize: 15, fontWeight: 600, color: color.textSoft }}>Live run surface</div>
-      <div style={{ fontSize: 12, color: color.textGhost }}>Event stream, inline permissions and run history — landing in the next phase.</div>
-    </div>
-  );
-}
-
 function TabButton({ active, accent, onClick, children }: { active: boolean; accent?: string; onClick: () => void; children: React.ReactNode }) {
   return (
     <button
@@ -365,7 +357,7 @@ export function WorkspaceView() {
 
       {/* body */}
       {effTab === "diff" && <DiffTab />}
-      {effTab === "run" && <RunTabPlaceholder />}
+      {effTab === "run" && <RunTab review={review} />}
       {effTab === "checks" && <ChecksTab />}
       {effTab === "history" && <HistoryTab />}
     </div>
