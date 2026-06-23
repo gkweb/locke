@@ -238,6 +238,7 @@ export function WorkspaceView() {
   const selectedPR = useStore((s) => s.selectedPR);
   const workspaceTab = useStore((s) => s.workspaceTab);
   const setWorkspaceTab = useStore((s) => s.setWorkspaceTab);
+  const startRun = useStore((s) => s.startRun);
   const agentMode = useStore((s) => s.agentMode);
   const go = useStore((s) => s.go);
   const files = useStore((s) => s.files);
@@ -303,7 +304,7 @@ export function WorkspaceView() {
           <div style={{ display: "flex", alignItems: "center", gap: 9, flex: "none" }}>
             {agentMode && (
               <HoverButton
-                onClick={() => setWorkspaceTab("run")}
+                onClick={() => void startRun()}
                 style={{ display: "flex", alignItems: "center", gap: 7, padding: "9px 13px", background: alpha.teal(0.1), border: `1px solid ${alpha.teal(0.34)}`, borderRadius: 9, color: color.teal, fontFamily: font.sans, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
                 hoverStyle={{ background: alpha.teal(0.16) }}
               >
