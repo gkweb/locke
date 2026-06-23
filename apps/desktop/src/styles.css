@@ -54,6 +54,31 @@ body {
   }
 }
 
+/* Mission Control animations (design names). */
+@keyframes lkspin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes lkpulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@keyframes lkblink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
 textarea,
 input,
 button {

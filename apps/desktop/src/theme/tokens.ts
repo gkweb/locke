@@ -49,6 +49,8 @@ export const color = {
   amber: "#f0b86e", // draft / numbers
   blue: "#82aaff", // base branch / info
   blueRun: "#5aa9ff", // running spinner
+  approved: "#a78bff", // approved verdict pill
+  codex: "#c0a9ff", // Codex agent accent
 } as const;
 
 // Syntax highlighter palette (matches the design's hl()).
@@ -78,3 +80,43 @@ export const alpha = {
   violet: (a: number) => `rgba(123,108,255,${a})`,
   violetAlt: (a: number) => `rgba(167,139,255,${a})`,
 } as const;
+
+// The design's pill convention: `color:{c}; background:{c}1f; border:1px solid {c}4d`.
+// `tint(hex, "1f")` appends a 2-digit hex alpha to a 6-digit hex color.
+export const tint = (hex: string, alphaHex: string): string => `${hex}${alphaHex}`;
+
+/** Status → label + accent. Covers the design's fleet statuses and the real
+ *  `ReviewStatus` lifecycle values so both the queue and the workspace agree. */
+export const statusMeta: Record<string, { label: string; color: string }> = {
+  ready: { label: "Ready for review", color: color.green },
+  changes: { label: "Changes requested", color: color.red },
+  running: { label: "Agent running", color: color.teal },
+  draft: { label: "Draft", color: color.amber },
+  approved: { label: "Approved", color: color.approved },
+  merged: { label: "Merged", color: color.violet },
+  closed: { label: "Closed", color: color.textGhost },
+};
+
+/** Agent-run state → accent (Idle/Running/Awaiting/Done/Failed). */
+export const runStateMeta: Record<string, { label: string; color: string }> = {
+  idle: { label: "Idle", color: color.textFainter },
+  running: { label: "Running", color: color.teal },
+  awaiting: { label: "Awaiting permission", color: color.amber },
+  done: { label: "Done", color: color.green },
+  failed: { label: "Failed", color: color.red },
+};
+
+/** Per-agent identity accent, keyed by the AgentMark `kind`. */
+export const agentAccent: Record<"claude" | "codex" | "human", string> = {
+  claude: color.teal,
+  codex: color.codex,
+  human: color.violetLight,
+};
+
+/** Map a two-letter author initial to an AgentMark `kind` (matches the design's
+ *  `agentKind`: CX→codex, MA/human→human, everything else→claude). */
+export function agentKind(initials: string): "claude" | "codex" | "human" {
+  if (initials === "CX") return "codex";
+  if (initials === "MA") return "human";
+  return "claude";
+}
