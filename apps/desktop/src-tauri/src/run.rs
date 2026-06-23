@@ -168,20 +168,69 @@ fn claude_stream_argv() -> Vec<String> {
     ]
 }
 
-/// Resolve (and, for the worktree mode, create) the directory the agent runs in.
+/// Where `branch` is currently checked out, if anywhere (the main working tree or
+/// another worktree). Git allows a branch to be checked out in only one worktree
+/// at a time, so this is what blocks isolating an already-checked-out branch.
+fn branch_checkout_path(repo: &str, branch: &str) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let want = format!("refs/heads/{branch}");
+    let mut cur_path: Option<String> = None;
+    for line in text.lines() {
+        if let Some(p) = line.strip_prefix("worktree ") {
+            cur_path = Some(p.to_string());
+        } else if let Some(b) = line.strip_prefix("branch ") {
+            if b == want {
+                return cur_path;
+            }
+        }
+    }
+    None
+}
+
+/// What `prepare_workdir` resolved: the directory to run in, whether it's an
+/// isolated worktree Locke owns (and should commit + tear down), and an optional
+/// note to surface when worktree isolation had to be skipped.
+struct WorkdirPlan {
+    dir: String,
+    /// True only for a fresh worktree Locke created (drives commit + cleanup).
+    owned_worktree: bool,
+    note: Option<String>,
+}
+
+/// Resolve (and, for worktree mode, create) the directory the agent runs in.
 /// Worktree mode mirrors `actions::run_agent` isolation (checked out on the branch
 /// so commits advance it, node_modules symlinked); direct mode runs in the repo's
 /// own working tree so edits are live where the user sees them.
-fn prepare_workdir(repo: &str, branch: &str, use_worktree: bool) -> R<String> {
+///
+/// A branch can be checked out in only one worktree at a time, so when the review
+/// branch is already checked out (commonly: it IS the repo's current branch),
+/// isolation is impossible — we fall back to running in that existing checkout and
+/// leave the edits uncommitted for review, with a note explaining why.
+fn prepare_workdir(repo: &str, branch: &str, use_worktree: bool) -> R<WorkdirPlan> {
     if !use_worktree {
-        return Ok(repo.to_string());
+        return Ok(WorkdirPlan { dir: repo.to_string(), owned_worktree: false, note: None });
+    }
+    if let Some(path) = branch_checkout_path(repo, branch) {
+        let note = format!(
+            "`{branch}` is already checked out at {path} — running there. An isolated worktree isn't possible for a checked-out branch, so edits are left uncommitted for you to review."
+        );
+        return Ok(WorkdirPlan { dir: path, owned_worktree: false, note: Some(note) });
     }
     let wt = std::env::temp_dir().join(format!("locke-run-{}", sanitize(branch)));
     let wt_str = wt.to_string_lossy().to_string();
     let _ = run_git(repo, &["worktree", "remove", "--force", &wt_str]);
     let _ = std::fs::remove_dir_all(&wt);
     run_git(repo, &["worktree", "add", &wt_str, branch])
-        .map_err(|e| format!("create worktree for {branch} (checked out elsewhere?): {e}"))?;
+        .map_err(|e| format!("create worktree for {branch}: {e}"))?;
     #[cfg(unix)]
     {
         let nm = Path::new(repo).join("node_modules");
@@ -189,7 +238,7 @@ fn prepare_workdir(repo: &str, branch: &str, use_worktree: bool) -> R<String> {
             let _ = std::os::unix::fs::symlink(&nm, wt.join("node_modules"));
         }
     }
-    Ok(wt_str)
+    Ok(WorkdirPlan { dir: wt_str, owned_worktree: true, note: None })
 }
 
 /// Start a live streaming Claude run. Returns immediately; events stream to the
@@ -207,7 +256,7 @@ pub fn start_run(
     prompt: String,
     use_worktree: bool,
 ) -> R<()> {
-    let workdir = prepare_workdir(&repo, &branch, use_worktree)?;
+    let WorkdirPlan { dir: workdir, owned_worktree, note } = prepare_workdir(&repo, &branch, use_worktree)?;
 
     let mut child = Command::new(&agent_cmd)
         .args(claude_stream_argv())
@@ -217,8 +266,8 @@ pub fn start_run(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| {
-            // Best-effort worktree cleanup if the agent never launched.
-            if use_worktree {
+            // Best-effort cleanup of a worktree we created if the agent never launched.
+            if owned_worktree {
                 let _ = run_git(&repo, &["worktree", "remove", "--force", &workdir]);
             }
             format!("could not start {agent_cmd}: {e}")
@@ -232,6 +281,14 @@ pub fn start_run(
     writeln!(stdin, "{user_msg}").map_err(|e| format!("write prompt: {e}"))?;
     stdin.flush().ok();
 
+    // Surface why isolation was skipped, before the live events start.
+    if let Some(note) = note {
+        let _ = app.emit(
+            "run:event",
+            EventPayload { run_id: run_id.clone(), key: "note".into(), kind: "msg".into(), text: note, sub: None, time: "0:00".into() },
+        );
+    }
+
     registry.0.lock().unwrap().insert(
         run_id.clone(),
         RunSlot {
@@ -240,7 +297,7 @@ pub fn start_run(
             repo: repo.clone(),
             branch: branch.clone(),
             workdir: workdir.clone(),
-            use_worktree,
+            use_worktree: owned_worktree,
             canceled: false,
         },
     );
@@ -448,4 +505,43 @@ pub fn cancel_run(registry: &RunRegistry, run_id: &str) -> R<()> {
     let slot = guard.get_mut(run_id).ok_or("run not found")?;
     slot.canceled = true;
     slot.child.kill().map_err(|e| format!("kill: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_where_a_branch_is_checked_out() {
+        let dir = std::env::temp_dir().join(format!("locke-copath-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str], cwd: &Path| {
+            assert!(Command::new("git").args(args).current_dir(cwd)
+                .env("GIT_AUTHOR_NAME", "T").env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "T").env("GIT_COMMITTER_EMAIL", "t@t")
+                .status().unwrap().success());
+        };
+        g(&["init", "-q", "-b", "main"], &dir);
+        g(&["commit", "-q", "--allow-empty", "-m", "base"], &dir);
+        g(&["branch", "feature"], &dir); // exists but not checked out
+        let repo = dir.to_str().unwrap();
+
+        // main is checked out at the repo root (git reports the canonical path);
+        // feature is checked out nowhere.
+        let canon = |p: &str| std::fs::canonicalize(p).unwrap();
+        let main_at = branch_checkout_path(repo, "main").expect("main is checked out");
+        assert_eq!(canon(&main_at), canon(repo));
+        assert_eq!(branch_checkout_path(repo, "feature"), None);
+        assert_eq!(branch_checkout_path(repo, "nonexistent"), None);
+
+        // Worktree mode on an already-checked-out branch falls back (not owned),
+        // running in that existing checkout.
+        let plan = prepare_workdir(repo, "main", true).unwrap();
+        assert_eq!(canon(&plan.dir), canon(repo));
+        assert!(!plan.owned_worktree, "can't isolate a checked-out branch");
+        assert!(plan.note.is_some(), "explains the fallback");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
