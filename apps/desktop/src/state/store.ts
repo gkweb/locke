@@ -455,6 +455,12 @@ export const useStore = create<LockeState>((set, get) => ({
       set({ runEvents: [{ key: "x", kind: "denied", text: "No enabled agent detected to run.", time: "" }], runDone: false, runPaused: true });
       return;
     }
+    // The agent acts on open change requests; with none there's nothing to do.
+    const openCRs = threads.filter((t) => !t.resolved && t.kind === "change_request").length;
+    if (openCRs === 0) {
+      set({ runEvents: [{ key: "x", kind: "msg", text: "No open change requests to action on this review.", time: "" }], runDone: false, runPaused: false, currentRunId: null });
+      return;
+    }
     const prompt = buildAgentPrompt({ repoPath, selectedPR, reviews, files, threads });
     const runId = `run-${Date.now()}`;
     set((s) => ({

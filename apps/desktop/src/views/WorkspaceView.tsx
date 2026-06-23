@@ -247,6 +247,8 @@ export function WorkspaceView() {
   const approveAndPush = useStore((s) => s.approveAndPush);
   const setVerdict = useStore((s) => s.setVerdict);
   const pending = useStore((s) => s.pending);
+  const agents = useStore((s) => s.agents);
+  const disabledAgents = useStore((s) => s.disabledAgents);
 
   const review = reviews.find((r) => r.id === selectedPR) ?? reviews[0];
   if (!review) {
@@ -263,6 +265,10 @@ export function WorkspaceView() {
   const flagCount = threads.filter((t) => t.kind === "change_request" && !t.resolved).length;
   const awaiting = agentMode && pending.some((p) => p.reviewId === review.id);
   const runActive = agentMode && review.runState === "running";
+  // The agent loop only has work when there are open change requests to action,
+  // there's an enabled agent to run, and no run is already in flight.
+  const hasAgent = agents.some((a) => a.detected && !disabledAgents.includes(a.id));
+  const canRunAgent = agentMode && hasAgent && flagCount > 0 && !awaiting && !runActive;
   // In reviews-only mode the Run tab is hidden; redirect a stale run tab to diff.
   const effTab: WorkspaceTab = !agentMode && workspaceTab === "run" ? "diff" : workspaceTab;
 
@@ -302,7 +308,7 @@ export function WorkspaceView() {
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 9, flex: "none" }}>
-            {agentMode && (
+            {canRunAgent && (
               <HoverButton
                 onClick={() => void startRun()}
                 style={{ display: "flex", alignItems: "center", gap: 7, padding: "9px 13px", background: alpha.teal(0.1), border: `1px solid ${alpha.teal(0.34)}`, borderRadius: 9, color: color.teal, fontFamily: font.sans, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}

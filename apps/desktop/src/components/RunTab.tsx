@@ -66,7 +66,9 @@ export function RunTab({ review }: { review: Review }) {
   const cancelRun = useStore((s) => s.cancelRun);
   const runUseWorktree = useStore((s) => s.runUseWorktree);
   const setRunUseWorktree = useStore((s) => s.setRunUseWorktree);
+  const threads = useStore((s) => s.threads);
 
+  const flagCount = threads.filter((t) => t.kind === "change_request" && !t.resolved).length;
   const perm = pending.find((p) => p.reviewId === review.id);
   const awaiting = !!perm && !runDone && !runPaused;
   const runActive = (!!currentRunId || review.runState === "running") && !awaiting && !runDone && !runPaused;
@@ -108,16 +110,28 @@ export function RunTab({ review }: { review: Review }) {
         {/* stream */}
         <div style={{ flex: 1, overflowY: "auto", padding: "18px 24px 40px" }}>
           {idle ? (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: 14, color: color.textGhost }}>
-              <div style={{ fontSize: 13 }}>No run in progress for this review.</div>
-              <HoverButton
-                onClick={() => void startRun()}
-                style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 16px", background: alpha.teal(0.12), border: `1px solid ${alpha.teal(0.4)}`, borderRadius: 9, color: color.teal, fontFamily: font.sans, fontSize: 13, fontWeight: 600, cursor: "pointer" }}
-                hoverStyle={{ background: alpha.teal(0.2) }}
-              >
-                <PlayIcon size={14} color="currentColor" stroke={1.6} />
-                Run agent on the open change requests
-              </HoverButton>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: 14, color: color.textGhost, textAlign: "center", padding: "0 32px" }}>
+              {flagCount > 0 ? (
+                <>
+                  <div style={{ fontSize: 13 }}>
+                    {flagCount} open change request{flagCount === 1 ? "" : "s"} to action.
+                  </div>
+                  <HoverButton
+                    onClick={() => void startRun()}
+                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 16px", background: alpha.teal(0.12), border: `1px solid ${alpha.teal(0.4)}`, borderRadius: 9, color: color.teal, fontFamily: font.sans, fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+                    hoverStyle={{ background: alpha.teal(0.2) }}
+                  >
+                    <PlayIcon size={14} color="currentColor" stroke={1.6} />
+                    Run agent on the open change requests
+                  </HoverButton>
+                </>
+              ) : (
+                <div style={{ fontSize: 13, lineHeight: 1.6, maxWidth: 420 }}>
+                  No open change requests on this review — nothing for the agent to action.
+                  <br />
+                  Flag a comment as a change request in the Diff tab to enable a run.
+                </div>
+              )}
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
