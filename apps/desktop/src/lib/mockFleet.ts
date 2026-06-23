@@ -1,4 +1,4 @@
-import type { Approval, ChangedFile, Check, HistoryEntry, Review, RunRow, Thread } from "@locke/core";
+import type { Approval, ChangedFile, Check, HistoryEntry, Review, RunEvent, RunRow, Thread } from "@locke/core";
 import type { AgentInfo } from "../api/git.js";
 
 // The design's `payments-service` fleet, seeded in mock mode (plain `vite`, no
@@ -253,8 +253,23 @@ export const MOCK_CHECKS: Check[] = [
   { label: "build", detail: "bundle ok", status: "pass" },
 ];
 
+// The opening run-stream events for #142 (the hero flow appends to these as you
+// allow/deny the scripted permissions).
+const RUN_EVENTS_142: RunEvent[] = [
+  { key: "e1", kind: "msg", text: "Addressing 2 change requests from your review on retryHandler.ts.", time: "0:00" },
+  { key: "e2", kind: "read", text: "Read src/webhooks/retryHandler.ts", time: "0:03" },
+  {
+    key: "e3",
+    kind: "edit",
+    text: "Edited retryHandler.ts",
+    sub: "+ wrapped store.has / store.save in a single Redis MULTI transaction\n+ key is computed once and reused for both calls",
+    time: "0:21",
+  },
+];
+
 /** Per-review workspace data, keyed by review id. Only #142 is detailed in the
  *  design; other reviews open with an empty diff in mock mode. */
 export const MOCK_FILES_BY_ID: Record<string, ChangedFile[]> = { "142": FILES_142 };
 export const MOCK_THREADS_BY_ID: Record<string, Thread[]> = { "142": THREADS_142 };
 export const MOCK_HISTORY_BY_ID: Record<string, HistoryEntry[]> = { "142": HISTORY_142 };
+export const MOCK_RUN_EVENTS_BY_ID: Record<string, RunEvent[]> = { "142": RUN_EVENTS_142 };
