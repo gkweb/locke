@@ -335,9 +335,15 @@ export const useStore = create<LockeState>((set, get) => ({
   },
 
   setAgentMode: (on) => {
-    // Leaving agent control closes any agent-only surface that's open.
-    set({ agentMode: on, approvalsOpen: on ? get().approvalsOpen : false });
-    void writeAgentSettings({ disabled: get().disabledAgents, enabled: on });
+    // Leaving agent control closes any agent-only surface that's open and steps
+    // off the Agents destination (its nav entry disappears).
+    const { view, approvalsOpen, disabledAgents } = get();
+    set({
+      agentMode: on,
+      approvalsOpen: on ? approvalsOpen : false,
+      view: !on && view === "agents" ? "activity" : view,
+    });
+    void writeAgentSettings({ disabled: disabledAgents, enabled: on });
   },
 
   setSettingsOpen: (open) => set({ settingsOpen: open }),
