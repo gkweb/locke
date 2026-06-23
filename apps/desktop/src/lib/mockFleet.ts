@@ -1,0 +1,156 @@
+import type { Approval, Review, RunRow } from "@locke/core";
+import type { AgentInfo } from "../api/git.js";
+
+// The design's `payments-service` fleet, seeded in mock mode (plain `vite`, no
+// Tauri bridge) so Locke matches the design out of the box. In a real Tauri
+// session `openRepo` replaces these with live git data. Mirrors the .dc.html
+// REVIEWS()/pending/runRows/agents.
+
+export const MOCK_REVIEWS: Review[] = [
+  {
+    id: "142",
+    title: "Add idempotency keys to webhook retry handler",
+    branch: "agent/webhook-idempotency",
+    base: "main",
+    agent: "Claude",
+    model: "Sonnet 4.5",
+    isAgent: true,
+    initials: "CL",
+    status: "changes",
+    files: 4,
+    add: 31,
+    del: 9,
+    comments: 1,
+    checks: "pass",
+    time: "8 min ago",
+    runId: "run #R7",
+    runState: "awaiting",
+    lastAction: "wants to run `npm test -- webhooks`",
+    elapsed: "0:41",
+  },
+  {
+    id: "139",
+    title: "Fix race condition in payment reconciliation job",
+    branch: "agent/recon-lock",
+    base: "main",
+    agent: "Claude",
+    model: "Sonnet 4.5",
+    isAgent: true,
+    initials: "CL",
+    status: "changes",
+    files: 6,
+    add: 52,
+    del: 41,
+    comments: 1,
+    checks: "pass",
+    time: "2 hours ago",
+    runId: "run #R6",
+    runState: "awaiting",
+    lastAction: "wants to run `git commit`",
+    elapsed: "0:08",
+  },
+  {
+    id: "137",
+    title: "Update Stripe SDK to v14 and adjust types",
+    branch: "agent/stripe-v14",
+    base: "main",
+    agent: "Codex",
+    model: "gpt-5",
+    isAgent: true,
+    initials: "CX",
+    status: "draft",
+    files: 9,
+    add: 88,
+    del: 150,
+    comments: 0,
+    checks: "running",
+    time: "just now",
+    runId: "run #R8",
+    runState: "running",
+    lastAction: "editing src/types/stripe.d.ts (+12)",
+    elapsed: "1:12",
+  },
+  {
+    id: "138",
+    title: "Add structured logging to the dispatch worker",
+    branch: "agent/dispatch-logs",
+    base: "main",
+    agent: "Claude",
+    model: "Sonnet 4.5",
+    isAgent: true,
+    initials: "CL",
+    status: "ready",
+    files: 5,
+    add: 46,
+    del: 12,
+    comments: 0,
+    checks: "pass",
+    time: "25 min ago",
+    runId: "run #R5",
+    runState: "done",
+  },
+  {
+    id: "134",
+    title: "Refactor: extract email templates into MJML",
+    branch: "feat/mjml-emails",
+    base: "main",
+    agent: "maya",
+    model: null,
+    isAgent: false,
+    initials: "MA",
+    status: "ready",
+    files: 18,
+    add: 320,
+    del: 210,
+    comments: 0,
+    checks: "pass",
+    time: "2 days ago",
+  },
+];
+
+export const MOCK_PENDING: Approval[] = [
+  {
+    id: "a1",
+    reviewId: "142",
+    runId: "run #R7",
+    agent: "Claude",
+    initials: "CL",
+    branch: "agent/webhook-idempotency",
+    cmd: "npm test -- webhooks",
+    tool: "npm",
+    why: "Run the webhook test suite to confirm the atomic dedupe holds under concurrent delivery.",
+    scope: "sandboxed · repo dir only",
+  },
+  {
+    id: "a2",
+    reviewId: "139",
+    runId: "run #R6",
+    agent: "Claude",
+    initials: "CL",
+    branch: "agent/recon-lock",
+    cmd: 'git commit -m "Add advisory lock to recon job"',
+    tool: "git",
+    why: "Commit the reconciliation lock fix.",
+    scope: "local repo",
+  },
+];
+
+export const MOCK_RUN_ROWS: RunRow[] = [
+  { runId: "#R8", initials: "CX", agent: "Codex", branch: "agent/stripe-v14", state: "running", duration: "1:12", rev: "137" },
+  { runId: "#R7", initials: "CL", agent: "Claude", branch: "agent/webhook-idempotency", state: "awaiting", duration: "0:41", rev: "142" },
+  { runId: "#R6", initials: "CL", agent: "Claude", branch: "agent/recon-lock", state: "awaiting", duration: "0:08", rev: "139" },
+  { runId: "#R5", initials: "CL", agent: "Claude", branch: "agent/dispatch-logs", state: "done", duration: "1:46", rev: "138" },
+  { runId: "#R4", initials: "CL", agent: "Claude", branch: "agent/webhook-idempotency", state: "done", duration: "2:03", rev: "142" },
+  { runId: "#R3", initials: "CX", agent: "Codex", branch: "agent/stripe-v14", state: "failed", duration: "0:52", rev: "137" },
+];
+
+// Detected agent CLIs for mock mode (real mode probes PATH). aider/cursor are
+// seeded as opted-out via MOCK_DISABLED so they render disabled.
+export const MOCK_AGENTS: AgentInfo[] = [
+  { id: "claude", name: "Claude Code", cmd: "claude", detected: true, path: "/usr/local/bin/claude", version: "v1.2.0" },
+  { id: "codex", name: "Codex CLI", cmd: "codex", detected: true, path: "/opt/homebrew/bin/codex", version: "v0.9.4" },
+  { id: "aider", name: "Aider", cmd: "aider", detected: true, path: "/usr/local/bin/aider", version: "v0.51" },
+  { id: "cursor", name: "Cursor Agent", cmd: "cursor-agent", detected: true, path: "/usr/local/bin/cursor-agent", version: "v0.42" },
+];
+
+export const MOCK_DISABLED: string[] = ["aider", "cursor"];

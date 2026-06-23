@@ -121,6 +121,15 @@ export const agentAccent: Record<"claude" | "codex" | "human", string> = {
   human: color.violetLight,
 };
 
+/** Per-agent accent keyed by CLI id (Agents screen chips). Falls back to violet. */
+export const agentIdAccent: Record<string, string> = {
+  claude: color.teal,
+  codex: color.codex,
+  aider: color.blue,
+  cursor: color.amber,
+  gemini: color.blue,
+};
+
 /** Map a two-letter author initial to an AgentMark `kind` (matches the design's
  *  `agentKind`: CX→codex, MA/human→human, everything else→claude). */
 export function agentKind(initials: string): "claude" | "codex" | "human" {
