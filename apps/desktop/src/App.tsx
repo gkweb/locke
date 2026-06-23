@@ -8,32 +8,11 @@ import { ActivityView } from "./views/ActivityView.js";
 import { ReviewsView } from "./views/ReviewsView.js";
 import { RunsView } from "./views/RunsView.js";
 import { AgentsView } from "./views/AgentsView.js";
+import { WorkspaceView } from "./views/WorkspaceView.js";
 import type { View } from "@locke/core";
 
 // The Mission Control shell: three stacked regions — top ActionBar · middle
-// [SidePanel + main router] · bottom StatusBar. The Review Workspace lands in
-// Phase 4; for now `workspace` renders a stub.
-
-function WorkspaceStub() {
-  return (
-    <div
-      style={{
-        flex: 1,
-        minWidth: 0,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 8,
-        background: color.appBg,
-        color: color.textFaint,
-      }}
-    >
-      <div style={{ fontSize: 20, fontWeight: 700, color: color.textBright, letterSpacing: "-.4px" }}>Review Workspace</div>
-      <div style={{ fontSize: 12, color: color.textGhost }}>Diff · Run · Checks · History — landing in the next phase.</div>
-    </div>
-  );
-}
+// [SidePanel + main router] · bottom StatusBar.
 
 function Main({ view }: { view: View }) {
   switch (view) {
@@ -46,7 +25,7 @@ function Main({ view }: { view: View }) {
     case "agents":
       return <AgentsView />;
     case "workspace":
-      return <WorkspaceStub />;
+      return <WorkspaceView />;
   }
 }
 
