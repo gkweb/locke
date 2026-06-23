@@ -2,6 +2,7 @@ import type { ChangedFile, WorkspaceTab } from "@locke/core";
 import { useStore } from "../state/store.js";
 import { color, font, alpha, runStateMeta } from "../theme/tokens.js";
 import { reviewKind, reviewAccent, reviewStatusMeta } from "../lib/fleet.js";
+import { fullFilePath } from "../lib/mockFleet.js";
 import { AgentMark } from "../components/AgentMark.js";
 import { DiffViewer } from "../components/DiffViewer.js";
 import { RunTab } from "../components/RunTab.js";
@@ -14,6 +15,7 @@ import {
   SpinnerIcon,
   XCircleIcon,
   FileSimpleIcon,
+  FullFileIcon,
 } from "../components/icons.js";
 import { HoverButton, HoverDiv } from "../components/primitives.js";
 
@@ -24,6 +26,10 @@ function FilesRail() {
   const selectedFile = useStore((s) => s.selectedFile);
   const selectFile = useStore((s) => s.selectFile);
   const threads = useStore((s) => s.threads);
+  const reviews = useStore((s) => s.reviews);
+  const selectedPR = useStore((s) => s.selectedPR);
+  const openFullFile = useStore((s) => s.openFullFile);
+  const review = reviews.find((r) => r.id === selectedPR);
   const flagged = (path: string) => threads.some((t) => t.file === path && t.kind === "change_request" && !t.resolved);
 
   return (
@@ -73,6 +79,32 @@ function FilesRail() {
               {file.name}
             </span>
             {flagged(file.path) && <span style={{ width: 6, height: 6, borderRadius: "50%", background: color.red, flex: "none" }} />}
+            {fullFilePath(file.path) && (
+              <HoverButton
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const full = fullFilePath(file.path);
+                  if (full) openFullFile(full, review ? { id: review.id, branch: review.branch } : undefined);
+                }}
+                title="See full file"
+                style={{
+                  width: 21,
+                  height: 21,
+                  flex: "none",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: "transparent",
+                  border: "none",
+                  borderRadius: 5,
+                  color: color.textGhost,
+                  cursor: "pointer",
+                }}
+                hoverStyle={{ background: "#1b2230", color: color.textDim }}
+              >
+                <FullFileIcon size={12} stroke={1.4} />
+              </HoverButton>
+            )}
           </HoverDiv>
         );
       })}

@@ -12,7 +12,16 @@ export function CommentThread({ thread }: { thread: Thread }) {
   const submitReply = useStore((s) => s.submitReply);
   const toggleResolve = useStore((s) => s.toggleResolve);
   const toggleChangeRequest = useStore((s) => s.toggleChangeRequest);
+  const reviews = useStore((s) => s.reviews);
+  const selectedPR = useStore((s) => s.selectedPR);
+  const currentRunId = useStore((s) => s.currentRunId);
   const isChangeRequest = thread.kind === "change_request";
+
+  // While an agent run is in flight on this review, an open change request is
+  // actively being addressed — surface which run is on it.
+  const review = reviews.find((r) => r.id === selectedPR);
+  const beingAddressed = isChangeRequest && !thread.resolved && review?.runState === "running";
+  const activeRunId = currentRunId ?? review?.runId;
 
   return (
     <div
@@ -75,6 +84,20 @@ export function CommentThread({ thread }: { thread: Thread }) {
               }}
             >
               Change request
+            </span>
+          )}
+          {beingAddressed && (
+            <span
+              style={{
+                fontSize: 11,
+                color: color.textFaint,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+              }}
+            >
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: color.teal, animation: "lkpulse 1.6s infinite" }} />
+              being addressed{activeRunId ? ` in ${activeRunId}` : ""}
             </span>
           )}
         </div>

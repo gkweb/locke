@@ -3,7 +3,9 @@ import type { ChangedFile, Thread } from "@locke/core";
 import { useStore } from "../state/store.js";
 import { color, font } from "../theme/tokens.js";
 import { buildUnified, buildSplit, type UnifiedLineRow } from "../lib/diff.js";
-import { CodeText } from "./primitives.js";
+import { fullFilePath } from "../lib/mockFleet.js";
+import { CodeText, HoverButton } from "./primitives.js";
+import { FullFileIcon } from "./icons.js";
 import { CommentThread } from "./CommentThread.js";
 
 const ADD_BG = "rgba(67,196,107,0.10)";
@@ -219,9 +221,16 @@ export function DiffViewer({ file }: { file: ChangedFile }) {
   const diffMode = useStore((s) => s.diffMode);
   const composerLine = useStore((s) => s.composerLine);
   const threads = useStore((s) => s.threads);
+  const reviews = useStore((s) => s.reviews);
+  const selectedPR = useStore((s) => s.selectedPR);
+  const openFullFile = useStore((s) => s.openFullFile);
   const path = file.path;
   const threadAt = (lineId: string): Thread | undefined =>
     threads.find((t) => t.file === path && t.lineId === lineId);
+
+  // Offer "see full file" only when the explorer carries a full-file preview.
+  const review = reviews.find((r) => r.id === selectedPR);
+  const fullPath = fullFilePath(path);
 
   return (
     <div style={{ border: `1px solid ${color.borderPanel}`, borderRadius: 12, overflow: "hidden", background: color.panelHeaderBg }}>
@@ -229,13 +238,37 @@ export function DiffViewer({ file }: { file: ChangedFile }) {
         style={{
           display: "flex",
           alignItems: "center",
-          justifyContent: "space-between",
+          gap: 10,
           padding: "9px 14px",
           background: "#0d1016",
           borderBottom: "1px solid #1a212b",
         }}
       >
         <span style={{ fontSize: 12.5, color: color.textDim, fontFamily: font.mono }}>{path}</span>
+        <div style={{ flex: 1 }} />
+        {fullPath && (
+          <HoverButton
+            onClick={() => openFullFile(fullPath, review ? { id: review.id, branch: review.branch } : undefined)}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "4px 10px",
+              borderRadius: 7,
+              background: "transparent",
+              border: `1px solid ${color.borderChip2}`,
+              color: color.textFaint,
+              fontFamily: font.sans,
+              fontSize: 11,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+            hoverStyle={{ borderColor: "#2e3645", color: color.textSoft }}
+          >
+            <FullFileIcon size={12} stroke={1.4} />
+            See full file
+          </HoverButton>
+        )}
         <span style={{ fontSize: 11, color: color.textGhost }}>Hover a line and click + to comment</span>
       </div>
 
