@@ -4,6 +4,7 @@
 use crate::actions;
 use crate::config;
 use crate::git;
+use crate::run;
 use crate::store;
 use serde_json::Value;
 use tauri::Manager;
@@ -126,6 +127,45 @@ pub fn run_agent(
     prompt: String,
 ) -> Result<String, String> {
     actions::run_agent(&repo, &branch, &agent_cmd, &prompt)
+}
+
+// ---- live streaming agent runs (Claude stream-json control protocol) ----
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn start_run(
+    app: tauri::AppHandle,
+    registry: tauri::State<run::RunRegistry>,
+    run_id: String,
+    repo: String,
+    branch: String,
+    agent_cmd: String,
+    prompt: String,
+    use_worktree: bool,
+) -> Result<(), String> {
+    run::start_run(app.clone(), &registry, run_id, repo, branch, agent_cmd, prompt, use_worktree)
+}
+
+#[tauri::command]
+pub fn respond_permission(
+    registry: tauri::State<run::RunRegistry>,
+    run_id: String,
+    request_id: String,
+    allow: bool,
+    updated_input: Option<Value>,
+    message: Option<String>,
+) -> Result<(), String> {
+    run::respond_permission(&registry, &run_id, &request_id, allow, updated_input, message)
+}
+
+#[tauri::command]
+pub fn cancel_run(registry: tauri::State<run::RunRegistry>, run_id: String) -> Result<(), String> {
+    run::cancel_run(&registry, &run_id)
+}
+
+#[tauri::command]
+pub fn read_runs(repo: String) -> Result<Vec<Value>, String> {
+    store::read_runs(&repo)
 }
 
 // ---- per-PR comments (.locke/comments/<id>.json) ----

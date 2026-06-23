@@ -257,6 +257,44 @@ pub fn delete_pull(repo: &str, id: u64) -> R<()> {
     delete_comments(repo, id)
 }
 
+// ---- streaming run logs (.locke/runs/<runId>.json) ----
+
+fn runs_dir(repo: &str) -> PathBuf {
+    locke_dir(repo).join("runs")
+}
+
+/// Persist a finished run's full record (events, result, meta), keyed by runId.
+/// Written once when a run ends; powers the History tab.
+pub fn write_run(repo: &str, run_id: &str, record: &Value) -> R<()> {
+    ensure_locke(repo)?;
+    let safe: String = run_id.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
+    write_json(&runs_dir(repo).join(format!("{safe}.json")), record)
+}
+
+/// Read every persisted run record, newest first (by `endedAt`). The frontend
+/// filters these by branch for a review's History timeline.
+pub fn read_runs(repo: &str) -> R<Vec<Value>> {
+    let dir = runs_dir(repo);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut runs: Vec<Value> = Vec::new();
+    for entry in fs::read_dir(&dir).map_err(|e| format!("read runs dir: {e}"))? {
+        let path = entry.map_err(|e| format!("read entry: {e}"))?.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("json") {
+            if let Some(v) = read_json(&path)? {
+                runs.push(v);
+            }
+        }
+    }
+    runs.sort_by(|a, b| {
+        let ea = a.get("endedAt").and_then(|v| v.as_u64()).unwrap_or(0);
+        let eb = b.get("endedAt").and_then(|v| v.as_u64()).unwrap_or(0);
+        eb.cmp(&ea)
+    });
+    Ok(runs)
+}
+
 // ---- per-PR comments (.locke/comments/<id>.json) ----
 
 pub fn read_comments(repo: &str, id: u64) -> R<Option<Value>> {
@@ -454,6 +492,32 @@ mod tests {
         // Re-writing overwrites in place (no duplication).
         write_agent_prompt(repo, 7, "updated\n").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "updated\n");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_logs_round_trip_newest_first() {
+        let dir = tmp("runs");
+        let repo = dir.to_str().unwrap();
+
+        assert!(read_runs(repo).unwrap().is_empty(), "no runs dir yet");
+
+        write_run(repo, "run-100", &json!({ "runId": "run-100", "branch": "agent/x", "endedAt": 100, "state": "done" })).unwrap();
+        write_run(repo, "run-300", &json!({ "runId": "run-300", "branch": "agent/y", "endedAt": 300, "state": "failed" })).unwrap();
+        write_run(repo, "run-200", &json!({ "runId": "run-200", "branch": "agent/x", "endedAt": 200, "state": "done" })).unwrap();
+        assert!(dir.join(".locke/runs/run-100.json").exists());
+
+        // Sorted by endedAt descending.
+        let runs = read_runs(repo).unwrap();
+        assert_eq!(runs.len(), 3);
+        assert_eq!(runs[0]["runId"], "run-300");
+        assert_eq!(runs[1]["runId"], "run-200");
+        assert_eq!(runs[2]["runId"], "run-100");
+
+        // A non-filename-safe runId is sanitized into a valid path.
+        write_run(repo, "run/../weird id", &json!({ "runId": "x", "endedAt": 400 })).unwrap();
+        assert!(read_runs(repo).unwrap().iter().any(|r| r["endedAt"] == 400));
 
         let _ = fs::remove_dir_all(&dir);
     }

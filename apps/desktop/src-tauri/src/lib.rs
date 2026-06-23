@@ -6,6 +6,7 @@ mod actions;
 mod commands;
 mod config;
 mod git;
+mod run;
 mod store;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -13,6 +14,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .manage(run::RunRegistry::default())
         .invoke_handler(tauri::generate_handler![
             commands::review_summary,
             commands::list_branches,
@@ -31,6 +33,10 @@ pub fn run() {
             commands::write_agent_settings,
             commands::run_checks,
             commands::run_agent,
+            commands::start_run,
+            commands::respond_permission,
+            commands::cancel_run,
+            commands::read_runs,
             commands::read_comments,
             commands::write_comments,
             commands::read_check_overrides,
