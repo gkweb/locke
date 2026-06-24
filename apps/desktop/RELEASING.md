@@ -29,10 +29,11 @@ notarized by Apple will be blocked by Gatekeeper on other people's Macs
 
 ## Build
 
-Export the credentials (don't commit them), then run the script:
+The signing identity is set in `tauri.conf.json` (`bundle.macOS.signingIdentity`),
+so you only need to export the notarization credentials (don't commit them), then
+run the script:
 
 ```sh
-export APPLE_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)"
 export APPLE_ID="you@example.com"
 export APPLE_PASSWORD="xxxx-xxxx-xxxx-xxxx"   # app-specific password
 export APPLE_TEAM_ID="TEAMID"
