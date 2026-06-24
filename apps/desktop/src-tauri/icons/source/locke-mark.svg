@@ -1,0 +1,15 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>Locke — commit graph mark</title>
+  <mask id="lm-knock">
+    <rect width="64" height="64" fill="#fff"></rect>
+    <circle cx="19" cy="18" r="5.4" fill="#000"></circle>
+    <circle cx="42" cy="18" r="5.4" fill="#000"></circle>
+  </mask>
+  <g mask="url(#lm-knock)">
+    <path d="M19 18v17a8 8 0 0 0 8 8h11" stroke="#7b6cff" stroke-width="5" stroke-linecap="round"></path>
+    <path d="M19 27c0-5 4-9 9-9h6" stroke="#3fd0c0" stroke-width="5" stroke-linecap="round"></path>
+  </g>
+  <circle cx="19" cy="18" r="7.5" stroke="#7b6cff" stroke-width="5"></circle>
+  <circle cx="42" cy="18" r="7.5" stroke="#3fd0c0" stroke-width="5"></circle>
+  <circle cx="42" cy="43" r="7.5" fill="#7b6cff"></circle>
+</svg>
