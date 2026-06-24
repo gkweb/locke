@@ -2,7 +2,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { View } from "@locke/core";
 import { useStore } from "../state/store.js";
 import { color, font } from "../theme/tokens.js";
-import { BrandMark, SidebarIcon, SearchIcon, ShieldIcon, GearIcon } from "./icons.js";
+import { SidebarIcon, SearchIcon, ShieldIcon, GearIcon } from "./icons.js";
 import { NAV_ITEMS } from "../lib/nav.js";
 import { HoverButton } from "./primitives.js";
 import { ApprovalsTray } from "./ApprovalsTray.js";
@@ -40,13 +40,13 @@ function NavButton({
       title={title}
       style={{
         position: "relative",
-        width: 32,
-        height: 28,
+        width: 40,
+        height: 34,
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
         border: "none",
-        borderRadius: 7,
+        borderRadius: 8,
         cursor: "pointer",
         background: active ? "#181d27" : "transparent",
         color: active ? color.text : "#7b8494",
@@ -56,7 +56,7 @@ function NavButton({
       {children}
       {dot && (
         <span
-          style={{ position: "absolute", top: 4, right: 5, width: 6, height: 6, borderRadius: "50%", background: color.teal }}
+          style={{ position: "absolute", top: 5, right: 7, width: 6, height: 6, borderRadius: "50%", background: color.teal }}
         />
       )}
     </HoverButton>
@@ -132,11 +132,6 @@ export function ActionBar() {
         <SidebarIcon size={16} stroke={1.4} />
       </HoverButton>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 2 }}>
-        <BrandMark size={18} />
-        <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: "-.2px" }}>Locke</span>
-      </div>
-
       {/* view nav — compact icon segmented control, top-placed destinations only */}
       {topItems.length > 0 && (
         <div
@@ -146,8 +141,8 @@ export function ActionBar() {
             padding: 3,
             background: color.navPillBg,
             border: `1px solid ${color.borderRow2}`,
-            borderRadius: 10,
-            marginLeft: 8,
+            borderRadius: 11,
+            marginLeft: 2,
           }}
         >
           {topItems.map((item) => (
@@ -158,7 +153,7 @@ export function ActionBar() {
               onClick={() => go(item.key)}
               dot={item.key === "agents"}
             >
-              <item.Icon size={16} stroke={1.5} />
+              <item.Icon size={18} stroke={1.5} />
             </NavButton>
           ))}
         </div>
@@ -257,23 +252,6 @@ export function ActionBar() {
         >
           <GearIcon size={15} color={color.textFaint} stroke={1.4} />
         </HoverButton>
-
-        <span
-          style={{
-            width: 28,
-            height: 28,
-            borderRadius: "50%",
-            background: "linear-gradient(135deg,#7b6cff,#3fd0c0)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontSize: 11,
-            fontWeight: 700,
-            color: color.appBg,
-          }}
-        >
-          G
-        </span>
       </div>
 
       {agentMode && approvalsOpen && <ApprovalsTray />}

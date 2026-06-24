@@ -421,14 +421,18 @@ export const useStore = create<LockeState>((set, get) => ({
 
   fileTree: MOCK ? MOCK_FILE_TREE : [],
   fileContents: MOCK ? MOCK_FILE_CONTENTS : {},
-  filePath: "payments-service/src/webhooks/retryHandler.ts",
+  // Empty until a repo loads (`loadFileTree` seeds the first file). The mock
+  // fleet keeps its seeded explorer so the plain-`vite` demo isn't blank.
+  filePath: MOCK ? "payments-service/src/webhooks/retryHandler.ts" : "",
   fileFromReview: null,
-  expandedDirs: {
-    "payments-service": true,
-    "payments-service/src": true,
-    "payments-service/src/webhooks": true,
-    "payments-service/src/components": true,
-  },
+  expandedDirs: (MOCK
+    ? {
+        "payments-service": true,
+        "payments-service/src": true,
+        "payments-service/src/webhooks": true,
+        "payments-service/src/components": true,
+      }
+    : {}) as Record<string, boolean>,
   langExpanded: null,
   addLangOpen: false,
   langMenuOpen: false,

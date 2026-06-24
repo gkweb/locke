@@ -30,10 +30,17 @@ export function FilesView() {
   const backToReview = useStore((s) => s.backToReview);
   const fileTree = useStore((s) => s.fileTree);
   const fileContents = useStore((s) => s.fileContents);
+  const repoPath = useStore((s) => s.repoPath);
   // Re-render the badges + viewer when a language is enabled/disabled.
   useStore((s) => s.langEnabled);
 
   const rows = flatten(fileTree, expandedDirs, []);
+
+  // Repo name for the explorer header: the real backend keys off the loaded
+  // path; the mock fleet has no repoPath but roots its tree at the repo dir.
+  const repoName = repoPath
+    ? repoPath.split("/").filter(Boolean).pop() ?? ""
+    : fileTree[0]?.name ?? "";
 
   const content = fileContents[filePath] ?? "";
   const fileExt = extOf(filePath);
@@ -65,9 +72,11 @@ export function FilesView() {
         >
           <FolderIcon size={13} color={color.textFainter} stroke={1.4} />
           <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".7px", color: color.textFaint }}>EXPLORER</span>
-          <span style={{ marginLeft: "auto", fontSize: 10.5, color: "#454d5b", fontFamily: font.mono }}>
-            payments-service
-          </span>
+          {repoName && (
+            <span style={{ marginLeft: "auto", fontSize: 10.5, color: "#454d5b", fontFamily: font.mono }}>
+              {repoName}
+            </span>
+          )}
         </div>
         <div style={{ flex: 1, overflowY: "auto", padding: "7px 6px 16px" }}>
           {rows.length === 0 && (
@@ -178,6 +187,32 @@ export function FilesView() {
 
       {/* code viewer */}
       <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", background: color.appBg }}>
+        {!filePath ? (
+          <div
+            style={{
+              flex: 1,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 12,
+              padding: 24,
+              textAlign: "center",
+              color: color.textGhost,
+            }}
+          >
+            <FolderTreeIcon size={30} color={color.textFainter} stroke={1.2} />
+            <div style={{ fontSize: 13.5, fontWeight: 600, color: color.textFaint }}>
+              {fileTree.length === 0 ? "No repository open" : "No file selected"}
+            </div>
+            <div style={{ fontSize: 12, lineHeight: 1.5, maxWidth: 320 }}>
+              {fileTree.length === 0
+                ? "Open a repository or folder to browse its files here."
+                : "Pick a file from the explorer to view it."}
+            </div>
+          </div>
+        ) : (
+          <>
         <div
           style={{
             flex: "none",
@@ -255,6 +290,8 @@ export function FilesView() {
             ))
           )}
         </div>
+          </>
+        )}
       </div>
     </div>
   );
