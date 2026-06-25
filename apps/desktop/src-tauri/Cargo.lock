@@ -1751,7 +1751,7 @@ dependencies = [
 
 [[package]]
 name = "locke"
-version = "0.0.0"
+version = "0.1.1"
 dependencies = [
  "git2",
  "serde",
