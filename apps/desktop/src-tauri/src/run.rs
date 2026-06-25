@@ -258,7 +258,10 @@ pub fn start_run(
 ) -> R<()> {
     let WorkdirPlan { dir: workdir, owned_worktree, note } = prepare_workdir(&repo, &branch, use_worktree)?;
 
-    let mut child = Command::new(&agent_cmd)
+    // Spawn the resolved full path (not the bare name) so a GUI process without
+    // the login shell's PATH still launches the binary detection found.
+    let exe = crate::actions::resolve_agent_path(&agent_cmd);
+    let mut child = Command::new(&exe)
         .args(claude_stream_argv())
         .current_dir(&workdir)
         .stdin(Stdio::piped())

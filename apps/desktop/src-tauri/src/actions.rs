@@ -149,20 +149,97 @@ fn probe_agents(agents: &[(&str, &str, &str)]) -> Vec<AgentInfo> {
         .collect()
 }
 
-/// Resolve a bare binary name against `PATH`, returning the first executable
-/// regular file. `metadata` follows symlinks, so a dangling symlink (e.g. a
-/// binary macOS quarantined and removed) correctly reads as absent. No process
-/// is spawned — this is a pure filesystem lookup, like `which`.
+/// Well-known install dirs that a GUI app launched from Finder/Dock won't see,
+/// because it doesn't inherit the login shell's `PATH` (the shell rc/profile
+/// that adds them is never sourced). These augment — never replace — `PATH`.
+/// A leading `~/` is expanded against `$HOME`.
+const EXTRA_BIN_DIRS: &[&str] = &[
+    "~/.local/bin",        // Claude Code native installer, pipx, uv, many CLIs
+    "~/.claude/local",     // Claude Code legacy local install
+    "~/bin",               // common personal bin
+    "/opt/homebrew/bin",   // Homebrew (Apple Silicon)
+    "/usr/local/bin",      // Homebrew (Intel) + common manual installs
+    "/usr/bin",
+    "/bin",
+    "~/.npm-global/bin",   // npm with a user global prefix
+    "~/.bun/bin",          // bun global
+    "~/.deno/bin",         // deno
+    "~/.cargo/bin",        // cargo install
+    "~/.volta/bin",        // Volta-managed node tools
+    "~/.local/share/pnpm", // pnpm global (Linux default PNPM_HOME)
+    "~/Library/pnpm",      // pnpm global (macOS default PNPM_HOME)
+    "~/.asdf/shims",       // asdf shims
+];
+
+/// Build the ordered, de-duplicated list of directories to search for a binary.
+/// `PATH` comes first so the user's own ordering and overrides win; then the
+/// well-known fallbacks above; then every nvm node version's `bin` (where
+/// nvm-installed CLIs and npm globals live).
+fn search_dirs() -> Vec<PathBuf> {
+    use std::collections::HashSet;
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let push = |dir: PathBuf, dirs: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>| {
+        if seen.insert(dir.clone()) {
+            dirs.push(dir);
+        }
+    };
+
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            push(dir, &mut dirs, &mut seen);
+        }
+    }
+
+    for entry in EXTRA_BIN_DIRS {
+        let dir = match entry.strip_prefix("~/") {
+            Some(rest) => match &home {
+                Some(h) => h.join(rest),
+                None => continue,
+            },
+            None => PathBuf::from(entry),
+        };
+        push(dir, &mut dirs, &mut seen);
+    }
+
+    if let Some(h) = &home {
+        if let Ok(entries) = std::fs::read_dir(h.join(".nvm/versions/node")) {
+            for e in entries.flatten() {
+                let bin = e.path().join("bin");
+                if bin.is_dir() {
+                    push(bin, &mut dirs, &mut seen);
+                }
+            }
+        }
+    }
+
+    dirs
+}
+
+/// Resolve a bare binary name to the first executable regular file across the
+/// search dirs (`PATH` plus well-known install locations). `metadata` follows
+/// symlinks, so a dangling symlink (e.g. a binary macOS quarantined and removed)
+/// correctly reads as absent. No process is spawned — pure filesystem lookup.
 fn which_on_path(bin: &str) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).find_map(|dir| {
+    search_dirs().into_iter().find_map(|dir| {
         let candidate = dir.join(bin);
         match std::fs::metadata(&candidate) {
             Ok(m) if m.is_file() && m.permissions().mode() & 0o111 != 0 => Some(candidate),
             _ => None,
         }
     })
+}
+
+/// Resolve an agent's bare binary name to its full path via the same search as
+/// detection, so a GUI process that lacks the login shell's `PATH` can still
+/// spawn it. Falls back to the bare name (let the OS resolve it via `PATH` at
+/// spawn time) when not found, preserving prior behaviour.
+pub fn resolve_agent_path(cmd: &str) -> String {
+    which_on_path(cmd)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| cmd.to_string())
 }
 
 fn run_git(repo: &str, args: &[&str]) -> R<()> {
@@ -299,7 +376,10 @@ pub fn run_agent(repo: &str, branch: &str, agent_cmd: &str, prompt: &str) -> R<S
     }
 
     let argv = agent_argv(agent_cmd, prompt);
-    let run = Command::new(agent_cmd).args(&argv).current_dir(&wt).output();
+    // Spawn the resolved full path (not the bare name) so a GUI process without
+    // the login shell's PATH still launches the binary detection found.
+    let exe = resolve_agent_path(agent_cmd);
+    let run = Command::new(&exe).args(&argv).current_dir(&wt).output();
 
     // Persist whatever the agent changed onto the branch (no-op if it already
     // committed or made no edits), so removing the worktree keeps the work.
