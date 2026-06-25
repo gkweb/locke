@@ -14,6 +14,7 @@ import { FilesView } from "./views/FilesView.js";
 import { ExtensionsView } from "./views/ExtensionsView.js";
 import { WorkspaceView } from "./views/WorkspaceView.js";
 import { NewReviewModal } from "./components/NewReviewModal.js";
+import { DeletePullModal } from "./components/DeletePullModal.js";
 import { OpenRepoEmpty } from "./components/OpenRepoEmpty.js";
 
 // The Mission Control shell: three stacked regions — top ActionBar · middle
@@ -53,6 +54,7 @@ export function App() {
   const panelSide = useStore((s) => s.panelSide);
   const view = useStore((s) => s.view);
   const newReviewOpen = useStore((s) => s.newReviewOpen);
+  const deletePullPending = useStore((s) => s.deletePullPending);
   const detectAgents = useStore((s) => s.detectAgents);
   const loadAgentSettings = useStore((s) => s.loadAgentSettings);
 
@@ -109,6 +111,7 @@ export function App() {
 
       <StatusBar />
       {newReviewOpen && <NewReviewModal />}
+      {deletePullPending && <DeletePullModal />}
     </div>
   );
 }

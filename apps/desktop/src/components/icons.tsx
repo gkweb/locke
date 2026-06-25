@@ -109,6 +109,12 @@ export const XIcon = ({ size = 13, color = "currentColor", stroke = 1.8, style }
   </svg>
 );
 
+export const TrashIcon = ({ size = 13, color = "currentColor", stroke = 1.5, style }: IconProps) => (
+  <svg {...strokeBase(size, color, stroke, style)}>
+    <path d="M3 4h10M6.5 4V2.5h3V4M4.5 4l.5 8.5h6l.5-8.5M6.5 6.5v4M9.5 6.5v4" />
+  </svg>
+);
+
 export const ShieldIcon = ({ size = 13, color = "currentColor", stroke = 1.4, style }: IconProps) => (
   <svg {...strokeBase(size, color, stroke, style)}>
     <path d="M8 1.5l5.5 3v4c0 3.2-2.4 5.3-5.5 6.5C4.9 13.8 2.5 11.7 2.5 8.5v-4z" />

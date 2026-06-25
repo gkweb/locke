@@ -239,6 +239,8 @@ interface LockeState {
   settingsOpen: boolean;
   /** Whether the New-review modal (branch pickers) is open. */
   newReviewOpen: boolean;
+  /** Id of the pull request pending a typed-DELETE confirmation; "" when none. */
+  deletePullPending: string;
   /** True while a headless agent run is in flight (Phase 6). */
   agentRunning: boolean;
   /** Combined output (or error) of the last agent run, for display. */
@@ -315,6 +317,10 @@ interface LockeState {
   /** Toggle the action-bar settings popover (closes the approvals tray). */
   toggleSettings: () => void;
   setNewReviewOpen: (open: boolean) => void;
+  /** Open/close the delete-pull confirmation for a given review id ("" closes). */
+  requestDeletePull: (id: string) => void;
+  /** Permanently delete the pull record currently pending confirmation. */
+  deletePullRequest: () => Promise<void>;
   /** Run the first enabled agent against the current review's open change
    *  requests, then refresh the diff to show its commit (Phase 6, headless). */
   runAgent: () => Promise<void>;
@@ -454,6 +460,7 @@ export const useStore = create<LockeState>((set, get) => ({
   disabledAgents: MOCK ? MOCK_DISABLED : [],
   settingsOpen: false,
   newReviewOpen: false,
+  deletePullPending: "",
   agentRunning: false,
   agentOutput: null,
 
@@ -515,6 +522,7 @@ export const useStore = create<LockeState>((set, get) => ({
   toggleSettings: () => set({ settingsOpen: !get().settingsOpen, approvalsOpen: false }),
 
   setNewReviewOpen: (open) => set({ newReviewOpen: open }),
+  requestDeletePull: (id) => set({ deletePullPending: id }),
 
   runAgent: async () => {
     const { repoPath, selectedPR, reviews, files, threads, agents, disabledAgents } = get();
@@ -1006,6 +1014,33 @@ export const useStore = create<LockeState>((set, get) => ({
           reviews: s.reviews.filter((r) => r.id !== selectedPR),
           pulls,
           view: "activity",
+          loading: false,
+        };
+      });
+    } catch (e) {
+      set({ loading: false, error: String(e) });
+    }
+  },
+
+  deletePullRequest: async () => {
+    const { repoPath, deletePullPending } = get();
+    if (!repoPath || !deletePullPending) return;
+    const id = deletePullPending;
+    set({ loading: true, error: null });
+    try {
+      // Deletes the PR record + comments file; the git branch is left intact,
+      // matching GitHub's "delete pull request" (which never removes the branch).
+      await deletePull(repoPath, Number(id));
+      set((s) => {
+        const pulls = { ...s.pulls };
+        delete pulls[id];
+        const closingActive = s.selectedPR === id;
+        return {
+          reviews: s.reviews.filter((r) => r.id !== id),
+          pulls,
+          deletePullPending: "",
+          // Only navigate away if we were viewing the PR we just deleted.
+          ...(closingActive ? { view: "activity" as const, selectedPR: "" } : {}),
           loading: false,
         };
       });

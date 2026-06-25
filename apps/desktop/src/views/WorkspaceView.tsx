@@ -16,6 +16,7 @@ import {
   XCircleIcon,
   FileSimpleIcon,
   FullFileIcon,
+  TrashIcon,
 } from "../components/icons.js";
 import { HoverButton, HoverDiv } from "../components/primitives.js";
 
@@ -278,6 +279,7 @@ export function WorkspaceView() {
   const history = useStore((s) => s.history);
   const approveAndPush = useStore((s) => s.approveAndPush);
   const setVerdict = useStore((s) => s.setVerdict);
+  const requestDeletePull = useStore((s) => s.requestDeletePull);
   const pending = useStore((s) => s.pending);
   const agents = useStore((s) => s.agents);
   const disabledAgents = useStore((s) => s.disabledAgents);
@@ -350,6 +352,14 @@ export function WorkspaceView() {
                 Run agent
               </HoverButton>
             )}
+            <HoverButton
+              onClick={() => requestDeletePull(review.id)}
+              title="Delete pull request"
+              style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "9px 11px", background: "transparent", border: "1px solid #38303a", borderRadius: 9, color: color.textFaint, fontFamily: font.sans, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
+              hoverStyle={{ background: alpha.red(0.08), color: color.red, borderColor: "#4a2230" }}
+            >
+              <TrashIcon size={14} color="currentColor" stroke={1.5} />
+            </HoverButton>
             <HoverButton
               onClick={() => setVerdict("changes")}
               style={{ display: "flex", alignItems: "center", gap: 7, padding: "9px 13px", background: "transparent", border: "1px solid #38303a", borderRadius: 9, color: color.red, fontFamily: font.sans, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
