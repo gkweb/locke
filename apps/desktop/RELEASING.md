@@ -26,28 +26,35 @@ notarized by Apple will be blocked by Gatekeeper on other people's Macs
    - appleid.apple.com → Sign-In & Security → **App-Specific Passwords** → create one.
 
 3. **Team ID** — the 10-character ID on your Apple Developer membership page.
+   For this account it is `GJSS9SJU8D`.
+
+That's it — **the build script handles the rest the first time you run it.** If no
+`locke` keychain profile exists, it asks for your Apple ID and app-specific
+password (entry hidden), validates them against Apple, and saves them to your
+keychain so later runs are silent. Nothing lives in your shell/env/history.
+
+> Prefer to set it up ahead of time? Run it yourself once:
+> ```sh
+> xcrun notarytool store-credentials locke \
+>   --apple-id "you@example.com" --team-id GJSS9SJU8D
+> ```
 
 ## Build
 
-The signing identity is set in `tauri.conf.json` (`bundle.macOS.signingIdentity`),
-so you only need to export the notarization credentials (don't commit them):
-
-```sh
-export APPLE_ID="you@example.com"
-export APPLE_PASSWORD="xxxx-xxxx-xxxx-xxxx"   # app-specific password
-export APPLE_TEAM_ID="TEAMID"
-```
-
-Then pick a target:
+The signing identity is set in `tauri.conf.json` (`bundle.macOS.signingIdentity`)
+and the notarization credentials come from the `locke` keychain profile, so the
+build needs no environment variables:
 
 ```sh
 ./apps/desktop/scripts/build-signed-mac.sh        # .dmg  (prettier, needs Finder permission — see below)
 ./apps/desktop/scripts/build-signed-mac.sh zip    # .zip  (no Finder permission needed — most reliable)
 ```
 
-Tauri signs (hardened runtime + timestamp), uploads to Apple for notarization,
-waits, and staples the ticket. First release build compiles Rust in release mode,
-so it takes a few minutes.
+`tauri build` signs (hardened runtime + timestamp); the script then submits the
+artifact to Apple, waits, staples the ticket, and **verifies** the result —
+failing loudly if the artifact isn't actually notarized, so an un-notarized build
+can't slip out. First release build compiles Rust in release mode, so it takes a
+few minutes. (Named the profile something else? Pass `NOTARY_PROFILE=<name>`.)
 
 Output:
 - dmg → `…/target/release/bundle/dmg/Locke_<version>_aarch64.dmg`
@@ -95,5 +102,11 @@ Update all three before building so they stay in sync:
   `rustup target add x86_64-apple-darwin` then build with
   `pnpm tauri build --bundles dmg --target x86_64-apple-darwin`
   (or `universal-apple-darwin` for a single fat binary).
-- Verify a finished build with:
-  `spctl -a -vvv -t install "<path to .app>"` → should say *accepted, source=Notarized Developer ID*.
+- The build script already verifies notarization and fails if it's missing. To
+  spot-check an artifact by hand:
+  - `.app`: `spctl -a -t exec -vvv "<path to .app>"`
+  - `.dmg`: `spctl -a -t open --context context:primary-signature -vvv "<path to .dmg>"`
+
+  Both should report *accepted, source=Notarized Developer ID*. A *rejected,
+  source=Unnotarized Developer ID* means it was signed but never notarized (the
+  cause of the "Apple could not verify…" dialog).
