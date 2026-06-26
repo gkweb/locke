@@ -1,8 +1,10 @@
+import { useState } from "react";
 import type { Review, RunEvent } from "@locke/core";
 import { useStore } from "../state/store.js";
 import { color, font, alpha } from "../theme/tokens.js";
 import { ShieldIcon, StopIcon, SpinnerIcon, CheckIcon, CheckCircleIcon, PauseIcon, PlayIcon } from "./icons.js";
 import { HoverButton } from "./primitives.js";
+import { CommentBody } from "./CommentBody.js";
 
 // The live agent-run surface: status strip, streamed event log, inline permission
 // prompt (real in-app Allow/Deny via the stream-json control protocol), done/ended
@@ -18,9 +20,11 @@ const EV: Record<RunEvent["kind"], { ch: string; ic: string; tc: string }> = {
   denied: { ch: "✕", ic: "var(--lk-red)", tc: "#ca9aa0" },
 };
 
-function statusMetaForRun(agent: string, awaiting: boolean, done: boolean, paused: boolean, active: boolean) {
+function statusMetaForRun(agent: string, planning: boolean, planReady: boolean, awaiting: boolean, done: boolean, paused: boolean, active: boolean) {
   if (done) return { label: "Run complete", headline: `${agent} · finished`, c: color.green, bg: alpha.green(0.1), border: alpha.green(0.34) };
   if (paused) return { label: "Run ended", headline: `${agent} · stopped before finishing`, c: color.red, bg: alpha.red(0.1), border: alpha.red(0.34) };
+  if (planReady) return { label: "Plan ready", headline: `${agent} · awaiting your approval`, c: color.violet, bg: alpha.violet(0.12), border: alpha.violet(0.4) };
+  if (planning) return { label: "Planning", headline: `${agent} · investigating before editing`, c: color.violet, bg: alpha.violet(0.1), border: alpha.violet(0.34) };
   if (awaiting) return { label: "Awaiting permission", headline: `${agent} · blocked on a tool`, c: color.amber, bg: alpha.amber(0.12), border: alpha.amber(0.4) };
   if (active) return { label: "Running", headline: `${agent} · working`, c: color.teal, bg: alpha.teal(0.1), border: alpha.teal(0.34) };
   return { label: "Idle", headline: `${agent} · no run in progress`, c: color.textFaint, bg: color.titlebarBg, border: color.borderPopover };
@@ -34,7 +38,14 @@ function EventRow({ ev }: { ev: RunEvent }) {
         {m.ch}
       </span>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, lineHeight: 1.5, color: m.tc }}>{ev.text}</div>
+        {/* The agent narrates in markdown (bold, `code`, lists, paragraphs).
+            Render msg events through the markdown formatter so they don't show
+            raw `**` and collapse into a run-on; other kinds are short labels. */}
+        {ev.kind === "msg" ? (
+          <CommentBody body={ev.text} tone={m.tc} />
+        ) : (
+          <div style={{ fontSize: 13, lineHeight: 1.5, color: m.tc }}>{ev.text}</div>
+        )}
         {ev.sub && (
           <div style={{ marginTop: 5, fontFamily: font.mono, fontSize: 11.5, color: "#7b8494", background: color.titlebarBg, border: `1px solid ${color.borderRail2}`, borderRadius: 7, padding: "8px 11px", whiteSpace: "pre-wrap", maxHeight: 220, overflow: "auto" }}>
             {ev.sub}
@@ -54,14 +65,21 @@ const metaRow = (label: string, value: string, mono = false) => (
 );
 
 export function RunTab({ review }: { review: Review }) {
-  const runEvents = useStore((s) => s.runEvents);
+  // This review's own run surface (per-review, so it survives navigation and
+  // several reviews can run at once).
+  const surface = useStore((s) => s.runs[review.id]);
+  const runEvents = surface?.events ?? [];
+  const runDone = surface?.done ?? false;
+  const runPaused = surface?.paused ?? false;
+  const currentRunId = surface?.runId ?? null;
+  const runPhase = surface?.phase ?? null;
+  const plan = surface?.planReview ?? null;
   const pending = useStore((s) => s.pending);
-  const runDone = useStore((s) => s.runDone);
-  const runPaused = useStore((s) => s.runPaused);
-  const currentRunId = useStore((s) => s.currentRunId);
   const setWorkspaceTab = useStore((s) => s.setWorkspaceTab);
   const allowApproval = useStore((s) => s.allowApproval);
   const denyApproval = useStore((s) => s.denyApproval);
+  const approvePlan = useStore((s) => s.approvePlan);
+  const requestPlanChanges = useStore((s) => s.requestPlanChanges);
   const requestRun = useStore((s) => s.requestRun);
   const cancelRun = useStore((s) => s.cancelRun);
   const runUseWorktree = useStore((s) => s.runUseWorktree);
@@ -71,11 +89,22 @@ export function RunTab({ review }: { review: Review }) {
   const disabledAgents = useStore((s) => s.disabledAgents);
   const runSelectedAgentId = useStore((s) => s.runSelectedAgentId);
 
+  // Local UI state for the plan card: the "Request changes" feedback box, and
+  // whether to arm Auto mode for the build phase when approving.
+  const [changesOpen, setChangesOpen] = useState(false);
+  const [feedback, setFeedback] = useState("");
+  const [planAuto, setPlanAuto] = useState(false);
+
   const flagCount = threads.filter((t) => t.kind === "change_request" && !t.resolved).length;
   const perm = pending.find((p) => p.reviewId === review.id);
-  const awaiting = !!perm && !runDone && !runPaused;
-  const runActive = (!!currentRunId || review.runState === "running") && !awaiting && !runDone && !runPaused;
-  const idle = !runActive && !awaiting && !runDone && !runPaused && runEvents.length === 0;
+  // `plan` (this review's pending Plan→Build gate) comes from the surface above.
+  const planReady = !!plan && !runDone && !runPaused;
+  const awaiting = !!perm && !planReady && !runDone && !runPaused;
+  const runLive = (!!currentRunId || review.runState === "running") && !runDone && !runPaused;
+  // Plan phase, still investigating (no plan presented yet).
+  const planning = runPhase === "plan" && !planReady && runLive;
+  const runActive = runLive && !awaiting && !planReady && !planning;
+  const idle = !runActive && !awaiting && !planReady && !planning && !runDone && !runPaused && runEvents.length === 0;
   // Label the run surface with the agent that actually performs the run — the
   // one the user picked in the approval modal, else the first detected, enabled
   // CLI (matching startRun's selection) — not review.agent, which is the branch
@@ -83,11 +112,11 @@ export function RunTab({ review }: { review: Review }) {
   const enabled = (a: typeof agents[number]) => a.detected && !disabledAgents.includes(a.id);
   const runner = agents.find((a) => a.id === runSelectedAgentId && enabled(a)) ?? agents.find(enabled);
   const agent = runner ? (runner.id === "claude" ? "Claude" : runner.name) : "Claude";
-  const sm = statusMetaForRun(agent, awaiting, runDone, runPaused, runActive);
+  const sm = statusMetaForRun(agent, planning, planReady, awaiting, runDone, runPaused, runActive);
   const runId = currentRunId ?? review.runId ?? "—";
   const editCount = runEvents.filter((e) => e.kind === "edit").length;
   const elapsed = runEvents.length ? runEvents[runEvents.length - 1].time || "—" : "—";
-  const canStop = runActive || awaiting;
+  const canStop = runActive || awaiting || planning || planReady;
 
   return (
     <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
@@ -95,8 +124,8 @@ export function RunTab({ review }: { review: Review }) {
         {/* status strip */}
         <div style={{ flex: "none", display: "flex", alignItems: "center", gap: 12, padding: "13px 24px", borderBottom: `1px solid ${color.borderSubtle}`, background: color.titlebarBg }}>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "5px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, color: sm.c, background: sm.bg, border: `1px solid ${sm.border}` }}>
-            {runActive && <SpinnerIcon size={12} color="currentColor" stroke={1.8} />}
-            {awaiting && <span style={{ width: 7, height: 7, borderRadius: "50%", background: "currentColor", animation: "lkpulse 1.2s infinite" }} />}
+            {(runActive || planning) && <SpinnerIcon size={12} color="currentColor" stroke={1.8} />}
+            {(awaiting || planReady) && <span style={{ width: 7, height: 7, borderRadius: "50%", background: "currentColor", animation: "lkpulse 1.2s infinite" }} />}
             {runDone && <CheckIcon size={13} color="currentColor" stroke={1.9} />}
             {sm.label}
           </span>
@@ -181,6 +210,82 @@ export function RunTab({ review }: { review: Review }) {
                       </HoverButton>
                       <span style={{ marginLeft: "auto", fontSize: 11, color: color.textGhost }}>{perm.scope}</span>
                     </div>
+                  </div>
+                </div>
+              )}
+
+              {planReady && plan && (
+                <div style={{ margin: "10px 0 6px 33px", border: `1px solid ${alpha.violet(0.42)}`, borderRadius: 12, overflow: "hidden", background: `linear-gradient(180deg, ${alpha.violet(0.07)}, ${alpha.violet(0.02)})` }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "11px 15px", borderBottom: `1px solid ${alpha.violet(0.18)}` }}>
+                    <span style={{ width: 18, height: 18, borderRadius: "50%", background: alpha.violet(0.18), display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <CheckIcon size={11} color={color.violet} stroke={1.8} />
+                    </span>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: color.violetLight }}>{agent} has a plan — review to continue</span>
+                    <span style={{ marginLeft: "auto", fontSize: 11, color: color.textGhost }}>paused until you approve</span>
+                  </div>
+                  <div style={{ padding: "14px 15px" }}>
+                    <div style={{ maxHeight: 320, overflow: "auto", background: color.titlebarBg, border: `1px solid ${color.borderRail2}`, borderRadius: 8, padding: "12px 14px", marginBottom: 13 }}>
+                      <CommentBody body={plan.plan} />
+                    </div>
+                    {changesOpen ? (
+                      <div>
+                        <textarea
+                          value={feedback}
+                          onChange={(e) => setFeedback(e.target.value)}
+                          autoFocus
+                          placeholder="What should change about this plan?"
+                          style={{ width: "100%", minHeight: 70, resize: "vertical", boxSizing: "border-box", fontFamily: font.sans, fontSize: 12.5, lineHeight: 1.5, color: color.textBright, background: color.appBg, border: `1px solid ${color.borderInput}`, borderRadius: 8, padding: "10px 12px", marginBottom: 10 }}
+                        />
+                        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                          <HoverButton
+                            onClick={() => { setChangesOpen(false); setFeedback(""); }}
+                            style={{ padding: "8px 16px", background: "transparent", border: `1px solid ${color.borderInput}`, borderRadius: 8, color: color.textDim, fontFamily: font.sans, fontSize: 12.5, fontWeight: 500, cursor: "pointer" }}
+                            hoverStyle={{ borderColor: "#3a414e" }}
+                          >
+                            Cancel
+                          </HoverButton>
+                          <HoverButton
+                            onClick={() => { requestPlanChanges(feedback); setFeedback(""); setChangesOpen(false); }}
+                            style={{ padding: "8px 16px", background: alpha.violet(0.16), border: `1px solid ${alpha.violet(0.44)}`, borderRadius: 8, color: color.violetLight, fontFamily: font.sans, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
+                            hoverStyle={{ background: alpha.violet(0.24) }}
+                          >
+                            Send back to revise
+                          </HoverButton>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                        <HoverButton
+                          onClick={() => setChangesOpen(true)}
+                          style={{ padding: "8px 16px", background: "transparent", border: `1px solid ${color.borderInput}`, borderRadius: 8, color: color.textDim, fontFamily: font.sans, fontSize: 12.5, fontWeight: 500, cursor: "pointer" }}
+                          hoverStyle={{ borderColor: "#3a414e" }}
+                        >
+                          Request changes
+                        </HoverButton>
+                        {/* Arm Auto mode for the build phase: when on, approving sets the
+                            run to `auto` so Claude approves its own in-scope actions. */}
+                        <HoverButton
+                          onClick={() => setPlanAuto((v) => !v)}
+                          title="Let Claude approve its own in-scope actions during the build — no per-tool prompts. Anything risky still stops for you."
+                          style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: planAuto ? alpha.violet(0.14) : "transparent", border: `1px solid ${planAuto ? alpha.violet(0.44) : color.borderInput}`, borderRadius: 8, color: planAuto ? color.violetLight : color.textDim, fontFamily: font.sans, fontSize: 12.5, fontWeight: 500, cursor: "pointer" }}
+                          hoverStyle={planAuto ? undefined : { borderColor: "#3a414e" }}
+                        >
+                          <span style={{ width: 28, height: 16, flex: "none", borderRadius: 9, padding: 2, display: "flex", background: planAuto ? color.violet : "var(--lk-borderPopover)", justifyContent: planAuto ? "flex-end" : "flex-start" }}>
+                            <span style={{ width: 12, height: 12, borderRadius: "50%", background: "#fff" }} />
+                          </span>
+                          Auto mode
+                        </HoverButton>
+                        <HoverButton
+                          onClick={() => approvePlan(planAuto)}
+                          style={{ display: "flex", alignItems: "center", gap: 7, padding: "8px 16px", background: color.violet, border: `1px solid ${color.violet}`, borderRadius: 8, color: "#fff", fontFamily: font.sans, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
+                          hoverStyle={{ background: color.violetHover }}
+                        >
+                          <PlayIcon size={13} color="#fff" stroke={1.7} />
+                          {planAuto ? "Approve & auto-build" : "Approve & build"}
+                        </HoverButton>
+                        <span style={{ marginLeft: "auto", fontSize: 11, color: color.textGhost }}>{runUseWorktree ? "isolated worktree" : "repo working dir"}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

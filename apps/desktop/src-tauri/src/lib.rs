@@ -63,6 +63,7 @@ pub fn run() {
             commands::start_run,
             commands::respond_permission,
             commands::cancel_run,
+            commands::set_permission_mode,
             commands::read_runs,
             commands::read_comments,
             commands::write_comments,

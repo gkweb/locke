@@ -296,6 +296,14 @@ export const respondPermission = (
 export const cancelRun = (runId: string) => invoke<void>("cancel_run", { runId });
 
 /**
+ * Switch a live run's permission mode mid-stream (`set_permission_mode` control
+ * request). Used at the Plan→Build gate to arm Auto mode (`"auto"`) for the build
+ * phase before the plan is approved.
+ */
+export const setPermissionMode = (runId: string, mode: string) =>
+  invoke<void>("set_permission_mode", { runId, mode });
+
+/**
  * Watch a repo's `.locke/` directory for out-of-process changes (MCP edits) — the
  * backend emits `locke:fs-change` on any change. No-op outside Tauri.
  */

@@ -179,6 +179,15 @@ pub fn cancel_run(registry: tauri::State<run::RunRegistry>, run_id: String) -> R
     run::cancel_run(&registry, &run_id)
 }
 
+#[tauri::command]
+pub fn set_permission_mode(
+    registry: tauri::State<run::RunRegistry>,
+    run_id: String,
+    mode: String,
+) -> Result<(), String> {
+    run::set_permission_mode(&registry, &run_id, &mode)
+}
+
 /// Watch the repo's `.locke/` directory for out-of-process changes (MCP edits) and
 /// emit `locke:fs-change` so the frontend can refresh the open review.
 #[tauri::command]

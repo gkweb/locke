@@ -14,7 +14,7 @@
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -23,6 +23,10 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 
 type R<T> = Result<T, String>;
+
+/// Monotonic sequence for client-originated control_request ids (e.g.
+/// `set_permission_mode`), so each is unique within a process run.
+static CTRL_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// One live run: its child process, an stdin handle for permission responses,
 /// and the context needed to finalize (commit + persist) when it ends.
@@ -114,6 +118,16 @@ fn first_line(s: &str, max: usize) -> String {
     line.chars().take(max).collect()
 }
 
+/// First line carrying actual content, truncated — skips lines that are only
+/// structural punctuation (e.g. the bare `[` or `{` opening a JSON tool result),
+/// which make for a useless one-line summary. Falls back to `first_line`.
+fn meaningful_line(s: &str, max: usize) -> String {
+    match s.lines().map(|l| l.trim()).find(|l| l.chars().any(|c| c.is_alphanumeric())) {
+        Some(line) => line.chars().take(max).collect(),
+        None => first_line(s, max),
+    }
+}
+
 /// Classify a tool_use into a UI event (kind, text, optional sub-block).
 fn tool_event(name: &str, input: &Value) -> (String, String, Option<String>) {
     let path = input
@@ -133,14 +147,36 @@ fn tool_event(name: &str, input: &Value) -> (String, String, Option<String>) {
             let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
             ("msg".into(), format!("Running `{}`", first_line(cmd, 80)), Some(cmd.to_string()))
         }
+        // Plan mode: the agent presents its plan and blocks on an ExitPlanMode
+        // permission (handled below) — this is the user's Plan→Build gate.
+        "ExitPlanMode" => ("msg".into(), "Produced a plan — awaiting your review".into(), None),
         _ => ("msg".into(), format!("Using {name}"), None),
     }
 }
+
+/// Tools Locke auto-approves without surfacing a permission card, because they're
+/// inherently low-risk: Locke's own read-only MCP queries (`get_*`/`list_*`, which
+/// only read PR state). Anything that writes, edits, or executes — including the
+/// `open_pull_request`/`reply_to_comment` MCP writers — is never auto-approved and
+/// still prompts the reviewer.
+fn is_auto_approved(tool: &str) -> bool {
+    tool.starts_with("mcp__locke__get_") || tool.starts_with("mcp__locke__list_")
+}
+
+/// Steering reply for `AskUserQuestion`: headless runs have no channel to answer an
+/// interactive question (the tool just returns "the user did not answer"), so rather
+/// than let the agent's decision drop silently, deny it with guidance to surface the
+/// decision where the reviewer can actually act on it — in the plan (ExitPlanMode),
+/// which routes to Locke's Plan→Build approval card.
+const ASK_USER_STEER: &str = "Interactive questions aren't available in this session — don't use AskUserQuestion. Proceed using your best judgment. If there's a genuine open decision the reviewer should make, surface it explicitly in your plan (call ExitPlanMode with the options laid out) when planning, or otherwise note it in your final summary; don't block on an interactive prompt.";
 
 /// A short, human command/summary for the permission card.
 fn permission_summary(tool: &str, input: &Value) -> String {
     match tool {
         "Bash" => input.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        // The Plan→Build gate: carry the full plan markdown through as the summary
+        // so the frontend can render it in the Plan-review card.
+        "ExitPlanMode" => input.get("plan").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         _ => {
             if let Some(p) = input.get("file_path").or_else(|| input.get("path")).and_then(|v| v.as_str()) {
                 format!("{tool} {p}")
@@ -155,8 +191,11 @@ fn permission_summary(tool: &str, input: &Value) -> String {
 /// stream-json user message on stdin (not argv), so it can't be shell-injected.
 /// `permission_mode` is Claude Code's `--permission-mode` value: "default" surfaces
 /// each tool through the in-app Allow/Deny prompt; "auto" lets Claude's own
-/// classifier auto-approve in-scope actions (Locke's "Auto mode"). The stdio prompt
-/// tool stays wired either way, so anything not auto-approved still prompts the user.
+/// classifier auto-approve in-scope actions (Locke's "Auto mode"); "plan" makes the
+/// agent investigate read-only and present a plan via an `ExitPlanMode` permission
+/// (Locke's "Plan first" gate) before editing — approving it transitions the same
+/// run into the build phase. The stdio prompt tool stays wired in every mode, so
+/// anything not auto-approved still prompts the user.
 fn claude_stream_argv(permission_mode: &str) -> Vec<String> {
     vec![
         "-p".into(),
@@ -319,6 +358,9 @@ pub fn start_run(
         let mut n = 0usize;
         let mut result_text = String::new();
         let mut perm_count = 0u32;
+        // tool_use_ids whose results are Locke's own internal steering (e.g. the
+        // AskUserQuestion auto-deny) — skip surfacing them in the run stream.
+        let mut suppressed: HashSet<String> = HashSet::new();
 
         let emit = |app: &AppHandle, events: &mut Vec<Value>, n: &mut usize, kind: &str, text: String, sub: Option<String>| {
             *n += 1;
@@ -349,6 +391,12 @@ pub fn start_run(
                                 }
                                 Some("tool_use") => {
                                     let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
+                                    // AskUserQuestion is always redirected (it can't be
+                                    // answered headlessly), so it's a no-op from the
+                                    // user's view — don't surface it as a run event.
+                                    if name == "AskUserQuestion" {
+                                        continue;
+                                    }
                                     let empty = json!({});
                                     let input = b.get("input").unwrap_or(&empty);
                                     let (kind, text, sub) = tool_event(name, input);
@@ -363,6 +411,14 @@ pub fn start_run(
                     if let Some(blocks) = d.pointer("/message/content").and_then(|v| v.as_array()) {
                         for b in blocks {
                             if b.get("type").and_then(|v| v.as_str()) == Some("tool_result") {
+                                // Skip results for tools Locke handled internally (the
+                                // AskUserQuestion steer), so its instruction text never
+                                // shows as a run event.
+                                if let Some(tuid) = b.get("tool_use_id").and_then(|v| v.as_str()) {
+                                    if suppressed.contains(tuid) {
+                                        continue;
+                                    }
+                                }
                                 let content = b.get("content");
                                 let text = match content {
                                     Some(Value::String(s)) => s.clone(),
@@ -374,7 +430,7 @@ pub fn start_run(
                                     _ => String::new(),
                                 };
                                 let is_err = b.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
-                                let summary = first_line(&text, 120);
+                                let summary = meaningful_line(&text, 120);
                                 if !summary.is_empty() {
                                     let kind = if is_err { "denied" } else { "result" };
                                     emit(&app, &mut events, &mut n, kind, summary, None);
@@ -385,25 +441,41 @@ pub fn start_run(
                 }
                 Some("control_request") => {
                     if d.pointer("/request/subtype").and_then(|v| v.as_str()) == Some("can_use_tool") {
-                        perm_count += 1;
                         let req_id = d.get("request_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
                         let tool = d.pointer("/request/tool_name").and_then(|v| v.as_str()).unwrap_or("tool").to_string();
                         let empty = json!({});
                         let input = d.pointer("/request/input").unwrap_or(&empty);
-                        let why = d.pointer("/request/description").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let suggestions = d.pointer("/request/permission_suggestions").cloned().unwrap_or(json!([]));
-                        let _ = app.emit(
-                            "run:permission",
-                            PermissionPayload {
-                                run_id: run_id.clone(),
-                                request_id: req_id,
-                                tool: tool.clone(),
-                                cmd: permission_summary(&tool, input),
-                                why,
-                                scope: if use_worktree { "isolated worktree".into() } else { "repo working dir".into() },
-                                suggestions,
-                            },
-                        );
+                        if tool == "AskUserQuestion" {
+                            // Can't be answered headlessly — deny with steering so the
+                            // agent surfaces the decision in its plan instead. Suppress
+                            // the steer from the stream (it's internal; the agent's own
+                            // next message explains the redirect).
+                            let reg = app.state::<RunRegistry>();
+                            let _ = respond_permission(&reg, &run_id, &req_id, false, None, Some(ASK_USER_STEER.into()));
+                            if let Some(tuid) = d.pointer("/request/tool_use_id").and_then(|v| v.as_str()) {
+                                suppressed.insert(tuid.to_string());
+                            }
+                        } else if is_auto_approved(&tool) {
+                            // Low-risk allowlist: approve silently, no permission card.
+                            let reg = app.state::<RunRegistry>();
+                            let _ = respond_permission(&reg, &run_id, &req_id, true, Some(input.clone()), None);
+                        } else {
+                            perm_count += 1;
+                            let why = d.pointer("/request/description").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let suggestions = d.pointer("/request/permission_suggestions").cloned().unwrap_or(json!([]));
+                            let _ = app.emit(
+                                "run:permission",
+                                PermissionPayload {
+                                    run_id: run_id.clone(),
+                                    request_id: req_id,
+                                    tool: tool.clone(),
+                                    cmd: permission_summary(&tool, input),
+                                    why,
+                                    scope: if use_worktree { "isolated worktree".into() } else { "repo working dir".into() },
+                                    suggestions,
+                                },
+                            );
+                        }
                     }
                 }
                 Some("result") => {
@@ -503,6 +575,24 @@ pub fn respond_permission(
         "response": { "subtype": "success", "request_id": request_id, "response": inner }
     });
     writeln!(stdin, "{resp}").map_err(|e| format!("write control_response: {e}"))?;
+    stdin.flush().map_err(|e| format!("flush: {e}"))
+}
+
+/// Switch a live run's permission mode mid-stream via a `set_permission_mode`
+/// control_request (the client→CLI direction of the control protocol). Used at the
+/// Plan→Build gate: approving a plan "with Auto" sets the build phase to `auto`
+/// before the ExitPlanMode permission is allowed, so the build runs unattended.
+pub fn set_permission_mode(registry: &RunRegistry, run_id: &str, mode: &str) -> R<()> {
+    let mut guard = registry.0.lock().unwrap();
+    let slot = guard.get_mut(run_id).ok_or("run not found")?;
+    let stdin = slot.stdin.as_mut().ok_or("run stdin closed")?;
+    let seq = CTRL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let req = json!({
+        "type": "control_request",
+        "request_id": format!("spm-{seq}"),
+        "request": { "subtype": "set_permission_mode", "mode": mode }
+    });
+    writeln!(stdin, "{req}").map_err(|e| format!("write set_permission_mode: {e}"))?;
     stdin.flush().map_err(|e| format!("flush: {e}"))
 }
 
