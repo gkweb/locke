@@ -10,3 +10,6 @@ rust-version = "1.77.2"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Cross-process advisory file locking (flock) to serialize concurrent writers —
+# e.g. two agents addressing the same repo's PRs at once.
+fs2 = "0.4"

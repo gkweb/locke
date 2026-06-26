@@ -6,9 +6,11 @@
 //   .locke/checks.json         per-repo check-command overrides
 //   .locke/README.md           explains the folder
 
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 type R<T> = Result<T, String>;
@@ -104,12 +106,41 @@ fn read_json(path: &Path) -> R<Option<Value>> {
     Ok(Some(value))
 }
 
+/// Write JSON atomically: serialize to a per-process temp file in the same dir,
+/// then rename over the target. Rename is atomic on a single filesystem, so a
+/// concurrent reader (which takes no lock) always sees either the old or the new
+/// complete file — never a half-written one.
 fn write_json(path: &Path, value: &Value) -> R<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create dir: {e}"))?;
     }
     let text = serde_json::to_string_pretty(value).map_err(|e| format!("serialize: {e}"))?;
-    fs::write(path, format!("{text}\n")).map_err(|e| format!("write {}: {e}", path.display()))
+    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
+    fs::write(&tmp, format!("{text}\n")).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    fs::rename(&tmp, path).map_err(|e| {
+        let _ = fs::remove_file(&tmp); // don't leave the temp behind on failure
+        format!("commit {}: {e}", path.display())
+    })
+}
+
+// ---- cross-process write lock (.locke/.lock) ----
+
+/// Acquire the repo-wide advisory write lock, held until the returned guard drops
+/// (the fd closes — including on process exit/crash, so locks never go stale).
+/// All `.locke/` mutations take this so concurrent writers in the same repo (two
+/// agents, or an agent and the desktop app) serialize instead of clobbering each
+/// other's read-modify-write. Different repos use different lock files, so they
+/// never block one another.
+fn lock_repo(repo: &str) -> R<File> {
+    ensure_locke(repo)?;
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(locke_dir(repo).join(".lock"))
+        .map_err(|e| format!("open .locke/.lock: {e}"))?;
+    file.lock_exclusive().map_err(|e| format!("lock .locke: {e}"))?;
+    Ok(file)
 }
 
 // ---- check overrides (.locke/checks.json) ----
@@ -217,6 +248,7 @@ pub fn create_pull(
     author: &str,
     is_agent: bool,
 ) -> R<Pull> {
+    let _lock = lock_repo(repo)?;
     let mut store = read_pulls(repo)?;
     let now = now_iso();
     let pull = Pull {
@@ -240,6 +272,7 @@ pub fn create_pull(
 
 /// Replace an existing pull by id (bumps `updated_at`). No-op if id is unknown.
 pub fn update_pull(repo: &str, mut pull: Pull) -> R<()> {
+    let _lock = lock_repo(repo)?;
     let mut store = read_pulls(repo)?;
     pull.updated_at = now_iso();
     if let Some(slot) = store.pulls.iter_mut().find(|p| p.id == pull.id) {
@@ -251,6 +284,7 @@ pub fn update_pull(repo: &str, mut pull: Pull) -> R<()> {
 
 /// Remove a pull and its comments file (used by Delete branch).
 pub fn delete_pull(repo: &str, id: u64) -> R<()> {
+    let _lock = lock_repo(repo)?;
     let mut store = read_pulls(repo)?;
     store.pulls.retain(|p| p.id != id);
     write_pulls(repo, &store)?;
@@ -302,6 +336,13 @@ pub fn read_comments(repo: &str, id: u64) -> R<Option<Value>> {
 }
 
 pub fn write_comments(repo: &str, id: u64, data: Value) -> R<()> {
+    let _lock = lock_repo(repo)?;
+    write_comments_inner(repo, id, data)
+}
+
+/// Unlocked comments write, for callers that already hold the repo lock (e.g.
+/// `append_comment_item`) or run before any concurrency (`migrate_from_index`).
+fn write_comments_inner(repo: &str, id: u64, data: Value) -> R<()> {
     ensure_locke(repo)?;
     write_json(&comments_path(repo, id), &data)
 }
@@ -320,6 +361,7 @@ pub fn delete_comments(repo: &str, id: u64) -> R<()> {
 /// it just locates the thread and pushes onto its `items` array, then persists.
 /// Errors if the comments file, the thread, or its `items` array is missing.
 pub fn append_comment_item(repo: &str, pull_id: u64, thread_id: u64, item: Value) -> R<()> {
+    let _lock = lock_repo(repo)?;
     let mut data = read_comments(repo, pull_id)?
         .ok_or_else(|| format!("pull {pull_id} has no comments file"))?;
     let threads = data
@@ -335,7 +377,7 @@ pub fn append_comment_item(repo: &str, pull_id: u64, thread_id: u64, item: Value
         .and_then(|i| i.as_array_mut())
         .ok_or("thread has no `items` array")?
         .push(item);
-    write_comments(repo, pull_id, data)
+    write_comments_inner(repo, pull_id, data) // lock already held above
 }
 
 // ---- legacy migration (index.json + reviews/<branch>.json) ----
@@ -373,7 +415,8 @@ fn migrate_from_index(repo: &str) -> R<Option<PullStore>> {
             "nextThreadId": saved.get("nextThreadId").cloned().unwrap_or_else(|| json!(100)),
             "viewed": saved.get("viewed").cloned().unwrap_or_else(|| json!({})),
         });
-        write_comments(repo, id, comments)?;
+        // Unlocked: migration may run while a caller holds the lock (via read_pulls).
+        write_comments_inner(repo, id, comments)?;
 
         store.pulls.push(Pull {
             id,
@@ -653,6 +696,37 @@ mod tests {
         set_locke_tracking(repo, true).unwrap();
         assert!(get_locke_tracking(repo));
         assert!(!dir.join(".locke/.gitignore").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_creates_dont_lose_updates() {
+        // Many threads create pulls in the same repo at once. Without the repo
+        // write lock they'd read the same store and clobber each other (lost
+        // updates → fewer than N pulls, duplicate ids). With it, all N persist.
+        let dir = tmp("concurrent");
+        let repo = dir.to_str().unwrap().to_string();
+        let n: u64 = 16;
+
+        let handles: Vec<_> = (0..n)
+            .map(|i| {
+                let repo = repo.clone();
+                std::thread::spawn(move || {
+                    create_pull(&repo, &format!("agent/{i}"), "main", "t", "C", true).unwrap();
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let store = read_pulls(&repo).unwrap();
+        assert_eq!(store.pulls.len(), n as usize, "every concurrent create persisted");
+        let mut ids: Vec<u64> = store.pulls.iter().map(|p| p.id).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, (1..=n).collect::<Vec<_>>(), "ids unique and contiguous");
+        assert_eq!(store.next_id, n + 1);
 
         let _ = fs::remove_dir_all(&dir);
     }
