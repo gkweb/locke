@@ -134,9 +134,9 @@ export const PlayIcon = ({ size = 13, color = "currentColor", stroke = 1.5, styl
 );
 
 export const GearIcon = ({ size = 14, color = "currentColor", stroke = 1.3, style }: IconProps) => (
-  <svg {...strokeBase(size, color, stroke, style)}>
-    <circle cx="8" cy="8" r="2.1" />
-    <path d="M8 1.6v1.7M8 12.7v1.7M3.5 3.5l1.2 1.2M11.3 11.3l1.2 1.2M1.6 8h1.7M12.7 8h1.7M3.5 12.5l1.2-1.2M11.3 4.7l1.2-1.2" />
+  <svg {...strokeBase(size, color, stroke, style)} strokeLinejoin="round">
+    <path d="M14.22 7.01 L14.22 8.99 L12.47 9.07 L11.92 10.4 L13.1 11.7 L11.7 13.1 L10.4 11.92 L9.07 12.47 L8.99 14.22 L7.01 14.22 L6.93 12.47 L5.6 11.92 L4.3 13.1 L2.9 11.7 L4.08 10.4 L3.53 9.07 L1.78 8.99 L1.78 7.01 L3.53 6.93 L4.08 5.6 L2.9 4.3 L4.3 2.9 L5.6 4.08 L6.93 3.53 L7.01 1.78 L8.99 1.78 L9.07 3.53 L10.4 4.08 L11.7 2.9 L13.1 4.3 L11.92 5.6 L12.47 6.93 Z" />
+    <circle cx="8" cy="8" r="2.3" />
   </svg>
 );
 

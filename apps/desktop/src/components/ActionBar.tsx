@@ -105,7 +105,7 @@ export function ActionBar() {
       }}
     >
       {/* left cluster — traffic lights + panel toggle + brand */}
-      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+      <div data-tauri-drag-region style={{ display: "flex", gap: 8, alignItems: "center" }}>
         <TrafficLight bg="#ff5f57" title="close" onClick={() => win()?.close()} />
         <TrafficLight bg="#febc2e" title="minimize" onClick={() => win()?.minimize()} />
         <TrafficLight bg="#28c840" title="zoom" onClick={() => win()?.toggleMaximize()} />
@@ -135,6 +135,7 @@ export function ActionBar() {
       {/* view nav — compact icon segmented control, top-placed destinations only */}
       {topItems.length > 0 && (
         <div
+          data-tauri-drag-region
           style={{
             display: "flex",
             gap: 2,
@@ -160,7 +161,7 @@ export function ActionBar() {
       )}
 
       {/* center search */}
-      <div style={{ flex: 1, display: "flex", justifyContent: "center", padding: "0 14px", minWidth: 0 }}>
+      <div data-tauri-drag-region style={{ flex: 1, display: "flex", justifyContent: "center", padding: "0 14px", minWidth: 0 }}>
         <div style={{ position: "relative", width: "100%", maxWidth: 520 }}>
           <SearchIcon
             size={14}
@@ -189,7 +190,7 @@ export function ActionBar() {
       </div>
 
       {/* right cluster */}
-      <div style={{ display: "flex", alignItems: "center", gap: 9, flex: "none" }}>
+      <div data-tauri-drag-region style={{ display: "flex", alignItems: "center", gap: 9, flex: "none" }}>
         {agentMode && (
           <HoverButton
             onClick={toggleApprovals}

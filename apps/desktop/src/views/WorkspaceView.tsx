@@ -17,6 +17,7 @@ import {
   FileSimpleIcon,
   FullFileIcon,
   TrashIcon,
+  SidebarIcon,
 } from "../components/icons.js";
 import { HoverButton, HoverDiv } from "../components/primitives.js";
 
@@ -30,11 +31,33 @@ function FilesRail() {
   const reviews = useStore((s) => s.reviews);
   const selectedPR = useStore((s) => s.selectedPR);
   const openFullFile = useStore((s) => s.openFullFile);
+  const filesRailWidth = useStore((s) => s.filesRailWidth);
+  const setFilesRailWidth = useStore((s) => s.setFilesRailWidth);
   const review = reviews.find((r) => r.id === selectedPR);
   const flagged = (path: string) => threads.some((t) => t.file === path && t.kind === "change_request" && !t.resolved);
 
+  // Drag-resize: record the starting pointer + width, translate movement into a
+  // width delta (rail is left-docked, so a rightward drag widens it).
+  const startResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = filesRailWidth;
+    const onMove = (ev: MouseEvent) => setFilesRailWidth(startWidth + (ev.clientX - startX));
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
   return (
-    <div style={{ width: 240, flex: "none", borderRight: `1px solid ${color.borderSubtle}`, background: color.sidebarBg, overflowY: "auto", padding: "12px 9px" }}>
+    <div style={{ position: "relative", width: filesRailWidth, flex: "none", borderRight: `1px solid ${color.borderSubtle}`, background: color.sidebarBg, overflowY: "auto", padding: "12px 9px" }}>
+      <span
+        onMouseDown={startResize}
+        title="Drag to resize"
+        style={{ position: "absolute", top: 0, bottom: 0, right: 0, width: 7, cursor: "col-resize", zIndex: 6 }}
+      />
       <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".8px", color: color.textGhost, padding: "0 8px 9px" }}>
         FILES CHANGED
       </div>
@@ -116,10 +139,11 @@ function FilesRail() {
 function DiffTab() {
   const files = useStore((s) => s.files);
   const selectedFile = useStore((s) => s.selectedFile);
+  const filesRailOpen = useStore((s) => s.filesRailOpen);
   const file = files[selectedFile];
   return (
     <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
-      <FilesRail />
+      {filesRailOpen && <FilesRail />}
       <div style={{ flex: 1, minWidth: 0, overflowY: "auto", padding: "18px 24px 50px" }}>
         {file ? (
           <DiffViewer file={file} />
@@ -283,6 +307,8 @@ export function WorkspaceView() {
   const pending = useStore((s) => s.pending);
   const agents = useStore((s) => s.agents);
   const disabledAgents = useStore((s) => s.disabledAgents);
+  const filesRailOpen = useStore((s) => s.filesRailOpen);
+  const toggleFilesRail = useStore((s) => s.toggleFilesRail);
 
   const review = reviews.find((r) => r.id === selectedPR) ?? reviews[0];
   if (!review) {
@@ -401,6 +427,29 @@ export function WorkspaceView() {
           <TabButton active={effTab === "history"} onClick={() => setWorkspaceTab("history")}>
             History <span style={badge}>{history.length}</span>
           </TabButton>
+          {effTab === "diff" && (
+            <HoverButton
+              onClick={toggleFilesRail}
+              title={filesRailOpen ? "Hide files changed" : "Show files changed"}
+              style={{
+                marginLeft: "auto",
+                alignSelf: "center",
+                width: 30,
+                height: 30,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                border: "none",
+                borderRadius: 8,
+                cursor: "pointer",
+                background: filesRailOpen ? "#161b24" : "transparent",
+                color: filesRailOpen ? color.textSoft : color.textFaint,
+              }}
+              hoverStyle={{ background: "#14181f" }}
+            >
+              <SidebarIcon size={16} stroke={1.4} />
+            </HoverButton>
+          )}
         </div>
       </div>
 
