@@ -43,7 +43,7 @@ export function RunApprovalModal() {
   return (
     <div
       onClick={cancel}
-      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 70 }}
+      style={{ position: "fixed", inset: 0, background: color.scrim, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 70 }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -129,7 +129,7 @@ export function RunApprovalModal() {
               borderRadius: 11,
               padding: 2,
               display: "flex",
-              background: runAutoMode && autoSupported ? color.teal : "#2a313d",
+              background: runAutoMode && autoSupported ? color.teal : "var(--lk-borderPopover)",
               justifyContent: runAutoMode && autoSupported ? "flex-end" : "flex-start",
             }}
           >
@@ -144,7 +144,7 @@ export function RunApprovalModal() {
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 22 }}>
           <button
             onClick={cancel}
-            style={{ fontFamily: font.sans, fontSize: 12.5, color: "#aab2c0", background: "transparent", border: `1px solid ${color.borderInput}`, padding: "8px 15px", borderRadius: 8, cursor: "pointer" }}
+            style={{ fontFamily: font.sans, fontSize: 12.5, color: "var(--lk-textDim)", background: "transparent", border: `1px solid ${color.borderInput}`, padding: "8px 15px", borderRadius: 8, cursor: "pointer" }}
           >
             Cancel
           </button>
@@ -159,8 +159,8 @@ export function RunApprovalModal() {
               fontSize: 12.5,
               fontWeight: 600,
               color: "#fff",
-              background: selected ? accent : "#2a313d",
-              border: `1px solid ${selected ? accent : "#2a313d"}`,
+              background: selected ? accent : "var(--lk-borderPopover)",
+              border: `1px solid ${selected ? accent : "var(--lk-borderPopover)"}`,
               padding: "8px 16px",
               borderRadius: 8,
               cursor: selected ? "pointer" : "not-allowed",

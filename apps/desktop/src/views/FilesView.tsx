@@ -1,6 +1,6 @@
 import type { FileNode } from "@locke/core";
 import { useStore } from "../state/store.js";
-import { color, font } from "../theme/tokens.js";
+import { color, font, tint } from "../theme/tokens.js";
 import { lockeLang } from "../lib/lockeLang.js";
 import { ChevronRightIcon, FolderIcon, FolderTreeIcon, FileSimpleIcon } from "../components/icons.js";
 import { HoverButton } from "../components/primitives.js";
@@ -73,7 +73,7 @@ export function FilesView() {
           <FolderIcon size={13} color={color.textFainter} stroke={1.4} />
           <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".7px", color: color.textFaint }}>EXPLORER</span>
           {repoName && (
-            <span style={{ marginLeft: "auto", fontSize: 10.5, color: "#454d5b", fontFamily: font.mono }}>
+            <span style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--lk-lineNo)", fontFamily: font.mono }}>
               {repoName}
             </span>
           )}
@@ -142,7 +142,7 @@ export function FilesView() {
                   fontFamily: font.sans,
                   borderRadius: 7,
                   height: 27,
-                  background: active ? "#161d2a" : "transparent",
+                  background: active ? "var(--lk-borderRowFaint2)" : "transparent",
                   ...indent,
                 }}
                 hoverStyle={active ? undefined : { background: color.rowHoverBg }}
@@ -159,7 +159,7 @@ export function FilesView() {
                     fontSize: 7.5,
                     fontWeight: 800,
                     letterSpacing: "-.3px",
-                    background: `${accent}22`,
+                    background: `${tint(accent, "22")}`,
                     color: accent,
                   }}
                 >

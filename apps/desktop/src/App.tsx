@@ -19,6 +19,7 @@ import { AgentsView } from "./views/AgentsView.js";
 import { FilesView } from "./views/FilesView.js";
 import { ExtensionsView } from "./views/ExtensionsView.js";
 import { IntegrationsView } from "./views/IntegrationsView.js";
+import { SettingsView } from "./views/SettingsView.js";
 import { WorkspaceView } from "./views/WorkspaceView.js";
 import { NewReviewModal } from "./components/NewReviewModal.js";
 import { DeletePullModal } from "./components/DeletePullModal.js";
@@ -54,6 +55,8 @@ function Main() {
       return <ExtensionsView />;
     case "integrations":
       return <IntegrationsView />;
+    case "settings":
+      return <SettingsView />;
     case "workspace":
       return <WorkspaceView />;
   }

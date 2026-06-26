@@ -1,5 +1,5 @@
 import { useStore } from "../state/store.js";
-import { color, font, agentIdAccent } from "../theme/tokens.js";
+import { color, font, agentIdAccent, tint } from "../theme/tokens.js";
 
 // The agents directory — CLIs detected on PATH, with per-agent enable toggles.
 // Real data: detection + the opt-out set come from the store (agents.json).
@@ -20,7 +20,7 @@ function Switch({ on, onClick }: { on: boolean; onClick: () => void }) {
         position: "relative",
         flex: "none",
         transition: "background .15s",
-        background: on ? color.green : "#2a3140",
+        background: on ? color.green : "var(--lk-borderPopover)",
       }}
     >
       <span
@@ -86,8 +86,8 @@ export function AgentsView() {
                     fontSize: 13,
                     fontWeight: 700,
                     color: accent,
-                    background: `${accent}22`,
-                    border: `1px solid ${accent}55`,
+                    background: `${tint(accent, "22")}`,
+                    border: `1px solid ${tint(accent, "55")}`,
                   }}
                 >
                   {(a.name.match(/\b\w/g)?.slice(0, 2).join("") ?? a.id.slice(0, 2)).toUpperCase()}

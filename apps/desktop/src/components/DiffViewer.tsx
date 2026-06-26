@@ -18,8 +18,8 @@ function HunkRow({ text }: { text: string }) {
       style={{
         padding: "4px 16px",
         background: HUNK_BG,
-        borderTop: "1px solid #1a212b",
-        borderBottom: "1px solid #1a212b",
+        borderTop: "1px solid var(--lk-borderRow)",
+        borderBottom: "1px solid var(--lk-borderRow)",
         color: "#7c87ff",
         fontSize: 11.5,
       }}
@@ -112,9 +112,9 @@ function Composer({ path }: { path: string }) {
     <div
       style={{
         margin: "4px 14px 10px",
-        border: "1px solid #2c2640",
+        border: "1px solid var(--lk-borderPopover)",
         borderRadius: 10,
-        background: "#10111c",
+        background: "var(--lk-popoverBg)",
         overflow: "hidden",
         fontFamily: font.sans,
       }}
@@ -125,8 +125,8 @@ function Composer({ path }: { path: string }) {
           alignItems: "center",
           gap: 8,
           padding: "8px 13px",
-          borderBottom: "1px solid #1c1b2b",
-          background: "#13131f",
+          borderBottom: "1px solid var(--lk-borderSubtle)",
+          background: "var(--lk-rowHoverBg)",
         }}
       >
         <span
@@ -159,7 +159,7 @@ function Composer({ path }: { path: string }) {
             minHeight: 70,
             resize: "vertical",
             background: color.appBg,
-            border: "1px solid #2c333f",
+            border: "1px solid var(--lk-borderInput)",
             borderRadius: 8,
             padding: "9px 11px",
             color: color.text,
@@ -175,9 +175,9 @@ function Composer({ path }: { path: string }) {
             style={{
               fontFamily: font.sans,
               fontSize: 12.5,
-              color: "#aab2c0",
+              color: "var(--lk-textDim)",
               background: "transparent",
-              border: "1px solid #2c333f",
+              border: "1px solid var(--lk-borderInput)",
               padding: "7px 14px",
               borderRadius: 8,
               cursor: "pointer",
@@ -210,7 +210,7 @@ function Composer({ path }: { path: string }) {
 const splitNumStyle = (empty: boolean): React.CSSProperties => ({
   textAlign: "right",
   padding: "0 8px",
-  color: empty ? undefined : "#4d5667",
+  color: empty ? undefined : "var(--lk-lineNo)",
   userSelect: "none",
 });
 
@@ -240,8 +240,8 @@ export function DiffViewer({ file }: { file: ChangedFile }) {
           alignItems: "center",
           gap: 10,
           padding: "9px 14px",
-          background: "#0d1016",
-          borderBottom: "1px solid #1a212b",
+          background: "var(--lk-panelBg)",
+          borderBottom: "1px solid var(--lk-borderRow)",
         }}
       >
         <span style={{ fontSize: 12.5, color: color.textDim, fontFamily: font.mono }}>{path}</span>
@@ -263,7 +263,7 @@ export function DiffViewer({ file }: { file: ChangedFile }) {
               fontWeight: 600,
               cursor: "pointer",
             }}
-            hoverStyle={{ borderColor: "#2e3645", color: color.textSoft }}
+            hoverStyle={{ borderColor: "var(--lk-borderInput)", color: color.textSoft }}
           >
             <FullFileIcon size={12} stroke={1.4} />
             See full file
@@ -292,11 +292,11 @@ export function DiffViewer({ file }: { file: ChangedFile }) {
             style={{
               display: "grid",
               gridTemplateColumns: "1fr 1fr",
-              borderBottom: "1px solid #1a212b",
-              background: "#0d1016",
+              borderBottom: "1px solid var(--lk-borderRow)",
+              background: "var(--lk-panelBg)",
             }}
           >
-            <div style={{ padding: "6px 14px", fontSize: 11, color: color.textFainter, borderRight: "1px solid #1a212b", fontFamily: font.sans }}>
+            <div style={{ padding: "6px 14px", fontSize: 11, color: color.textFainter, borderRight: "1px solid var(--lk-borderRow)", fontFamily: font.sans }}>
               Original
             </div>
             <div style={{ padding: "6px 14px", fontSize: 11, color: color.textFainter, fontFamily: font.sans }}>
@@ -315,8 +315,8 @@ export function DiffViewer({ file }: { file: ChangedFile }) {
                       whiteSpace: "pre",
                       overflowX: "auto",
                       padding: "0 12px",
-                      borderRight: "1px solid #161c25",
-                      background: row.left.empty ? "#0c0e13" : splitCellBg(row.left.cellKind),
+                      borderRight: "1px solid var(--lk-borderRail2)",
+                      background: row.left.empty ? "var(--lk-titlebarBg)" : splitCellBg(row.left.cellKind),
                     }}
                   >
                     {!row.left.empty && <CodeText text={row.left.code} />}
@@ -327,14 +327,14 @@ export function DiffViewer({ file }: { file: ChangedFile }) {
                       whiteSpace: "pre",
                       overflowX: "auto",
                       padding: "0 12px",
-                      background: row.right.empty ? "#0c0e13" : splitCellBg(row.right.cellKind),
+                      background: row.right.empty ? "var(--lk-titlebarBg)" : splitCellBg(row.right.cellKind),
                     }}
                   >
                     {!row.right.empty && <CodeText text={row.right.code} />}
                   </div>
                 </div>
                 {thread && (
-                  <div style={{ borderTop: "1px solid #161c25" }}>
+                  <div style={{ borderTop: "1px solid var(--lk-borderRail2)" }}>
                     <CommentThread thread={thread} />
                   </div>
                 )}

@@ -1,5 +1,5 @@
 import { useStore } from "../state/store.js";
-import { color, font } from "../theme/tokens.js";
+import { color, font, tint } from "../theme/tokens.js";
 import { reviewKind, reviewAccent, reviewStatusMeta } from "../lib/fleet.js";
 import { AgentMark } from "../components/AgentMark.js";
 import { ChevronRightIcon } from "../components/icons.js";
@@ -49,11 +49,11 @@ export function ReviewsView() {
                 marginBottom: 11,
                 cursor: "pointer",
               }}
-              hoverStyle={{ borderColor: "#2e3645", background: color.rowHoverBg }}
+              hoverStyle={{ borderColor: "var(--lk-borderInput)", background: color.rowHoverBg }}
             >
               <span style={{ width: 9, height: 9, borderRadius: "50%", flex: "none", background: sm.color }} />
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 14, fontWeight: 600, color: "#eef1f5", letterSpacing: "-.2px" }}>{r.title}</div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "var(--lk-textBright)", letterSpacing: "-.2px" }}>{r.title}</div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 7, flexWrap: "wrap", fontSize: 11.5, color: color.textFainter }}>
                   <span style={{ fontFamily: font.mono, color: "#7b8494" }}>#{r.id}</span>
                   <span style={{ color: "#3a414e" }}>·</span>
@@ -69,8 +69,8 @@ export function ReviewsView() {
                       alignItems: "center",
                       justifyContent: "center",
                       color: accent,
-                      background: `${accent}22`,
-                      border: `1px solid ${accent}55`,
+                      background: `${tint(accent, "22")}`,
+                      border: `1px solid ${tint(accent, "55")}`,
                     }}
                   >
                     <AgentMark kind={kind} label={r.initials} px={11} />
@@ -87,14 +87,14 @@ export function ReviewsView() {
                   fontSize: 11.5,
                   fontWeight: 600,
                   color: sm.color,
-                  background: `${sm.color}1f`,
-                  border: `1px solid ${sm.color}4d`,
+                  background: `${tint(sm.color, "1f")}`,
+                  border: `1px solid ${tint(sm.color, "4d")}`,
                 }}
               >
                 <span style={{ width: 7, height: 7, borderRadius: "50%", background: "currentColor" }} />
                 {sm.label}
               </span>
-              <ChevronRightIcon size={15} color="#454d5b" stroke={1.5} />
+              <ChevronRightIcon size={15} color="var(--lk-lineNo)" stroke={1.5} />
             </HoverDiv>
           );
         })

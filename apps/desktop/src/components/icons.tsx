@@ -279,21 +279,21 @@ export const PauseIcon = ({ size = 13, color = "currentColor", stroke = 1.6, sty
 // filled violet node. Colors are intrinsic to the mark, so it ignores `color`.
 export const BrandMark = ({ size = 18, style }: { size?: number; style?: React.CSSProperties }) => (
   <svg width={size} height={size} viewBox="0 0 64 64" fill="none" style={style}>
-    <path d="M19 18v17a8 8 0 0 0 8 8h11" stroke="#7b6cff" strokeWidth={5} strokeLinecap="round" />
-    <path d="M19 27c0-5 4-9 9-9h6" stroke="#3fd0c0" strokeWidth={5} strokeLinecap="round" />
-    <circle cx="19" cy="18" r="7.5" fill="#0c0e13" stroke="#7b6cff" strokeWidth={5} />
-    <circle cx="42" cy="18" r="7.5" fill="#0c0e13" stroke="#3fd0c0" strokeWidth={5} />
-    <circle cx="42" cy="43" r="7.5" fill="#7b6cff" />
+    <path d="M19 18v17a8 8 0 0 0 8 8h11" stroke="var(--lk-violet)" strokeWidth={5} strokeLinecap="round" />
+    <path d="M19 27c0-5 4-9 9-9h6" stroke="var(--lk-teal)" strokeWidth={5} strokeLinecap="round" />
+    <circle cx="19" cy="18" r="7.5" fill="var(--lk-titlebarBg)" stroke="var(--lk-violet)" strokeWidth={5} />
+    <circle cx="42" cy="18" r="7.5" fill="var(--lk-titlebarBg)" stroke="var(--lk-teal)" strokeWidth={5} />
+    <circle cx="42" cy="43" r="7.5" fill="var(--lk-violet)" />
   </svg>
 );
 
-export const SparkleIcon = ({ size = 14, color = "#3fd0c0", style }: IconProps) => (
+export const SparkleIcon = ({ size = 14, color = "var(--lk-teal)", style }: IconProps) => (
   <svg width={size} height={size} viewBox="0 0 16 16" fill={color} style={style}>
     <path d="M8 1l1.6 4.2L14 6.4l-3.4 3 1 4.6L8 11.7 4.4 14l1-4.6L2 6.4l4.4-1.2z" />
   </svg>
 );
 
-export const LogoMark = ({ size = 13, color = "#8b7bff", style }: IconProps) => (
+export const LogoMark = ({ size = 13, color = "var(--lk-violetLogo)", style }: IconProps) => (
   <svg width={size} height={size} viewBox="0 0 16 16" style={style}>
     <path
       d="M1.6 4.4h8.2v1.9H7.4c.25 1.45 1.2 2.55 2.7 3.05V11H3.4V9.35c1.4-.5 2.3-1.6 2.55-3.05H1.6z"

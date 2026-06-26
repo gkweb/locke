@@ -48,10 +48,10 @@ function NavButton({
         border: "none",
         borderRadius: 8,
         cursor: "pointer",
-        background: active ? "#181d27" : "transparent",
+        background: active ? "var(--lk-borderRow2)" : "transparent",
         color: active ? color.text : "#7b8494",
       }}
-      hoverStyle={active ? undefined : { background: "#14181f" }}
+      hoverStyle={active ? undefined : { background: "var(--lk-borderRowFaint)" }}
     >
       {children}
       {dot && (
@@ -124,10 +124,10 @@ export function ActionBar() {
           borderRadius: 8,
           cursor: "pointer",
           marginLeft: 4,
-          background: panelOpen ? "#161b24" : "transparent",
+          background: panelOpen ? "var(--lk-borderRail2)" : "transparent",
           color: panelOpen ? color.textSoft : "#7b8494",
         }}
-        hoverStyle={{ background: "#14181f" }}
+        hoverStyle={{ background: "var(--lk-borderRowFaint)" }}
       >
         <SidebarIcon size={16} stroke={1.4} />
       </HoverButton>
@@ -206,11 +206,11 @@ export function ActionBar() {
               fontSize: 12,
               fontWeight: 600,
               cursor: "pointer",
-              background: approvalsOpen ? "#161b24" : "transparent",
-              border: `1px solid ${approvalsOpen ? "#2e3645" : color.borderChip2}`,
+              background: approvalsOpen ? "var(--lk-borderRail2)" : "transparent",
+              border: `1px solid ${approvalsOpen ? "var(--lk-borderInput)" : color.borderChip2}`,
               color: approvalsOpen ? color.text : color.textDim,
             }}
-            hoverStyle={approvalsOpen ? undefined : { borderColor: "#2e3645" }}
+            hoverStyle={approvalsOpen ? undefined : { borderColor: "var(--lk-borderInput)" }}
           >
             <ShieldIcon size={13} stroke={1.5} />
             {hasApprovals && (
@@ -244,12 +244,12 @@ export function ActionBar() {
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            border: `1px solid ${settingsOpen ? "#2e3645" : color.borderChip2}`,
+            border: `1px solid ${settingsOpen ? "var(--lk-borderInput)" : color.borderChip2}`,
             borderRadius: 8,
             cursor: "pointer",
-            background: settingsOpen ? "#161b24" : "transparent",
+            background: settingsOpen ? "var(--lk-borderRail2)" : "transparent",
           }}
-          hoverStyle={{ borderColor: "#2e3645" }}
+          hoverStyle={{ borderColor: "var(--lk-borderInput)" }}
         >
           <GearIcon size={15} color={color.textFaint} stroke={1.4} />
         </HoverButton>

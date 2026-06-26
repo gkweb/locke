@@ -1,6 +1,6 @@
 import type { ChangedFile, WorkspaceTab } from "@locke/core";
 import { useStore } from "../state/store.js";
-import { color, font, alpha, runStateMeta } from "../theme/tokens.js";
+import { color, font, alpha, runStateMeta, tint } from "../theme/tokens.js";
 import { reviewKind, reviewAccent, reviewStatusMeta } from "../lib/fleet.js";
 import { fullFilePath } from "../lib/mockFleet.js";
 import { AgentMark } from "../components/AgentMark.js";
@@ -94,7 +94,7 @@ function FilesRail() {
                 fontSize: 9,
                 fontWeight: 700,
                 color: c,
-                background: `${c}22`,
+                background: `${tint(c, "22")}`,
                 border: "1px solid currentColor",
               }}
             >
@@ -125,7 +125,7 @@ function FilesRail() {
                   color: color.textGhost,
                   cursor: "pointer",
                 }}
-                hoverStyle={{ background: "#1b2230", color: color.textDim }}
+                hoverStyle={{ background: "var(--lk-rowActiveBg)", color: color.textDim }}
               >
                 <FullFileIcon size={12} stroke={1.4} />
               </HoverButton>
@@ -285,7 +285,7 @@ function TabButton({ active, accent, onClick, children }: { active: boolean; acc
 const badge: React.CSSProperties = {
   fontSize: 11,
   color: color.textFainter,
-  background: "#13161d",
+  background: "var(--lk-chipBg)",
   border: `1px solid ${color.borderChip}`,
   borderRadius: 20,
   padding: "0 7px",
@@ -354,7 +354,7 @@ export function WorkspaceView() {
               {review.title}
             </h1>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 11, flexWrap: "wrap", fontSize: 12 }}>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 11px", borderRadius: 20, fontWeight: 600, color: sm.color, background: `${sm.color}1f`, border: `1px solid ${sm.color}4d` }}>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 11px", borderRadius: 20, fontWeight: 600, color: sm.color, background: `${tint(sm.color, "1f")}`, border: `1px solid ${tint(sm.color, "4d")}` }}>
                 <span style={{ width: 7, height: 7, borderRadius: "50%", background: "currentColor" }} />
                 {sm.label}
               </span>
@@ -362,7 +362,7 @@ export function WorkspaceView() {
               <ArrowRightIcon size={13} color={color.textGhost} stroke={1.4} />
               <span style={{ fontFamily: font.mono, color: color.blue }}>{review.base}</span>
               <span style={{ color: "#3a414e" }}>·</span>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "2px 10px 2px 4px", borderRadius: 20, color: accent, background: `${accent}22`, border: `1px solid ${accent}55` }}>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "2px 10px 2px 4px", borderRadius: 20, color: accent, background: `${tint(accent, "22")}`, border: `1px solid ${tint(accent, "55")}` }}>
                 <AgentMark kind={kind} label={review.initials} px={13} />
                 {review.model ?? "human"}
               </span>
@@ -452,10 +452,10 @@ export function WorkspaceView() {
                 border: "none",
                 borderRadius: 8,
                 cursor: "pointer",
-                background: filesRailOpen ? "#161b24" : "transparent",
+                background: filesRailOpen ? "var(--lk-borderRail2)" : "transparent",
                 color: filesRailOpen ? color.textSoft : color.textFaint,
               }}
-              hoverStyle={{ background: "#14181f" }}
+              hoverStyle={{ background: "var(--lk-borderRowFaint)" }}
             >
               <SidebarIcon size={16} stroke={1.4} />
             </HoverButton>

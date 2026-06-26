@@ -41,9 +41,9 @@ export function CommentThread({ thread }: { thread: Thread }) {
     <div
       style={{
         margin: "2px 14px 8px 14px",
-        border: "1px solid #262c38",
+        border: "1px solid var(--lk-borderChip2)",
         borderRadius: 10,
-        background: "#12151c",
+        background: "var(--lk-chipBg)",
         overflow: "hidden",
         fontFamily: font.sans,
       }}
@@ -54,8 +54,8 @@ export function CommentThread({ thread }: { thread: Thread }) {
           alignItems: "center",
           justifyContent: "space-between",
           padding: "8px 12px",
-          borderBottom: "1px solid #1c212b",
-          background: "#161a22",
+          borderBottom: "1px solid var(--lk-borderRow)",
+          background: "var(--lk-borderRowFaint3)",
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -122,14 +122,14 @@ export function CommentThread({ thread }: { thread: Thread }) {
               fontFamily: font.sans,
               fontSize: 11,
               color: isChangeRequest ? color.amber : color.textSoft,
-              background: isChangeRequest ? alpha.amber(0.1) : "#1d232e",
-              border: `1px solid ${isChangeRequest ? alpha.amber(0.32) : "#2c333f"}`,
+              background: isChangeRequest ? alpha.amber(0.1) : "var(--lk-borderRail)",
+              border: `1px solid ${isChangeRequest ? alpha.amber(0.32) : "var(--lk-borderInput)"}`,
               padding: "4px 10px",
               borderRadius: 6,
               cursor: "pointer",
               fontWeight: 500,
             }}
-            hoverStyle={{ background: isChangeRequest ? alpha.amber(0.16) : "#252c39" }}
+            hoverStyle={{ background: isChangeRequest ? alpha.amber(0.16) : "var(--lk-borderChip2)" }}
           >
             {isChangeRequest ? "Unmark" : "Request change"}
           </HoverButton>
@@ -139,14 +139,14 @@ export function CommentThread({ thread }: { thread: Thread }) {
               fontFamily: font.sans,
               fontSize: 11,
               color: color.textSoft,
-              background: "#1d232e",
-              border: "1px solid #2c333f",
+              background: "var(--lk-borderRail)",
+              border: "1px solid var(--lk-borderInput)",
               padding: "4px 10px",
               borderRadius: 6,
               cursor: "pointer",
               fontWeight: 500,
             }}
-            hoverStyle={{ background: "#252c39" }}
+            hoverStyle={{ background: "var(--lk-borderChip2)" }}
           >
             {thread.resolved ? "Reopen" : "Resolve"}
           </HoverButton>
@@ -169,9 +169,9 @@ export function CommentThread({ thread }: { thread: Thread }) {
                 justifyContent: "center",
                 fontSize: 10.5,
                 fontWeight: 600,
-                background: tint?.bg ?? "#232a36",
-                color: tint?.fg ?? "#c3cad6",
-                border: `1px solid ${tint?.border ?? "#2e3744"}`,
+                background: tint?.bg ?? "var(--lk-borderChip)",
+                color: tint?.fg ?? "var(--lk-textMuted)",
+                border: `1px solid ${tint?.border ?? "var(--lk-borderInput)"}`,
               }}
             >
               {item.initials}
@@ -208,8 +208,8 @@ export function CommentThread({ thread }: { thread: Thread }) {
                       fontSize: 9.5,
                       fontWeight: 600,
                       color: "#9aa3b4",
-                      background: "#1d232e",
-                      border: "1px solid #2c333f",
+                      background: "var(--lk-borderRail)",
+                      border: "1px solid var(--lk-borderInput)",
                       padding: "1px 6px",
                       borderRadius: 5,
                       letterSpacing: ".3px",
@@ -228,7 +228,7 @@ export function CommentThread({ thread }: { thread: Thread }) {
       </div>
 
       {replyOpen ? (
-        <div style={{ padding: "6px 14px 12px 14px", borderTop: "1px solid #1c212b" }}>
+        <div style={{ padding: "6px 14px 12px 14px", borderTop: "1px solid var(--lk-borderRow)" }}>
           <textarea
             value={replyDraft}
             onChange={(e) => setReplyDraft(e.target.value)}
@@ -239,7 +239,7 @@ export function CommentThread({ thread }: { thread: Thread }) {
               minHeight: 58,
               resize: "vertical",
               background: color.panelBg,
-              border: "1px solid #2c333f",
+              border: "1px solid var(--lk-borderInput)",
               borderRadius: 7,
               padding: "8px 10px",
               color: color.text,
@@ -255,9 +255,9 @@ export function CommentThread({ thread }: { thread: Thread }) {
               style={{
                 fontFamily: font.sans,
                 fontSize: 12,
-                color: "#aab2c0",
+                color: "var(--lk-textDim)",
                 background: "transparent",
-                border: "1px solid #2c333f",
+                border: "1px solid var(--lk-borderInput)",
                 padding: "6px 13px",
                 borderRadius: 7,
                 cursor: "pointer",
@@ -294,7 +294,7 @@ export function CommentThread({ thread }: { thread: Thread }) {
             width: "100%",
             textAlign: "left",
             padding: "10px 14px",
-            borderTop: "1px solid #1c212b",
+            borderTop: "1px solid var(--lk-borderRow)",
             background: "transparent",
             borderLeft: "none",
             borderRight: "none",
@@ -304,15 +304,15 @@ export function CommentThread({ thread }: { thread: Thread }) {
             fontSize: 12,
             color: color.textFainter,
           }}
-          hoverStyle={{ background: "#161a22", color: "#9aa3b4" }}
+          hoverStyle={{ background: "var(--lk-borderRowFaint3)", color: "#9aa3b4" }}
         >
           <span
             style={{
               width: 20,
               height: 20,
               borderRadius: 6,
-              background: "#1d232e",
-              border: "1px solid #2c333f",
+              background: "var(--lk-borderRail)",
+              border: "1px solid var(--lk-borderInput)",
               display: "inline-flex",
               alignItems: "center",
               justifyContent: "center",

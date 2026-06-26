@@ -1,5 +1,5 @@
 import { useStore } from "../state/store.js";
-import { color, font, alpha, agentKind, agentAccent } from "../theme/tokens.js";
+import { color, font, alpha, agentKind, agentAccent, tint } from "../theme/tokens.js";
 import { AgentMark } from "./AgentMark.js";
 import { ChevronRightIcon } from "./icons.js";
 import { HoverButton } from "./primitives.js";
@@ -76,8 +76,8 @@ export function ApprovalsTray() {
                       alignItems: "center",
                       justifyContent: "center",
                       color: accent,
-                      background: `${accent}22`,
-                      border: `1px solid ${accent}55`,
+                      background: `${tint(accent, "22")}`,
+                      border: `1px solid ${tint(accent, "55")}`,
                     }}
                   >
                     <AgentMark kind={kind} label={a.initials} px={13} />

@@ -123,13 +123,17 @@ export const detectAgents = (): Promise<AgentInfo[]> =>
 export interface AgentSettings {
   disabled: string[];
   enabled: boolean;
+  /** Selected UI theme id (v1.4). Persisted alongside agent prefs in the freeform
+   *  agents.json, so it round-trips without a Rust change. */
+  theme?: string;
 }
 
 export const readAgentSettings = (): Promise<AgentSettings> =>
   isTauri
-    ? invoke<{ disabled?: string[]; enabled?: boolean } | null>("read_agent_settings").then((s) => ({
+    ? invoke<{ disabled?: string[]; enabled?: boolean; theme?: string } | null>("read_agent_settings").then((s) => ({
         disabled: s?.disabled ?? [],
         enabled: s?.enabled ?? true,
+        theme: s?.theme,
       }))
     : Promise.resolve({ disabled: [], enabled: true });
 

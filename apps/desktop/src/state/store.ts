@@ -78,6 +78,7 @@ import {
 } from "../lib/mockFleet.js";
 import { buildAgentPrompt } from "../lib/agentPrompt.js";
 import { lockeLang } from "../lib/lockeLang.js";
+import { applyTheme, isThemeId, DEFAULT_THEME, type ThemeId } from "../theme/themes.js";
 import { readPulls, createPull, updatePull, deletePull } from "../api/pulls.js";
 import {
   loadComments,
@@ -188,6 +189,8 @@ interface LockeState {
   query: string;
   /** "Agent control" (true) vs "Reviews only" (false). Persisted app-global. */
   agentMode: boolean;
+  /** Active UI theme. Persisted app-global (alongside agent prefs). */
+  theme: ThemeId;
   /** Where each nav destination is surfaced: top bar / bottom bar / hidden. */
   navPlace: Record<NavKey, NavPlacement>;
   selectedPR: string;
@@ -266,6 +269,8 @@ interface LockeState {
   cliError: string;
   /** The view to return to when leaving the Integrations page. */
   intReturn: View;
+  /** View to return to when leaving the full Settings screen. */
+  settingsReturn: View;
   /** Whether the app-global Settings modal is open. */
   settingsOpen: boolean;
   /** Whether the New-review modal (branch pickers) is open. */
@@ -359,6 +364,10 @@ interface LockeState {
   goIntegrations: () => void;
   /** Leave the Integrations page, back to where it was opened from. */
   backFromInt: () => void;
+  /** Open the full Settings screen (remembers the view to return to). */
+  goSettings: () => void;
+  /** Leave the Settings screen, back to where it was opened from. */
+  backFromSettings: () => void;
   /** Reload the MCP debug call log. */
   loadMcpLog: () => Promise<void>;
   /** Clear the MCP debug call log, then reload it. */
@@ -372,6 +381,8 @@ interface LockeState {
   toggleAgentEnabled: (id: string) => void;
   /** Set the global "Agent control" vs "Reviews only" mode and persist it. */
   setAgentMode: (on: boolean) => void;
+  /** Switch the active theme: apply it live and persist app-global. */
+  setTheme: (id: ThemeId) => void;
   setSettingsOpen: (open: boolean) => void;
   /** Toggle the action-bar settings popover (closes the approvals tray). */
   toggleSettings: () => void;
@@ -480,6 +491,7 @@ export const useStore = create<LockeState>((set, get) => ({
   approvalsOpen: false,
   query: "",
   agentMode: true,
+  theme: DEFAULT_THEME,
   navPlace: { activity: "top", reviews: "top", runs: "bottom", files: "bottom", agents: "bottom" },
   selectedPR: "",
   selectedFile: 0,
@@ -537,6 +549,7 @@ export const useStore = create<LockeState>((set, get) => ({
   cliBusy: false,
   cliError: "",
   intReturn: "activity",
+  settingsReturn: "activity",
   settingsOpen: false,
   newReviewOpen: false,
   deletePullPending: "",
@@ -570,7 +583,9 @@ export const useStore = create<LockeState>((set, get) => ({
     if (MOCK) return; // keep the seeded mock opt-outs + default agent mode
     try {
       const s = await readAgentSettings();
-      set({ disabledAgents: s.disabled, agentMode: s.enabled });
+      const theme = isThemeId(s.theme) ? s.theme : DEFAULT_THEME;
+      set({ disabledAgents: s.disabled, agentMode: s.enabled, theme });
+      applyTheme(theme);
     } catch {
       // Missing/unreadable settings just means defaults (nothing disabled, agents on).
     }
@@ -627,6 +642,23 @@ export const useStore = create<LockeState>((set, get) => ({
       get().openReview(selectedPR, get().workspaceTab);
     } else {
       get().go(intReturn === "workspace" ? "activity" : intReturn);
+    }
+  },
+
+  goSettings: () =>
+    set((s) => ({
+      settingsReturn: s.view === "settings" ? s.settingsReturn : s.view,
+      view: "settings",
+      settingsOpen: false,
+      approvalsOpen: false,
+    })),
+
+  backFromSettings: () => {
+    const { settingsReturn, selectedPR } = get();
+    if (settingsReturn === "workspace" && selectedPR) {
+      get().openReview(selectedPR, get().workspaceTab);
+    } else {
+      get().go(settingsReturn === "workspace" ? "activity" : settingsReturn);
     }
   },
 
@@ -691,7 +723,7 @@ export const useStore = create<LockeState>((set, get) => ({
       ? disabledAgents.filter((d) => d !== id)
       : [...disabledAgents, id];
     set({ disabledAgents: next });
-    void writeAgentSettings({ disabled: next, enabled: agentMode });
+    void writeAgentSettings({ disabled: next, enabled: agentMode, theme: get().theme });
   },
 
   setAgentMode: (on) => {
@@ -703,7 +735,14 @@ export const useStore = create<LockeState>((set, get) => ({
       approvalsOpen: on ? approvalsOpen : false,
       view: !on && view === "agents" ? "activity" : view,
     });
-    void writeAgentSettings({ disabled: disabledAgents, enabled: on });
+    void writeAgentSettings({ disabled: disabledAgents, enabled: on, theme: get().theme });
+  },
+
+  setTheme: (id) => {
+    const { disabledAgents, agentMode } = get();
+    set({ theme: id });
+    applyTheme(id);
+    void writeAgentSettings({ disabled: disabledAgents, enabled: agentMode, theme: id });
   },
 
   setSettingsOpen: (open) => set({ settingsOpen: open }),

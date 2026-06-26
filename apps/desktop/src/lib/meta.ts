@@ -11,10 +11,10 @@ export interface StatusMeta {
 }
 
 const STATUS: Record<ReviewStatus, StatusMeta> = {
-  ready: { label: "Ready for review", col: "#43c46b", bg: "rgba(67,196,107,.12)", bd: "rgba(67,196,107,.3)" },
-  draft: { label: "Draft", col: "#f0b86e", bg: "rgba(240,184,110,.12)", bd: "rgba(240,184,110,.3)" },
-  changes: { label: "Changes requested", col: "#f0616d", bg: "rgba(240,97,109,.12)", bd: "rgba(240,97,109,.3)" },
-  merged: { label: "Merged", col: "#a78bff", bg: "rgba(167,139,255,.12)", bd: "rgba(167,139,255,.3)" },
+  ready: { label: "Ready for review", col: "var(--lk-green)", bg: "rgba(67,196,107,.12)", bd: "rgba(67,196,107,.3)" },
+  draft: { label: "Draft", col: "var(--lk-amber)", bg: "rgba(240,184,110,.12)", bd: "rgba(240,184,110,.3)" },
+  changes: { label: "Changes requested", col: "var(--lk-red)", bg: "rgba(240,97,109,.12)", bd: "rgba(240,97,109,.3)" },
+  merged: { label: "Merged", col: "var(--lk-approved)", bg: "rgba(167,139,255,.12)", bd: "rgba(167,139,255,.3)" },
   closed: { label: "Closed", col: "#7b8494", bg: "rgba(123,132,148,.12)", bd: "rgba(123,132,148,.3)" },
 };
 
@@ -26,9 +26,9 @@ export interface CheckMeta {
 }
 
 const CHECK: Record<CheckState, CheckMeta> = {
-  pass: { col: "#43c46b", label: "All checks passed" },
-  running: { col: "#5aa9ff", label: "Checks running" },
-  fail: { col: "#f0616d", label: "Checks failing" },
+  pass: { col: "var(--lk-green)", label: "All checks passed" },
+  running: { col: "var(--lk-blueRun)", label: "Checks running" },
+  fail: { col: "var(--lk-red)", label: "Checks failing" },
 };
 
 export const checkMeta = (c: CheckState): CheckMeta => CHECK[c] ?? CHECK.pass;
@@ -37,7 +37,7 @@ export const checkMeta = (c: CheckState): CheckMeta => CHECK[c] ?? CHECK.pass;
 export function agentChipStyle(isAgent: boolean): React.CSSProperties {
   return {
     background: isAgent ? "rgba(63,208,192,0.12)" : "rgba(167,139,255,0.14)",
-    color: isAgent ? "#3fd0c0" : "#c0a9ff",
+    color: isAgent ? "var(--lk-teal)" : "var(--lk-violetSoft)",
     border: `1px solid ${isAgent ? "rgba(63,208,192,0.3)" : "rgba(167,139,255,0.32)"}`,
   };
 }
@@ -48,9 +48,9 @@ export interface FileStatusMeta {
 }
 
 export function fileStatusMeta(st: FileStatus): FileStatusMeta {
-  if (st === "A") return { col: "#43c46b", bg: "rgba(67,196,107,.14)" };
-  if (st === "M") return { col: "#f0b86e", bg: "rgba(240,184,110,.14)" };
-  return { col: "#f0616d", bg: "rgba(240,97,109,.14)" };
+  if (st === "A") return { col: "var(--lk-green)", bg: "rgba(67,196,107,.14)" };
+  if (st === "M") return { col: "var(--lk-amber)", bg: "rgba(240,184,110,.14)" };
+  return { col: "var(--lk-red)", bg: "rgba(240,97,109,.14)" };
 }
 
 /** "+27" / "−9" formatting (note the minus uses the design's U+2212). */

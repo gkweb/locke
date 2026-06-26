@@ -1,5 +1,5 @@
 import { useStore } from "../state/store.js";
-import { color, font, agentKind, agentAccent, runStateMeta } from "../theme/tokens.js";
+import { color, font, agentKind, agentAccent, runStateMeta, tint } from "../theme/tokens.js";
 import { AgentMark } from "../components/AgentMark.js";
 import { ChevronRightIcon } from "../components/icons.js";
 import { HoverDiv } from "../components/primitives.js";
@@ -76,8 +76,8 @@ export function RunsView() {
                       alignItems: "center",
                       justifyContent: "center",
                       color: accent,
-                      background: `${accent}22`,
-                      border: `1px solid ${accent}55`,
+                      background: `${tint(accent, "22")}`,
+                      border: `1px solid ${tint(accent, "55")}`,
                     }}
                   >
                     <AgentMark kind={kind} label={r.initials} px={12} />
@@ -92,7 +92,7 @@ export function RunsView() {
                 </div>
                 <div style={{ padding: "13px 8px", fontFamily: font.mono, fontSize: 11.5, color: color.textFaint }}>{r.duration}</div>
                 <div style={{ padding: "13px 8px" }}>
-                  <ChevronRightIcon size={13} color="#454d5b" stroke={1.5} />
+                  <ChevronRightIcon size={13} color="var(--lk-lineNo)" stroke={1.5} />
                 </div>
               </HoverDiv>
             );

@@ -1,6 +1,6 @@
 import type { View } from "@locke/core";
 import { useStore } from "../state/store.js";
-import { color, font } from "../theme/tokens.js";
+import { color, font, tint } from "../theme/tokens.js";
 import { lockeLang, ADD_LANG_SNIPPET } from "../lib/lockeLang.js";
 import { ChevronLeftIcon, ChevronDownIcon, PlusIcon } from "../components/icons.js";
 import { HoverButton } from "../components/primitives.js";
@@ -32,7 +32,7 @@ function Toggle({ on, accent, onClick }: { on: boolean; accent: string; onClick:
         position: "relative",
         cursor: "pointer",
         transition: "background .15s",
-        background: on ? accent : "#2a3140",
+        background: on ? accent : "var(--lk-borderPopover)",
       }}
     >
       <span
@@ -143,9 +143,9 @@ export function ExtensionsView() {
                     fontSize: 10,
                     fontWeight: 800,
                     letterSpacing: "-.3px",
-                    background: `${p.accent}22`,
+                    background: `${tint(p.accent, "22")}`,
                     color: p.accent,
-                    border: `1px solid ${p.accent}55`,
+                    border: `1px solid ${tint(p.accent, "55")}`,
                   }}
                 >
                   {p.abbr}

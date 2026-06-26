@@ -10,12 +10,12 @@ import { HoverButton } from "./primitives.js";
 // events in Tauri mode; by the scripted hero-flow in mock mode.
 
 const EV: Record<RunEvent["kind"], { ch: string; ic: string; tc: string }> = {
-  msg: { ch: "◆", ic: "#3fd0c0", tc: "#cdd3de" },
-  read: { ch: "○", ic: "#5f6878", tc: "#8b94a6" },
-  edit: { ch: "✎", ic: "#b3a8ff", tc: "#cdd3de" },
-  result: { ch: "✓", ic: "#43c46b", tc: "#9fc6ab" },
-  done: { ch: "✓", ic: "#43c46b", tc: "#bfe6c9" },
-  denied: { ch: "✕", ic: "#f0616d", tc: "#ca9aa0" },
+  msg: { ch: "◆", ic: "var(--lk-teal)", tc: "var(--lk-textSoft)" },
+  read: { ch: "○", ic: "var(--lk-textGhost)", tc: "var(--lk-textFaint)" },
+  edit: { ch: "✎", ic: "var(--lk-violetLight)", tc: "var(--lk-textSoft)" },
+  result: { ch: "✓", ic: "var(--lk-green)", tc: "#9fc6ab" },
+  done: { ch: "✓", ic: "var(--lk-green)", tc: "#bfe6c9" },
+  denied: { ch: "✕", ic: "var(--lk-red)", tc: "#ca9aa0" },
 };
 
 function statusMetaForRun(agent: string, awaiting: boolean, done: boolean, paused: boolean, active: boolean) {
@@ -41,7 +41,7 @@ function EventRow({ ev }: { ev: RunEvent }) {
           </div>
         )}
       </div>
-      <span style={{ flex: "none", fontSize: 10.5, color: "#454d5b", fontFamily: font.mono, paddingTop: 3 }}>{ev.time}</span>
+      <span style={{ flex: "none", fontSize: 10.5, color: "var(--lk-lineNo)", fontFamily: font.mono, paddingTop: 3 }}>{ev.time}</span>
     </div>
   );
 }
