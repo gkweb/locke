@@ -628,6 +628,27 @@ interface LockeState {
 // matches the design with no repo open; a real Tauri session loads live git data.
 const MOCK = !isTauri;
 
+// A memorable, collision-resistant id: a random adjective-noun pair (the human
+// handle people use to refer to a loop) plus a short random suffix. The id keys
+// the loop's `.locke/loops/<id>/` tree and its seed worktree folder, so the
+// suffix — not the words — is what guarantees two created in the same instant
+// never share a folder. e.g. `loop-amber-otter-k3f`.
+const SLUG_ADJECTIVES = [
+  "amber", "brave", "calm", "crisp", "deft", "dusky", "fleet", "gentle",
+  "keen", "lucid", "lunar", "mossy", "nimble", "noble", "plucky", "quiet",
+  "rapid", "sage", "snappy", "solar", "steady", "sunny", "swift", "teal",
+  "vivid", "warm", "bold", "bright", "jolly", "merry", "royal", "zesty",
+] as const;
+const SLUG_NOUNS = [
+  "otter", "finch", "cedar", "heron", "maple", "falcon", "willow", "badger",
+  "marten", "comet", "harbor", "meadow", "ridge", "ember", "brook", "sparrow",
+  "lynx", "walrus", "ferret", "beacon", "cypress", "juniper", "lantern", "summit",
+  "thistle", "quartz", "basalt", "drift", "fjord", "pippin", "cobra", "raven",
+] as const;
+const pick = (xs: readonly string[]): string => xs[Math.floor(Math.random() * xs.length)];
+const slugId = (prefix: string): string =>
+  `${prefix}-${pick(SLUG_ADJECTIVES)}-${pick(SLUG_NOUNS)}-${Math.random().toString(36).slice(2, 5)}`;
+
 export const useStore = create<LockeState>((set, get) => ({
   reviews: MOCK ? MOCK_REVIEWS : [],
   pulls: {},
@@ -1008,7 +1029,7 @@ export const useStore = create<LockeState>((set, get) => ({
     // agents don't take the flag, so they always run directly.
     const planFirst = runPlanFirst && agent.id === "claude";
     const prompt = buildAgentPrompt({ repoPath, selectedPR, reviews, files, threads, planFirst });
-    const runId = `run-${Date.now()}`;
+    const runId = slugId("run");
     set((s) => ({
       runs: mergeRun(s.runs, review.id, { events: [], done: false, paused: false, planReview: null, phase: planFirst ? "plan" : "build", runId }),
       runReviewMap: { ...s.runReviewMap, [runId]: review.id },
@@ -1380,7 +1401,7 @@ export const useStore = create<LockeState>((set, get) => ({
       set({ loopView: "monitor", selectedLoop: "vue3", loopPaused: false });
       return;
     }
-    const loopId = `loop-${Date.now()}`;
+    const loopId = slugId("loop");
     // The selected set is the matched targets minus the user's exclusions
     // (`targetSel` layered over each target's `inc`). An empty set falls back to
     // a full-pattern glob in the runner.
