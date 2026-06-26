@@ -10,6 +10,7 @@ mod git;
 mod mcp;
 mod run;
 mod store;
+mod watch;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -37,6 +38,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(run::RunRegistry::default())
+        .manage(watch::WatchState::default())
         .manage(cli::InitialRepo(std::sync::Mutex::new(initial_repo)))
         .invoke_handler(tauri::generate_handler![
             commands::review_summary,
@@ -76,6 +78,7 @@ pub fn run() {
             commands::uninstall_mcp_server,
             commands::mcp_call_log,
             commands::clear_mcp_call_log,
+            commands::watch_locke,
             commands::take_initial_repo,
             commands::cli_command_status,
             commands::install_cli_command,

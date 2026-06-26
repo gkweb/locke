@@ -90,6 +90,8 @@ export function App() {
   useEffect(() => {
     if (!isTauri) return;
     const s = useStore.getState();
+    // Coalesce bursts of `.locke` change events into a single refresh.
+    let fsTimer: ReturnType<typeof setTimeout> | undefined;
     const unlisten = Promise.all([
       listen<RunEventPayload>("run:event", (e) => s.onRunEvent(e.payload)),
       listen<RunPermissionPayload>("run:permission", (e) => s.onRunPermission(e.payload)),
@@ -97,8 +99,20 @@ export function App() {
       // A second `locke <path>` launch is forwarded here by the single-instance
       // plugin — switch the open window to that repo.
       listen<string>("cli:open-repo", (e) => void useStore.getState().openRepo(e.payload)),
+      // The repo's `.locke/` changed out of process (MCP edits, agent comment
+      // replies). Debounce, then refresh the open review — but not mid-run, where
+      // the run:done handler already reloads and live churn would just thrash.
+      listen("locke:fs-change", () => {
+        if (fsTimer) clearTimeout(fsTimer);
+        fsTimer = setTimeout(() => {
+          const st = useStore.getState();
+          if (st.currentRunId) return;
+          if (st.view === "workspace" && st.selectedPR) void st.refreshWorkspace();
+        }, 400);
+      }),
     ]);
     return () => {
+      if (fsTimer) clearTimeout(fsTimer);
       void unlisten.then((fns) => fns.forEach((fn) => fn()));
     };
   }, []);

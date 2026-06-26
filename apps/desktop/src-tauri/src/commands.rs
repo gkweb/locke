@@ -8,6 +8,7 @@ use crate::git;
 use crate::mcp;
 use crate::run;
 use crate::store;
+use crate::watch;
 use serde_json::Value;
 use tauri::Manager;
 
@@ -176,6 +177,17 @@ pub fn respond_permission(
 #[tauri::command]
 pub fn cancel_run(registry: tauri::State<run::RunRegistry>, run_id: String) -> Result<(), String> {
     run::cancel_run(&registry, &run_id)
+}
+
+/// Watch the repo's `.locke/` directory for out-of-process changes (MCP edits) and
+/// emit `locke:fs-change` so the frontend can refresh the open review.
+#[tauri::command]
+pub fn watch_locke(
+    app: tauri::AppHandle,
+    state: tauri::State<watch::WatchState>,
+    repo: String,
+) -> Result<(), String> {
+    watch::watch_locke(app.clone(), &state, repo)
 }
 
 #[tauri::command]

@@ -291,6 +291,13 @@ export const respondPermission = (
 /** Cancel an in-flight run (kills the agent process). */
 export const cancelRun = (runId: string) => invoke<void>("cancel_run", { runId });
 
+/**
+ * Watch a repo's `.locke/` directory for out-of-process changes (MCP edits) — the
+ * backend emits `locke:fs-change` on any change. No-op outside Tauri.
+ */
+export const watchLocke = (repo: string): Promise<void> =>
+  isTauri ? invoke<void>("watch_locke", { repo }) : Promise.resolve();
+
 /** Read all persisted run records (newest first). Empty in mock mode. */
 export const readRuns = (repo: string): Promise<RunRecord[]> =>
   isTauri ? invoke<RunRecord[]>("read_runs", { repo }) : Promise.resolve([]);

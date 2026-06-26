@@ -51,6 +51,7 @@ import {
   startRun as startRunApi,
   respondPermission,
   cancelRun as cancelRunApi,
+  watchLocke,
   readRuns,
   isTauri,
   type CheckSpec,
@@ -406,6 +407,9 @@ interface LockeState {
   /** After a run ends, refresh the diff + History for the review without
    *  clearing the completed run's event stream. */
   reloadAfterRun: (reviewId: string) => Promise<void>;
+  /** Manually re-pull the open review's diff + comments (Refresh button + the
+   *  `.locke` file-watcher), picking up agent edits and MCP comment replies. */
+  refreshWorkspace: () => Promise<void>;
 
   // ---- run permission decisions ----
   /** Approve / deny a pending permission. Real round-trip in Tauri mode; the
@@ -864,26 +868,40 @@ export const useStore = create<LockeState>((set, get) => ({
   },
 
   reloadAfterRun: async (reviewId) => {
-    const { repoPath, reviews } = get();
+    const { repoPath, reviews, selectedFile } = get();
     if (!repoPath || MOCK) return;
     const review = reviews.find((r) => r.id === reviewId);
     if (!review) return;
     try {
-      const [detail, runs] = await Promise.all([
+      // Also reload comments so agent replies written via the MCP server
+      // (reply_to_comment → .locke/comments) show up, not just the diff.
+      const [detail, saved, runs] = await Promise.all([
         getReview(repoPath, review.branch, review.base),
+        loadComments(repoPath, Number(reviewId)),
         readRuns(repoPath),
       ]);
       const files = detail.fileSummary.map(toChangedFile);
+      // Keep the user on the same file across a refresh when it still exists;
+      // rebuilt files carry empty hunks, so loadDiff re-fetches the live diff.
+      const keep = files[selectedFile] ? selectedFile : 0;
       set({
         detail: { ...EMPTY_DETAIL, commits: detail.commits },
         files,
-        selectedFile: 0,
+        selectedFile: keep,
+        threads: saved?.threads ?? get().threads,
+        viewed: saved?.viewed ?? get().viewed,
+        nextThreadId: saved?.nextThreadId ?? get().nextThreadId,
         history: runs.filter((r) => r.branch === review.branch).map(runToHistory),
       });
-      if (files.length) await get().loadDiff(0);
+      if (files.length) await get().loadDiff(keep);
     } catch (e) {
       set({ error: String(e) });
     }
+  },
+
+  refreshWorkspace: async () => {
+    const { selectedPR } = get();
+    if (selectedPR) await get().reloadAfterRun(selectedPR);
   },
 
   // Real mode: answer the live permission prompt via the stream-json control
@@ -1163,6 +1181,9 @@ export const useStore = create<LockeState>((set, get) => ({
       });
       // Populate the Files explorer for the opened repo (best-effort).
       void get().loadFileTree();
+      // Watch this repo's .locke/ so out-of-process MCP edits (agent comment
+      // replies, run records) refresh the open review without a manual reload.
+      void watchLocke(path);
     } catch (e) {
       set({ loading: false, error: String(e) });
     }

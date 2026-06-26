@@ -140,6 +140,13 @@ export const GearIcon = ({ size = 14, color = "currentColor", stroke = 1.3, styl
   </svg>
 );
 
+export const RefreshIcon = ({ size = 14, color = "currentColor", stroke = 1.4, style }: IconProps) => (
+  <svg {...strokeBase(size, color, stroke, style)} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M13 8a5 5 0 1 1-1.46-3.54" />
+    <path d="M13 2.5V5h-2.5" />
+  </svg>
+);
+
 export const InfoIcon = ({ size = 15, color = "currentColor", stroke = 1.4, style }: IconProps) => (
   <svg {...strokeBase(size, color, stroke, style)}>
     <circle cx="8" cy="8" r="6.5" />

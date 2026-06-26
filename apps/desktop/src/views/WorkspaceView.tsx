@@ -18,6 +18,7 @@ import {
   FullFileIcon,
   TrashIcon,
   SidebarIcon,
+  RefreshIcon,
 } from "../components/icons.js";
 import { HoverButton, HoverDiv } from "../components/primitives.js";
 
@@ -309,6 +310,7 @@ export function WorkspaceView() {
   const disabledAgents = useStore((s) => s.disabledAgents);
   const filesRailOpen = useStore((s) => s.filesRailOpen);
   const toggleFilesRail = useStore((s) => s.toggleFilesRail);
+  const refreshWorkspace = useStore((s) => s.refreshWorkspace);
 
   const review = reviews.find((r) => r.id === selectedPR) ?? reviews[0];
   if (!review) {
@@ -378,6 +380,14 @@ export function WorkspaceView() {
                 Resolve
               </HoverButton>
             )}
+            <HoverButton
+              onClick={() => void refreshWorkspace()}
+              title="Refresh diff & comments"
+              style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "9px 11px", background: "transparent", border: `1px solid ${color.borderPopover}`, borderRadius: 9, color: color.textFaint, fontFamily: font.sans, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
+              hoverStyle={{ color: color.textSoft, borderColor: "#37404f" }}
+            >
+              <RefreshIcon size={14} color="currentColor" stroke={1.5} />
+            </HoverButton>
             <HoverButton
               onClick={() => requestDeletePull(review.id)}
               title="Delete pull request"
