@@ -68,6 +68,7 @@ import {
   readLoops as readLoopsApi,
   readLoopItems as readLoopItemsApi,
   matchLoopTargets as matchLoopTargetsApi,
+  listBranches as listBranchesApi,
   type LoopItemEvent,
   type LoopProgress,
   type LoopEventPayload,
@@ -295,6 +296,8 @@ interface LockeState {
   draftPattern: string;
   draftPrompt: string;
   draftMode: LoopMode;
+  /** The open repo's local branches, for the builder's base-branch picker. */
+  repoBranches: string[];
 
   selectedPR: string;
   selectedFile: number;
@@ -439,6 +442,13 @@ interface LockeState {
   setPlanTab: (t: "scope" | "specs") => void;
   selectSpec: (id: string) => void;
   setDraftMode: (m: LoopMode) => void;
+  setDraftTitle: (v: string) => void;
+  setDraftBranch: (v: string) => void;
+  setDraftBase: (v: string) => void;
+  setDraftPattern: (v: string) => void;
+  setDraftPrompt: (v: string) => void;
+  /** Load the open repo's branches for the base picker (Tauri; no-op in mock). */
+  loadRepoBranches: () => Promise<void>;
   /** Builder: include/exclude a matched target. */
   toggleTarget: (path: string, on: boolean) => void;
   /** Builder Start: Build → monitor, Plan → scope interview. */
@@ -688,12 +698,15 @@ export const useStore = create<LockeState>((set, get) => ({
   loopItems: {},
   loopStream: {},
   loopItemRecords: {},
-  draftTitle: MOCK_LOOP_DRAFT.title,
-  draftBranch: MOCK_LOOP_DRAFT.branch,
-  draftBase: MOCK_LOOP_DRAFT.base,
-  draftPattern: MOCK_LOOP_DRAFT.pattern,
-  draftPrompt: MOCK_LOOP_DRAFT.prompt,
+  // The seeded example draft is mock-only (the design preview); a real session
+  // opens a blank builder the user fills in.
+  draftTitle: MOCK ? MOCK_LOOP_DRAFT.title : "",
+  draftBranch: MOCK ? MOCK_LOOP_DRAFT.branch : "",
+  draftBase: MOCK ? MOCK_LOOP_DRAFT.base : "main",
+  draftPattern: MOCK ? MOCK_LOOP_DRAFT.pattern : "",
+  draftPrompt: MOCK ? MOCK_LOOP_DRAFT.prompt : "",
   draftMode: "plan",
+  repoBranches: MOCK ? ["main", "develop", "chore/vue3-migration"] : [],
 
   selectedPR: "",
   selectedFile: 0,
@@ -1372,21 +1385,51 @@ export const useStore = create<LockeState>((set, get) => ({
     // scope interview, anything live/done goes straight to the monitor.
     const v: LoopView = loop?.state === "draft" ? "builder" : loop?.state === "planning" ? "plan" : "monitor";
     set({ selectedLoop: id, loopView: v, loopReviewItem: null });
-    if (!MOCK) {
-      if (v === "builder") void get().loadLoopTargets();
-      else void get().loadLoopItems(id);
-    }
+    // The builder loads its own targets/branches from the draft; only the live
+    // views need a backend item load here.
+    if (!MOCK && v !== "builder") void get().loadLoopItems(id);
   },
-  newLoop: () => {
-    set({ loopView: "builder", loopReviewItem: null, targetSel: {}, draftMode: "plan" });
-    if (!MOCK) void get().loadLoopTargets();
-  },
+  newLoop: () =>
+    set({
+      loopView: "builder",
+      loopReviewItem: null,
+      targetSel: {},
+      draftMode: "plan",
+      // Real sessions start from a blank draft (the seeded example is mock-only);
+      // the builder's inputs fill these in and re-match the pattern as it's typed.
+      ...(MOCK
+        ? {}
+        : {
+            draftTitle: "",
+            draftBranch: "",
+            draftBase: get().base,
+            draftPattern: "",
+            draftPrompt: "",
+            loopTargets: [],
+            loopMatched: 0,
+            loopAutoIncluded: 0,
+          }),
+    }),
   loopToList: () => set({ loopView: "list", loopReviewItem: null }),
   setLoopView: (v) => set({ loopView: v }),
   setMonitorLayout: (l) => set({ monitorLayout: l }),
   setPlanTab: (t) => set({ planTab: t }),
   selectSpec: (id) => set({ selectedSpec: id }),
   setDraftMode: (m) => set({ draftMode: m }),
+  setDraftTitle: (v) => set({ draftTitle: v }),
+  setDraftBranch: (v) => set({ draftBranch: v }),
+  setDraftBase: (v) => set({ draftBase: v }),
+  setDraftPattern: (v) => set({ draftPattern: v }),
+  setDraftPrompt: (v) => set({ draftPrompt: v }),
+  loadRepoBranches: async () => {
+    const { repoPath } = get();
+    if (MOCK || !repoPath) return;
+    try {
+      set({ repoBranches: await listBranchesApi(repoPath) });
+    } catch {
+      // A failed read just leaves the prior branch list in place.
+    }
+  },
   toggleTarget: (path, on) => set((s) => ({ targetSel: { ...s.targetSel, [path]: on } })),
   // Mock: drives the scripted "vue3" loop. Tauri: creates a real loop from the
   // draft and kicks off the backend runner (Build mode); Plan mode opens the

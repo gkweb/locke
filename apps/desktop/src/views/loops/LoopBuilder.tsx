@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useStore } from "../../state/store.js";
 import { color, font, alpha, tint } from "../../theme/tokens.js";
 import { riskColor } from "../../lib/loops.js";
@@ -15,6 +16,19 @@ const label: React.CSSProperties = {
   letterSpacing: ".8px",
   color: color.textGhost,
   marginBottom: 10,
+};
+
+// A bare input that inherits the surrounding container's chrome (the field
+// border/background lives on the wrapper), so inputs read like the design's
+// static text rather than browser-default boxes.
+const bareInput: React.CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  background: "transparent",
+  border: "none",
+  outline: "none",
+  padding: 0,
+  fontFamily: font.sans,
 };
 
 function ModeButton({
@@ -108,10 +122,33 @@ export function LoopBuilder() {
   const loopTargets = useStore((s) => s.loopTargets);
   const loopMatched = useStore((s) => s.loopMatched);
   const loopAutoIncluded = useStore((s) => s.loopAutoIncluded);
+  const repoBranches = useStore((s) => s.repoBranches);
   const setDraftMode = useStore((s) => s.setDraftMode);
+  const setDraftTitle = useStore((s) => s.setDraftTitle);
+  const setDraftBranch = useStore((s) => s.setDraftBranch);
+  const setDraftBase = useStore((s) => s.setDraftBase);
+  const setDraftPattern = useStore((s) => s.setDraftPattern);
+  const setDraftPrompt = useStore((s) => s.setDraftPrompt);
   const toggleTarget = useStore((s) => s.toggleTarget);
   const startLoop = useStore((s) => s.startLoop);
   const loopToList = useStore((s) => s.loopToList);
+  const loadLoopTargets = useStore((s) => s.loadLoopTargets);
+  const loadRepoBranches = useStore((s) => s.loadRepoBranches);
+
+  // Load the open repo's branches once for the base picker.
+  useEffect(() => {
+    void loadRepoBranches();
+  }, [loadRepoBranches]);
+
+  // Re-match the pattern (debounced) as the user types it. `loadLoopTargets`
+  // reads the latest draft pattern and no-ops in mock mode.
+  useEffect(() => {
+    const id = setTimeout(() => void loadLoopTargets(), 300);
+    return () => clearTimeout(id);
+  }, [draftPattern, loadLoopTargets]);
+
+  const canStart =
+    draftTitle.trim() !== "" && draftBranch.trim() !== "" && draftPrompt.trim() !== "" && draftPattern.trim() !== "";
 
   const targets = loopTargets.map((t) => ({
     ...t,
@@ -148,9 +185,20 @@ export function LoopBuilder() {
           <ChevronLeftIcon size={13} stroke={1.5} />
           Loops
         </HoverButton>
-        <h1 style={{ margin: "0 0 22px", fontSize: 21, fontWeight: 700, letterSpacing: "-.4px", color: color.textBright }}>
-          {draftTitle}
-        </h1>
+        <input
+          value={draftTitle}
+          onChange={(e) => setDraftTitle(e.target.value)}
+          placeholder="Name this loop"
+          style={{
+            ...bareInput,
+            width: "100%",
+            margin: "0 0 22px",
+            fontSize: 21,
+            fontWeight: 700,
+            letterSpacing: "-.4px",
+            color: color.textBright,
+          }}
+        />
 
         {/* seed branch */}
         <div style={label}>SEED BRANCH</div>
@@ -169,11 +217,47 @@ export function LoopBuilder() {
             }}
           >
             <BranchIcon size={13} color="#7b8494" stroke={1.4} />
-            <span style={{ fontFamily: font.mono, fontSize: 12.5, color: color.greenText }}>{draftBranch}</span>
-            <ChevronDownIcon size={13} color={color.textGhost} stroke={1.6} style={{ marginLeft: "auto" }} />
+            <input
+              value={draftBranch}
+              onChange={(e) => setDraftBranch(e.target.value)}
+              placeholder="loops/your-branch"
+              style={{ ...bareInput, fontFamily: font.mono, fontSize: 12.5, color: color.greenText }}
+            />
           </div>
           <span style={{ fontSize: 11.5, color: color.textFainter, display: "flex", alignItems: "center", gap: 6 }}>
-            branches off <span style={{ fontFamily: font.mono, color: color.blue }}>{draftBase}</span>
+            branches off
+            <span style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
+              <select
+                value={draftBase}
+                onChange={(e) => setDraftBase(e.target.value)}
+                style={{
+                  appearance: "none",
+                  WebkitAppearance: "none",
+                  background: FIELD,
+                  border: `1px solid ${color.borderRow}`,
+                  borderRadius: 7,
+                  color: color.blue,
+                  fontFamily: font.mono,
+                  fontSize: 11.5,
+                  padding: "3px 22px 3px 9px",
+                  cursor: "pointer",
+                  outline: "none",
+                }}
+              >
+                {/* Keep the current base selectable even if the branch list is still loading. */}
+                {(repoBranches.includes(draftBase) ? repoBranches : [draftBase, ...repoBranches]).map((b) => (
+                  <option key={b} value={b} style={{ background: FIELD, color: color.text }}>
+                    {b}
+                  </option>
+                ))}
+              </select>
+              <ChevronDownIcon
+                size={12}
+                color={color.textGhost}
+                stroke={1.6}
+                style={{ position: "absolute", right: 7, pointerEvents: "none" }}
+              />
+            </span>
           </span>
         </div>
         <p style={{ margin: "0 0 22px", fontSize: 11.5, color: color.textGhost }}>
@@ -192,7 +276,20 @@ export function LoopBuilder() {
             marginBottom: 22,
           }}
         >
-          <p style={{ margin: 0, fontSize: 13, lineHeight: 1.65, color: color.textSoft }}>{draftPrompt}</p>
+          <textarea
+            value={draftPrompt}
+            onChange={(e) => setDraftPrompt(e.target.value)}
+            placeholder="Describe the task to run on every matched file. Be explicit about boundaries (touch only the matched file), what counts as done, and which checks must pass."
+            rows={5}
+            style={{
+              ...bareInput,
+              width: "100%",
+              resize: "vertical",
+              fontSize: 13,
+              lineHeight: 1.65,
+              color: color.textSoft,
+            }}
+          />
         </div>
 
         {/* mode */}
@@ -230,21 +327,22 @@ export function LoopBuilder() {
             flexWrap: "wrap",
           }}
         >
-          <span
+          <input
+            value={draftPattern}
+            onChange={(e) => setDraftPattern(e.target.value)}
+            placeholder="src/**/*.ts"
             style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "3px 9px",
+              width: 220,
+              padding: "4px 9px",
               borderRadius: 7,
               background: color.popoverBg,
               border: `1px solid ${color.borderRow}`,
               fontFamily: font.mono,
+              fontSize: 11.5,
               color: color.textSoft,
+              outline: "none",
             }}
-          >
-            {draftPattern}
-          </span>
+          />
           <span style={{ fontFamily: font.mono, color: color.textFaint }}>{loopMatched.toLocaleString()} files match</span>
           <span style={{ color: "#3a414e" }}>·</span>
           <span style={{ color: color.green }}>{loopAutoIncluded.toLocaleString()} auto-included</span>
@@ -407,7 +505,8 @@ export function LoopBuilder() {
           }}
         >
           <HoverButton
-            onClick={startLoop}
+            onClick={canStart ? startLoop : () => {}}
+            title={canStart ? undefined : "Add a title, seed branch, task prompt, and a file pattern first."}
             style={{
               width: "100%",
               display: "flex",
@@ -422,10 +521,11 @@ export function LoopBuilder() {
               fontFamily: font.sans,
               fontSize: 13,
               fontWeight: 600,
-              cursor: "pointer",
+              cursor: canStart ? "pointer" : "not-allowed",
+              opacity: canStart ? 1 : 0.45,
               boxShadow: "0 2px 12px rgba(123,108,255,.3)",
             }}
-            hoverStyle={{ background: color.violetHover }}
+            hoverStyle={canStart ? { background: color.violetHover } : {}}
           >
             <PlayIcon size={14} color="#fff" stroke={1.7} />
             {draftMode === "plan" ? "Start plan run" : "Start build"}
