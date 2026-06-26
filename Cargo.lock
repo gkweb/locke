@@ -1987,7 +1987,7 @@ dependencies = [
 
 [[package]]
 name = "locke"
-version = "0.1.1"
+version = "1.2.0"
 dependencies = [
  "git2",
  "locke-store",
@@ -2002,7 +2002,7 @@ dependencies = [
 
 [[package]]
 name = "locke-mcp"
-version = "0.1.1"
+version = "1.2.0"
 dependencies = [
  "locke-store",
  "serde",
@@ -2011,7 +2011,7 @@ dependencies = [
 
 [[package]]
 name = "locke-store"
-version = "0.1.1"
+version = "1.2.0"
 dependencies = [
  "fs2",
  "serde",
