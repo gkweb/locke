@@ -73,6 +73,7 @@ pub fn run() {
             commands::resolve_loop_item,
             commands::read_loops,
             commands::read_loop_items,
+            commands::match_loop_targets,
             commands::read_comments,
             commands::write_comments,
             commands::read_check_overrides,

@@ -1,7 +1,6 @@
 import { useStore } from "../../state/store.js";
 import { color, font, alpha, tint } from "../../theme/tokens.js";
 import { riskColor } from "../../lib/loops.js";
-import { MOCK_LOOP_TARGETS, MOCK_LOOP_AUTO_INCLUDED, MOCK_LOOP_MATCHED } from "../../lib/mockFleet.js";
 import { BranchIcon, ChevronDownIcon, ChevronLeftIcon, CheckIcon, PlanDocIcon, PlayIcon } from "../../components/icons.js";
 import { HoverButton } from "../../components/primitives.js";
 
@@ -106,18 +105,21 @@ export function LoopBuilder() {
   const draftPattern = useStore((s) => s.draftPattern);
   const draftMode = useStore((s) => s.draftMode);
   const targetSel = useStore((s) => s.targetSel);
+  const loopTargets = useStore((s) => s.loopTargets);
+  const loopMatched = useStore((s) => s.loopMatched);
+  const loopAutoIncluded = useStore((s) => s.loopAutoIncluded);
   const setDraftMode = useStore((s) => s.setDraftMode);
   const toggleTarget = useStore((s) => s.toggleTarget);
   const startLoop = useStore((s) => s.startLoop);
   const loopToList = useStore((s) => s.loopToList);
 
-  const targets = MOCK_LOOP_TARGETS.map((t) => ({
+  const targets = loopTargets.map((t) => ({
     ...t,
     included: Object.prototype.hasOwnProperty.call(targetSel, t.path) ? targetSel[t.path] : t.inc,
   }));
   const flaggedIncluded = targets.filter((t) => t.included).length;
-  const selected = MOCK_LOOP_AUTO_INCLUDED + flaggedIncluded;
-  const excluded = MOCK_LOOP_MATCHED - selected;
+  const selected = loopAutoIncluded + flaggedIncluded;
+  const excluded = loopMatched - selected;
   const estMin = Math.round(selected / 5.8);
   const estTime = `${Math.floor(estMin / 60)}h ${estMin % 60}m`;
   const estTokens = `~${((selected * 2.9) / 1000).toFixed(1)}M`;
@@ -243,9 +245,9 @@ export function LoopBuilder() {
           >
             {draftPattern}
           </span>
-          <span style={{ fontFamily: font.mono, color: color.textFaint }}>{MOCK_LOOP_MATCHED.toLocaleString()} files match</span>
+          <span style={{ fontFamily: font.mono, color: color.textFaint }}>{loopMatched.toLocaleString()} files match</span>
           <span style={{ color: "#3a414e" }}>·</span>
-          <span style={{ color: color.green }}>{MOCK_LOOP_AUTO_INCLUDED.toLocaleString()} auto-included</span>
+          <span style={{ color: color.green }}>{loopAutoIncluded.toLocaleString()} auto-included</span>
           <span style={{ color: "#3a414e" }}>·</span>
           <span style={{ color: color.amber }}>{targets.length} flagged for your call</span>
         </div>
@@ -363,7 +365,7 @@ export function LoopBuilder() {
             <span style={{ fontSize: 34, fontWeight: 700, color: color.textBright, letterSpacing: "-1px" }}>
               {selected.toLocaleString()}
             </span>
-            <span style={{ fontSize: 13, color: color.textFainter }}>/ {MOCK_LOOP_MATCHED.toLocaleString()}</span>
+            <span style={{ fontSize: 13, color: color.textFainter }}>/ {loopMatched.toLocaleString()}</span>
           </div>
           <div style={{ fontSize: 11.5, color: color.textFaint, marginBottom: 20 }}>
             targets in scope · {excluded.toLocaleString()} excluded

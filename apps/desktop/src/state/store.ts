@@ -9,6 +9,7 @@ import type {
   LoopItem,
   LoopMode,
   LoopStreamEvent,
+  LoopTarget,
   LoopView,
   NavKey,
   NavPlacement,
@@ -66,6 +67,7 @@ import {
   resolveLoopItem as resolveLoopItemApi,
   readLoops as readLoopsApi,
   readLoopItems as readLoopItemsApi,
+  matchLoopTargets as matchLoopTargetsApi,
   type LoopItemEvent,
   type LoopProgress,
   type LoopEventPayload,
@@ -95,6 +97,9 @@ import {
   MOCK_FILE_CONTENTS,
   MOCK_LOOPS,
   MOCK_LOOP_DRAFT,
+  MOCK_LOOP_TARGETS,
+  MOCK_LOOP_MATCHED,
+  MOCK_LOOP_AUTO_INCLUDED,
 } from "../lib/mockFleet.js";
 import { buildAgentPrompt } from "../lib/agentPrompt.js";
 import { lockeLang } from "../lib/lockeLang.js";
@@ -265,6 +270,12 @@ interface LockeState {
   loopPaused: boolean;
   /** Builder per-target include override (path → included), layered over `LoopTarget.inc`. */
   targetSel: Record<string, boolean>;
+  /** Builder audit rows — matched files (real in Tauri, mock in plain Vite). */
+  loopTargets: LoopTarget[];
+  /** Total files the draft's pattern matched. */
+  loopMatched: number;
+  /** Files auto-included off the audit list (mock aggregate; 0 in Tauri). */
+  loopAutoIncluded: number;
   /** Plan-spec overrides: per-spec approach id, per-step on/off, status. */
   specApproach: Record<string, string>;
   specSteps: Record<string, Record<string, boolean>>;
@@ -452,6 +463,8 @@ interface LockeState {
   loadLoops: () => Promise<void>;
   /** Load a loop's per-item records from the backend into `loopItems`. */
   loadLoopItems: (loopId: string) => Promise<void>;
+  /** Match the draft pattern into real audit rows (Tauri mode; no-op in mock). */
+  loadLoopTargets: () => Promise<void>;
   /** Backend `loop:*` stream handlers (routed from App.tsx listeners). */
   onLoopItem: (e: LoopItemEvent) => void;
   onLoopProgress: (e: LoopProgress) => void;
@@ -644,6 +657,9 @@ export const useStore = create<LockeState>((set, get) => ({
   loopReviewItem: null,
   loopPaused: false,
   targetSel: {},
+  loopTargets: MOCK ? MOCK_LOOP_TARGETS : [],
+  loopMatched: MOCK ? MOCK_LOOP_MATCHED : 0,
+  loopAutoIncluded: MOCK ? MOCK_LOOP_AUTO_INCLUDED : 0,
   specApproach: {},
   specSteps: {},
   specStatus: {},
@@ -1335,9 +1351,15 @@ export const useStore = create<LockeState>((set, get) => ({
     // scope interview, anything live/done goes straight to the monitor.
     const v: LoopView = loop?.state === "draft" ? "builder" : loop?.state === "planning" ? "plan" : "monitor";
     set({ selectedLoop: id, loopView: v, loopReviewItem: null });
-    if (!MOCK) void get().loadLoopItems(id);
+    if (!MOCK) {
+      if (v === "builder") void get().loadLoopTargets();
+      else void get().loadLoopItems(id);
+    }
   },
-  newLoop: () => set({ loopView: "builder", loopReviewItem: null, targetSel: {}, draftMode: "plan" }),
+  newLoop: () => {
+    set({ loopView: "builder", loopReviewItem: null, targetSel: {}, draftMode: "plan" });
+    if (!MOCK) void get().loadLoopTargets();
+  },
   loopToList: () => set({ loopView: "list", loopReviewItem: null }),
   setLoopView: (v) => set({ loopView: v }),
   setMonitorLayout: (l) => set({ monitorLayout: l }),
@@ -1359,8 +1381,14 @@ export const useStore = create<LockeState>((set, get) => ({
       return;
     }
     const loopId = `loop-${Date.now()}`;
-    // Excluded targets need the backend match list to honor precisely; for now
-    // an empty `targets` globs the full pattern (exclusions are a later refinement).
+    // The selected set is the matched targets minus the user's exclusions
+    // (`targetSel` layered over each target's `inc`). An empty set falls back to
+    // a full-pattern glob in the runner.
+    const targets = s.loopTargets
+      .filter((t) =>
+        Object.prototype.hasOwnProperty.call(s.targetSel, t.path) ? s.targetSel[t.path] : t.inc,
+      )
+      .map((t) => t.path);
     const placeholder: Loop = {
       id: loopId,
       title: s.draftTitle,
@@ -1393,7 +1421,7 @@ export const useStore = create<LockeState>((set, get) => ({
       base: s.draftBase,
       pattern: s.draftPattern,
       template: s.draftPrompt,
-      targets: [],
+      targets,
       concurrency: 6,
       checks: s.checkSpecs,
     });
@@ -1463,6 +1491,18 @@ export const useStore = create<LockeState>((set, get) => ({
       }));
     } catch {
       // Leave prior items in place on a failed read.
+    }
+  },
+  loadLoopTargets: async () => {
+    const { repoPath, draftPattern } = get();
+    if (MOCK || !repoPath) return;
+    try {
+      const list = await matchLoopTargetsApi(repoPath, draftPattern);
+      // A real match surfaces every file in the audit list, so nothing is
+      // auto-included off-list (that aggregate is a mock-only nicety).
+      set({ loopTargets: list, loopMatched: list.length, loopAutoIncluded: 0 });
+    } catch {
+      // A failed match just leaves the prior audit list in place.
     }
   },
   // Upsert one item (by id, else path) into the loop's live item list.

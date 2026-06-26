@@ -260,6 +260,11 @@ pub fn read_loop_items(repo: String, loop_id: String) -> Result<Vec<Value>, Stri
     store::read_loop_items(&repo, &loop_id)
 }
 
+#[tauri::command]
+pub fn match_loop_targets(repo: String, pattern: String) -> Result<Vec<loops::LoopTarget>, String> {
+    Ok(loops::match_loop_targets(&repo, &pattern))
+}
+
 // ---- per-PR comments (.locke/comments/<id>.json) ----
 
 #[tauri::command]

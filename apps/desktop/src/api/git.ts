@@ -6,6 +6,7 @@ import type {
   Hunk,
   Loop,
   LoopItemState,
+  LoopTarget,
   PullRecord,
   Review,
 } from "@locke/core";
@@ -418,6 +419,10 @@ export const readLoops = (repo: string): Promise<Loop[]> =>
 /** Read a loop's per-item records. Empty in mock mode. */
 export const readLoopItems = (repo: string, loopId: string): Promise<LoopItemRecord[]> =>
   isTauri ? invoke<LoopItemRecord[]>("read_loop_items", { repo, loopId }) : Promise.resolve([]);
+
+/** Match a glob against the repo into per-file audit rows. Empty in mock mode. */
+export const matchLoopTargets = (repo: string, pattern: string): Promise<LoopTarget[]> =>
+  isTauri ? invoke<LoopTarget[]>("match_loop_targets", { repo, pattern }) : Promise.resolve([]);
 
 const initials = (name: string): string => {
   const parts = name.trim().split(/[\s/_-]+/).filter(Boolean);

@@ -213,6 +213,70 @@ fn walk(dir: &Path, repo: &str, pattern: &str, out: &mut Vec<String>) {
     }
 }
 
+// ---- target audit (the builder's "audit & select" rows) ----
+
+/// One matched file the builder surfaces for the user's include/exclude call.
+/// Mirrors `LoopTarget` in `packages/core/src/types.ts`.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LoopTarget {
+    pub path: String,
+    pub loc: u64,
+    /// Coarse risk band: "low" | "med" | "high".
+    pub risk: String,
+    /// Detected concerns — empty for now (real detection is a later phase).
+    pub flags: Vec<String>,
+    /// Default inclusion (always true until auto-exclusion lands).
+    pub inc: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Match `pattern` against the repo and return per-file audit rows: line count,
+/// a coarse size-driven risk band, and (for now) empty flags. Reuses the runner's
+/// exact `collect_targets` matcher, so this preview equals what an empty `targets`
+/// list would actually run over.
+pub fn match_loop_targets(repo: &str, pattern: &str) -> Vec<LoopTarget> {
+    collect_targets(repo, pattern)
+        .into_iter()
+        .map(|rel| {
+            let loc = count_loc(repo, &rel);
+            LoopTarget {
+                path: rel,
+                loc,
+                risk: risk_band(loc).to_string(),
+                flags: Vec::new(),
+                inc: true,
+                reason: None,
+            }
+        })
+        .collect()
+}
+
+/// Count lines in a matched file, capped so a huge/binary blob can't stall the
+/// audit (mirrors `read_repo_file`'s 2 MiB ceiling). Unreadable → 0.
+fn count_loc(repo: &str, rel: &str) -> u64 {
+    const MAX_BYTES: u64 = 2 * 1024 * 1024;
+    let full = Path::new(repo).join(rel);
+    match std::fs::metadata(&full) {
+        Ok(m) if m.len() > MAX_BYTES => return 0,
+        Ok(_) => {}
+        Err(_) => return 0,
+    }
+    std::fs::read_to_string(&full).map(|s| s.lines().count() as u64).unwrap_or(0)
+}
+
+/// Coarse size-driven risk band for the audit pill.
+fn risk_band(loc: u64) -> &'static str {
+    if loc >= 300 {
+        "high"
+    } else if loc >= 120 {
+        "med"
+    } else {
+        "low"
+    }
+}
+
 // ---- prompt rendering ----
 
 /// Always-appended completion protocol so even a custom template carries the
@@ -814,6 +878,33 @@ mod tests {
         assert!(glob_match("**/*.txt", "a/b.txt"));
         assert!(!glob_match("src/**/*.vue", "lib/C.vue"));
         assert!(!glob_match("src/**/*.vue", "src/C.ts"));
+    }
+
+    #[test]
+    fn matches_targets_with_loc_and_risk_band() {
+        let dir = std::env::temp_dir().join(format!("locke-match-{}", std::process::id()));
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("small.txt"), "a\nb\nc\n").unwrap();
+        std::fs::write(src.join("big.txt"), "x\n".repeat(305)).unwrap();
+        std::fs::write(src.join("skip.md"), "no match\n").unwrap();
+
+        let repo = dir.to_string_lossy();
+        let targets = match_loop_targets(&repo, "src/**/*.txt");
+
+        let paths: Vec<&str> = targets.iter().map(|t| t.path.as_str()).collect();
+        assert_eq!(paths, vec!["src/big.txt", "src/small.txt"], "only .txt, sorted");
+
+        let big = targets.iter().find(|t| t.path == "src/big.txt").unwrap();
+        assert_eq!(big.loc, 305);
+        assert_eq!(big.risk, "high");
+        assert!(big.inc && big.flags.is_empty() && big.reason.is_none());
+
+        let small = targets.iter().find(|t| t.path == "src/small.txt").unwrap();
+        assert_eq!(small.loc, 3);
+        assert_eq!(small.risk, "low");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
