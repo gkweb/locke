@@ -9,5 +9,8 @@ apps/desktop/src-tauri/gen/
 # Staged `locke-mcp` externalBin sidecar (built by scripts/stage-mcp-sidecar.sh)
 apps/desktop/src-tauri/binaries/
 
+# Local agent state (worktrees, settings, memory)
+.claude/
+
 # OS
 .DS_Store
