@@ -1,6 +1,6 @@
 [package]
 name = "locke"
-version = "1.2.0"
+version = "1.4.0"
 description = "Locke — Local PR Review"
 authors = ["Locke"]
 edition = "2021"
@@ -23,6 +23,7 @@ tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 git2 = { version = "0.19", default-features = false, features = ["vendored-libgit2"] }
+notify = "6"
 locke-store = { path = "../../../crates/locke-store" }
 
 # Release profile is defined once at the workspace root (a member's `[profile]` is

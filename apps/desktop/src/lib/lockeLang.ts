@@ -99,11 +99,11 @@ const theme: Record<string, string> = {
   tag: "#b08389",
   attr: "#b09c74",
   operator: "#79818f",
-  punct: "#6c7484",
+  punct: "var(--lk-textFainter)",
   property: "#7e8fb0",
   interp: "#6ea79f",
   variable: "#b08b95",
-  plain: "#aeb5c0",
+  plain: "var(--lk-textDim)",
 };
 
 const plugins: Plugin[] = [];
@@ -131,7 +131,7 @@ export function register(def: LangDef): Plugin {
     enabled: true,
     version: "1.0.0",
     contributor: "core",
-    accent: "#7b6cff",
+    accent: "var(--lk-violet)",
     abbr: "?",
   };
   const merged = { ...base, ...def } as Plugin;
@@ -301,7 +301,7 @@ register({
   name: "TypeScript",
   extensions: ["ts", "tsx"],
   abbr: "TS",
-  accent: "#82aaff",
+  accent: "var(--lk-blue)",
   contributor: "core",
   block: ["/*", "*/"],
   grammar: jsCore,
@@ -343,7 +343,7 @@ register({
   name: "PHP",
   extensions: ["php"],
   abbr: "PHP",
-  accent: "#b3a8ff",
+  accent: "var(--lk-violetLight)",
   contributor: "core",
   block: ["/*", "*/"],
   grammar: [
@@ -374,7 +374,7 @@ register({
   name: "Vue SFC",
   extensions: ["vue"],
   abbr: "VUE",
-  accent: "#43c46b",
+  accent: "var(--lk-green)",
   contributor: "@vuejs",
   version: "1.1.0",
   block: ["/*", "*/"],

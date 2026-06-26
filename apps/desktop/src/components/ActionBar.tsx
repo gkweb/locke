@@ -48,10 +48,10 @@ function NavButton({
         border: "none",
         borderRadius: 8,
         cursor: "pointer",
-        background: active ? "#181d27" : "transparent",
+        background: active ? "var(--lk-borderRow2)" : "transparent",
         color: active ? color.text : "#7b8494",
       }}
-      hoverStyle={active ? undefined : { background: "#14181f" }}
+      hoverStyle={active ? undefined : { background: "var(--lk-borderRowFaint)" }}
     >
       {children}
       {dot && (
@@ -105,7 +105,7 @@ export function ActionBar() {
       }}
     >
       {/* left cluster — traffic lights + panel toggle + brand */}
-      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+      <div data-tauri-drag-region style={{ display: "flex", gap: 8, alignItems: "center" }}>
         <TrafficLight bg="#ff5f57" title="close" onClick={() => win()?.close()} />
         <TrafficLight bg="#febc2e" title="minimize" onClick={() => win()?.minimize()} />
         <TrafficLight bg="#28c840" title="zoom" onClick={() => win()?.toggleMaximize()} />
@@ -124,10 +124,10 @@ export function ActionBar() {
           borderRadius: 8,
           cursor: "pointer",
           marginLeft: 4,
-          background: panelOpen ? "#161b24" : "transparent",
+          background: panelOpen ? "var(--lk-borderRail2)" : "transparent",
           color: panelOpen ? color.textSoft : "#7b8494",
         }}
-        hoverStyle={{ background: "#14181f" }}
+        hoverStyle={{ background: "var(--lk-borderRowFaint)" }}
       >
         <SidebarIcon size={16} stroke={1.4} />
       </HoverButton>
@@ -135,6 +135,7 @@ export function ActionBar() {
       {/* view nav — compact icon segmented control, top-placed destinations only */}
       {topItems.length > 0 && (
         <div
+          data-tauri-drag-region
           style={{
             display: "flex",
             gap: 2,
@@ -160,7 +161,7 @@ export function ActionBar() {
       )}
 
       {/* center search */}
-      <div style={{ flex: 1, display: "flex", justifyContent: "center", padding: "0 14px", minWidth: 0 }}>
+      <div data-tauri-drag-region style={{ flex: 1, display: "flex", justifyContent: "center", padding: "0 14px", minWidth: 0 }}>
         <div style={{ position: "relative", width: "100%", maxWidth: 520 }}>
           <SearchIcon
             size={14}
@@ -189,7 +190,7 @@ export function ActionBar() {
       </div>
 
       {/* right cluster */}
-      <div style={{ display: "flex", alignItems: "center", gap: 9, flex: "none" }}>
+      <div data-tauri-drag-region style={{ display: "flex", alignItems: "center", gap: 9, flex: "none" }}>
         {agentMode && (
           <HoverButton
             onClick={toggleApprovals}
@@ -205,11 +206,11 @@ export function ActionBar() {
               fontSize: 12,
               fontWeight: 600,
               cursor: "pointer",
-              background: approvalsOpen ? "#161b24" : "transparent",
-              border: `1px solid ${approvalsOpen ? "#2e3645" : color.borderChip2}`,
+              background: approvalsOpen ? "var(--lk-borderRail2)" : "transparent",
+              border: `1px solid ${approvalsOpen ? "var(--lk-borderInput)" : color.borderChip2}`,
               color: approvalsOpen ? color.text : color.textDim,
             }}
-            hoverStyle={approvalsOpen ? undefined : { borderColor: "#2e3645" }}
+            hoverStyle={approvalsOpen ? undefined : { borderColor: "var(--lk-borderInput)" }}
           >
             <ShieldIcon size={13} stroke={1.5} />
             {hasApprovals && (
@@ -243,12 +244,12 @@ export function ActionBar() {
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            border: `1px solid ${settingsOpen ? "#2e3645" : color.borderChip2}`,
+            border: `1px solid ${settingsOpen ? "var(--lk-borderInput)" : color.borderChip2}`,
             borderRadius: 8,
             cursor: "pointer",
-            background: settingsOpen ? "#161b24" : "transparent",
+            background: settingsOpen ? "var(--lk-borderRail2)" : "transparent",
           }}
-          hoverStyle={{ borderColor: "#2e3645" }}
+          hoverStyle={{ borderColor: "var(--lk-borderInput)" }}
         >
           <GearIcon size={15} color={color.textFaint} stroke={1.4} />
         </HoverButton>

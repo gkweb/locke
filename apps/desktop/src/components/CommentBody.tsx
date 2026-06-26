@@ -17,25 +17,25 @@ const INLINE = /(`[^`]+`)|(\*\*[^*]+\*\*)/g;
 const inlineCode = {
   fontFamily: font.mono,
   fontSize: "0.92em",
-  background: "#0b0d12",
-  border: "1px solid #232a36",
+  background: "var(--lk-sidebarBg)",
+  border: "1px solid var(--lk-borderChip)",
   borderRadius: 4,
   padding: "0.5px 4px",
-  color: "#cfd6e2",
+  color: "var(--lk-textSoft)",
   wordBreak: "break-word" as const,
 };
 
 const codeBlock = {
   margin: "6px 0 4px",
   padding: "9px 11px",
-  background: "#0b0d12",
-  border: "1px solid #232a36",
+  background: "var(--lk-sidebarBg)",
+  border: "1px solid var(--lk-borderChip)",
   borderRadius: 7,
   overflowX: "auto" as const,
   fontFamily: font.mono,
   fontSize: 11.5,
   lineHeight: 1.5,
-  color: "#cfd6e2",
+  color: "var(--lk-textSoft)",
   whiteSpace: "pre" as const,
 };
 

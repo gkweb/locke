@@ -1,7 +1,8 @@
 import type { NavPlacement } from "@locke/core";
 import { useStore } from "../state/store.js";
 import { color, font, alpha } from "../theme/tokens.js";
-import { AgentsIcon, ReviewsIcon, CheckIcon, ExtensionsIcon, ChevronRightIcon } from "./icons.js";
+import { THEMES } from "../theme/themes.js";
+import { AgentsIcon, ReviewsIcon, CheckIcon, ExtensionsIcon, ChevronRightIcon, GearIcon } from "./icons.js";
 import { NAV_ITEMS } from "../lib/nav.js";
 import { HoverButton } from "./primitives.js";
 
@@ -37,7 +38,7 @@ function NavConfigRow({
           height: 24,
           flex: "none",
           borderRadius: 7,
-          background: "#11151d",
+          background: "var(--lk-rowHoverBg)",
           border: `1px solid ${color.borderRow2}`,
           display: "flex",
           alignItems: "center",
@@ -55,7 +56,7 @@ function NavConfigRow({
           display: "flex",
           gap: 2,
           padding: 2,
-          background: "#0b0d12",
+          background: "var(--lk-sidebarBg)",
           border: `1px solid ${color.borderRow2}`,
           borderRadius: 8,
           flex: "none",
@@ -75,7 +76,7 @@ function NavConfigRow({
                 fontFamily: font.sans,
                 fontSize: 10.5,
                 fontWeight: 600,
-                background: on ? "#222c3c" : "transparent",
+                background: on ? "var(--lk-borderChip)" : "transparent",
                 color: on ? color.text : color.textFainter,
               }}
             >
@@ -121,8 +122,8 @@ function ModeRow({
         cursor: "pointer",
         fontFamily: font.sans,
         marginBottom: 8,
-        background: active ? "#141a24" : color.panelBg,
-        border: `1px solid ${active ? "#2a3344" : "#1c212b"}`,
+        background: active ? "var(--lk-borderRowFaint3)" : color.panelBg,
+        border: `1px solid ${active ? "var(--lk-borderPopover)" : "var(--lk-borderRow)"}`,
       }}
     >
       <span
@@ -159,6 +160,8 @@ export function SettingsPopover() {
   const setNavPlace = useStore((s) => s.setNavPlace);
   const goExtensions = useStore((s) => s.goExtensions);
   const goIntegrations = useStore((s) => s.goIntegrations);
+  const goSettings = useStore((s) => s.goSettings);
+  const themeLabel = useStore((s) => THEMES[s.theme].label);
   const mcpInstalled = useStore((s) => s.mcpStatus?.installed ?? false);
 
   const navItems = NAV_ITEMS.filter((item) => !item.agentOnly || agentMode);
@@ -182,6 +185,38 @@ export function SettingsPopover() {
         <div style={{ fontSize: 13, fontWeight: 600, color: color.text }}>Settings</div>
       </div>
       <div style={{ padding: "13px 14px" }}>
+        <HoverButton
+          onClick={goSettings}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 11,
+            width: "100%",
+            textAlign: "left",
+            padding: "11px 12px",
+            borderRadius: 10,
+            cursor: "pointer",
+            fontFamily: font.sans,
+            background: color.panelBg,
+            border: `1px solid ${color.borderRow2}`,
+            marginBottom: 13,
+          }}
+          hoverStyle={{ borderColor: color.borderPopover }}
+        >
+          <span
+            style={{ width: 30, height: 30, flex: "none", borderRadius: 8, background: alpha.violet(0.12), border: `1px solid ${alpha.violet(0.3)}`, display: "flex", alignItems: "center", justifyContent: "center", color: color.violetLight }}
+          >
+            <GearIcon size={16} stroke={1.4} />
+          </span>
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span style={{ display: "block", fontSize: 13, fontWeight: 600, color: color.text }}>Appearance</span>
+            <span style={{ display: "block", fontSize: 11.5, color: color.textFaint, lineHeight: 1.45, marginTop: 2 }}>
+              Theme and visual style · {themeLabel}
+            </span>
+          </span>
+          <ChevronRightIcon size={14} color={color.textGhost} stroke={1.7} style={{ flex: "none" }} />
+        </HoverButton>
+
         <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".7px", color: color.textGhost, marginBottom: 10 }}>
           MODE
         </div>
@@ -238,7 +273,7 @@ export function SettingsPopover() {
             borderRadius: 10,
             cursor: "pointer",
             fontFamily: font.sans,
-            background: "#0e1117",
+            background: "var(--lk-panelBg)",
             border: `1px solid ${color.borderRow2}`,
             marginBottom: 8,
           }}
@@ -271,7 +306,7 @@ export function SettingsPopover() {
                   padding: "1px 5px",
                   borderRadius: 5,
                   color: mcpInstalled ? color.teal : color.textGhost,
-                  background: mcpInstalled ? alpha.teal(0.12) : "#141821",
+                  background: mcpInstalled ? alpha.teal(0.12) : "var(--lk-borderRowFaint)",
                   border: `1px solid ${mcpInstalled ? alpha.teal(0.3) : color.borderRow2}`,
                 }}
               >
@@ -299,7 +334,7 @@ export function SettingsPopover() {
             borderRadius: 10,
             cursor: "pointer",
             fontFamily: font.sans,
-            background: "#0e1117",
+            background: "var(--lk-panelBg)",
             border: `1px solid ${color.borderRow2}`,
           }}
           hoverStyle={{ borderColor: color.borderPopover }}

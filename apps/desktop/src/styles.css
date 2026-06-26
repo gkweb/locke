@@ -4,6 +4,16 @@
   box-sizing: border-box;
 }
 
+/* Theme variable seed: the Midnight (default) palette so the very first paint —
+   before the JS boot script runs applyTheme — already has the right colors. The
+   active theme overrides these on <body> at runtime (see theme/themes.ts). */
+:root {
+  --lk-appBg: #0a0c11;
+  --lk-text: #e7eaf0;
+  --lk-borderInput: #2c333f;
+  --lk-borderPopover: #2a3140;
+}
+
 html,
 body,
 #root {
@@ -12,8 +22,8 @@ body,
 }
 
 body {
-  background: #0a0c11;
-  color: #e7eaf0;
+  background: var(--lk-appBg);
+  color: var(--lk-text);
   font-family: "Geist Sans", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
@@ -26,13 +36,13 @@ body {
   height: 11px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #262c38;
+  background: var(--lk-borderInput);
   border-radius: 8px;
   border: 3px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #363e4c;
+  background: var(--lk-borderPopover);
   background-clip: content-box;
 }
 ::-webkit-scrollbar-track {

@@ -134,9 +134,16 @@ export const PlayIcon = ({ size = 13, color = "currentColor", stroke = 1.5, styl
 );
 
 export const GearIcon = ({ size = 14, color = "currentColor", stroke = 1.3, style }: IconProps) => (
-  <svg {...strokeBase(size, color, stroke, style)}>
-    <circle cx="8" cy="8" r="2.1" />
-    <path d="M8 1.6v1.7M8 12.7v1.7M3.5 3.5l1.2 1.2M11.3 11.3l1.2 1.2M1.6 8h1.7M12.7 8h1.7M3.5 12.5l1.2-1.2M11.3 4.7l1.2-1.2" />
+  <svg {...strokeBase(size, color, stroke, style)} strokeLinejoin="round">
+    <path d="M14.22 7.01 L14.22 8.99 L12.47 9.07 L11.92 10.4 L13.1 11.7 L11.7 13.1 L10.4 11.92 L9.07 12.47 L8.99 14.22 L7.01 14.22 L6.93 12.47 L5.6 11.92 L4.3 13.1 L2.9 11.7 L4.08 10.4 L3.53 9.07 L1.78 8.99 L1.78 7.01 L3.53 6.93 L4.08 5.6 L2.9 4.3 L4.3 2.9 L5.6 4.08 L6.93 3.53 L7.01 1.78 L8.99 1.78 L9.07 3.53 L10.4 4.08 L11.7 2.9 L13.1 4.3 L11.92 5.6 L12.47 6.93 Z" />
+    <circle cx="8" cy="8" r="2.3" />
+  </svg>
+);
+
+export const RefreshIcon = ({ size = 14, color = "currentColor", stroke = 1.4, style }: IconProps) => (
+  <svg {...strokeBase(size, color, stroke, style)} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M13 8a5 5 0 1 1-1.46-3.54" />
+    <path d="M13 2.5V5h-2.5" />
   </svg>
 );
 
@@ -272,21 +279,21 @@ export const PauseIcon = ({ size = 13, color = "currentColor", stroke = 1.6, sty
 // filled violet node. Colors are intrinsic to the mark, so it ignores `color`.
 export const BrandMark = ({ size = 18, style }: { size?: number; style?: React.CSSProperties }) => (
   <svg width={size} height={size} viewBox="0 0 64 64" fill="none" style={style}>
-    <path d="M19 18v17a8 8 0 0 0 8 8h11" stroke="#7b6cff" strokeWidth={5} strokeLinecap="round" />
-    <path d="M19 27c0-5 4-9 9-9h6" stroke="#3fd0c0" strokeWidth={5} strokeLinecap="round" />
-    <circle cx="19" cy="18" r="7.5" fill="#0c0e13" stroke="#7b6cff" strokeWidth={5} />
-    <circle cx="42" cy="18" r="7.5" fill="#0c0e13" stroke="#3fd0c0" strokeWidth={5} />
-    <circle cx="42" cy="43" r="7.5" fill="#7b6cff" />
+    <path d="M19 18v17a8 8 0 0 0 8 8h11" stroke="var(--lk-violet)" strokeWidth={5} strokeLinecap="round" />
+    <path d="M19 27c0-5 4-9 9-9h6" stroke="var(--lk-teal)" strokeWidth={5} strokeLinecap="round" />
+    <circle cx="19" cy="18" r="7.5" fill="var(--lk-titlebarBg)" stroke="var(--lk-violet)" strokeWidth={5} />
+    <circle cx="42" cy="18" r="7.5" fill="var(--lk-titlebarBg)" stroke="var(--lk-teal)" strokeWidth={5} />
+    <circle cx="42" cy="43" r="7.5" fill="var(--lk-violet)" />
   </svg>
 );
 
-export const SparkleIcon = ({ size = 14, color = "#3fd0c0", style }: IconProps) => (
+export const SparkleIcon = ({ size = 14, color = "var(--lk-teal)", style }: IconProps) => (
   <svg width={size} height={size} viewBox="0 0 16 16" fill={color} style={style}>
     <path d="M8 1l1.6 4.2L14 6.4l-3.4 3 1 4.6L8 11.7 4.4 14l1-4.6L2 6.4l4.4-1.2z" />
   </svg>
 );
 
-export const LogoMark = ({ size = 13, color = "#8b7bff", style }: IconProps) => (
+export const LogoMark = ({ size = 13, color = "var(--lk-violetLogo)", style }: IconProps) => (
   <svg width={size} height={size} viewBox="0 0 16 16" style={style}>
     <path
       d="M1.6 4.4h8.2v1.9H7.4c.25 1.45 1.2 2.55 2.7 3.05V11H3.4V9.35c1.4-.5 2.3-1.6 2.55-3.05H1.6z"

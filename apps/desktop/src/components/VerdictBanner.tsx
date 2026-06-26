@@ -9,7 +9,7 @@ export function VerdictBanner({ pr, compact = false }: { pr: Review; compact?: b
   if (!verdict) return null;
 
   const isApprove = verdict === "approve";
-  const col = isApprove ? "#43c46b" : "#f0616d";
+  const col = isApprove ? "var(--lk-green)" : "var(--lk-red)";
   const bg = isApprove ? "rgba(67,196,107,0.1)" : "rgba(240,97,109,0.1)";
   const bd = isApprove ? "rgba(67,196,107,0.3)" : "rgba(240,97,109,0.3)";
   const text = isApprove
@@ -29,7 +29,7 @@ export function VerdictBanner({ pr, compact = false }: { pr: Review; compact?: b
         color: col,
         background: bg,
         border: compact ? "none" : `1px solid ${bd}`,
-        borderBottom: compact ? "1px solid #1a1f29" : undefined,
+        borderBottom: compact ? "1px solid var(--lk-borderSubtle)" : undefined,
       }}
     >
       {isApprove && (

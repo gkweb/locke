@@ -76,7 +76,7 @@ function McpServerCard() {
             padding: "2px 6px",
             borderRadius: 5,
             color: installed ? color.teal : color.textGhost,
-            background: installed ? alpha.teal(0.12) : "#141821",
+            background: installed ? alpha.teal(0.12) : "var(--lk-borderRowFaint)",
             border: `1px solid ${installed ? alpha.teal(0.3) : color.borderRow2}`,
           }}
         >
@@ -102,8 +102,8 @@ function McpServerCard() {
             padding: "7px 14px",
             borderRadius: 8,
             cursor: canAct ? "pointer" : "not-allowed",
-            color: installed ? color.textSoft : "#0a0c11",
-            background: installed ? "transparent" : canAct ? color.teal : "#1c212b",
+            color: installed ? color.textSoft : "var(--lk-appBg)",
+            background: installed ? "transparent" : canAct ? color.teal : "var(--lk-borderRow)",
             border: `1px solid ${installed ? color.borderRow2 : "transparent"}`,
             opacity: canAct ? 1 : 0.6,
           }}
@@ -139,7 +139,7 @@ function McpServerCard() {
               margin: 0,
               padding: "11px 13px",
               borderRadius: 9,
-              background: "#0b0d12",
+              background: "var(--lk-sidebarBg)",
               border: `1px solid ${color.borderRow2}`,
               color: color.textFaint,
               fontFamily: font.mono,
@@ -191,7 +191,7 @@ function CliCard() {
             padding: "2px 6px",
             borderRadius: 5,
             color: installed ? color.teal : color.textGhost,
-            background: installed ? alpha.teal(0.12) : "#141821",
+            background: installed ? alpha.teal(0.12) : "var(--lk-borderRowFaint)",
             border: `1px solid ${installed ? alpha.teal(0.3) : color.borderRow2}`,
           }}
         >
@@ -220,8 +220,8 @@ function CliCard() {
             padding: "7px 14px",
             borderRadius: 8,
             cursor: busy ? "not-allowed" : "pointer",
-            color: installed ? color.textSoft : "#0a0c11",
-            background: installed ? "transparent" : busy ? "#1c212b" : color.teal,
+            color: installed ? color.textSoft : "var(--lk-appBg)",
+            background: installed ? "transparent" : busy ? "var(--lk-borderRow)" : color.teal,
             border: `1px solid ${installed ? color.borderRow2 : "transparent"}`,
             opacity: busy ? 0.6 : 1,
           }}
@@ -311,7 +311,7 @@ function CallLog() {
                 alignItems: "baseline",
                 gap: 11,
                 padding: "9px 13px",
-                background: i % 2 ? "transparent" : "#0e1117",
+                background: i % 2 ? "transparent" : "var(--lk-panelBg)",
                 borderTop: i === 0 ? "none" : `1px solid ${color.borderRail}`,
               }}
             >

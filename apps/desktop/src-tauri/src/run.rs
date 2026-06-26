@@ -153,7 +153,11 @@ fn permission_summary(tool: &str, input: &Value) -> String {
 
 /// Headless argv for the streaming Claude protocol. The prompt is delivered as a
 /// stream-json user message on stdin (not argv), so it can't be shell-injected.
-fn claude_stream_argv() -> Vec<String> {
+/// `permission_mode` is Claude Code's `--permission-mode` value: "default" surfaces
+/// each tool through the in-app Allow/Deny prompt; "auto" lets Claude's own
+/// classifier auto-approve in-scope actions (Locke's "Auto mode"). The stdio prompt
+/// tool stays wired either way, so anything not auto-approved still prompts the user.
+fn claude_stream_argv(permission_mode: &str) -> Vec<String> {
     vec![
         "-p".into(),
         "--input-format".into(),
@@ -164,7 +168,7 @@ fn claude_stream_argv() -> Vec<String> {
         "--permission-prompt-tool".into(),
         "stdio".into(),
         "--permission-mode".into(),
-        "default".into(),
+        permission_mode.to_string(),
     ]
 }
 
@@ -255,6 +259,7 @@ pub fn start_run(
     agent_cmd: String,
     prompt: String,
     use_worktree: bool,
+    permission_mode: String,
 ) -> R<()> {
     let WorkdirPlan { dir: workdir, owned_worktree, note } = prepare_workdir(&repo, &branch, use_worktree)?;
 
@@ -262,7 +267,7 @@ pub fn start_run(
     // the login shell's PATH still launches the binary detection found.
     let exe = crate::actions::resolve_agent_path(&agent_cmd);
     let mut child = Command::new(&exe)
-        .args(claude_stream_argv())
+        .args(claude_stream_argv(&permission_mode))
         .current_dir(&workdir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

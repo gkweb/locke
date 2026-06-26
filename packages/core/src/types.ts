@@ -33,6 +33,7 @@ export type View =
   | "files"
   | "extensions"
   | "integrations"
+  | "settings"
   | "workspace";
 
 /** A configurable navigation destination (excludes `workspace`/`extensions`,

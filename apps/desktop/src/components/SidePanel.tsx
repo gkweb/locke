@@ -1,6 +1,6 @@
 import type { Review } from "@locke/core";
 import { useStore } from "../state/store.js";
-import { color, font, statusMeta, runStateMeta } from "../theme/tokens.js";
+import { color, font, statusMeta, runStateMeta, tint } from "../theme/tokens.js";
 import { fleetGroup, reviewKind, reviewAccent, type FleetGroup } from "../lib/fleet.js";
 import { chooseRepo } from "../lib/repo.js";
 import { AgentMark } from "./AgentMark.js";
@@ -41,9 +41,9 @@ function ReviewCard({ r, selected }: { r: Review; selected: boolean }) {
         width: "100%",
         textAlign: "left",
         padding: "10px 11px 10px 15px",
-        border: `1px solid ${selected ? "#2a3344" : "transparent"}`,
+        border: `1px solid ${selected ? "var(--lk-borderPopover)" : "transparent"}`,
         borderRadius: 10,
-        background: selected ? "#141a24" : "transparent",
+        background: selected ? "var(--lk-borderRowFaint3)" : "transparent",
         cursor: "pointer",
         fontFamily: font.sans,
         marginBottom: 3,
@@ -87,8 +87,8 @@ function ReviewCard({ r, selected }: { r: Review; selected: boolean }) {
             alignItems: "center",
             justifyContent: "center",
             color: accent,
-            background: `${accent}22`,
-            border: `1px solid ${accent}55`,
+            background: `${tint(accent, "22")}`,
+            border: `1px solid ${tint(accent, "55")}`,
           }}
         >
           <AgentMark kind={kind} label={r.initials} px={11} />
@@ -285,7 +285,7 @@ export function SidePanel() {
               <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".7px", color: color.textGhost }}>
                 {g.label}
               </span>
-              <span style={{ fontSize: 10, color: "#454d5b", fontFamily: font.mono }}>{g.items.length}</span>
+              <span style={{ fontSize: 10, color: "var(--lk-lineNo)", fontFamily: font.mono }}>{g.items.length}</span>
               {g.live && (
                 <span
                   style={{ width: 6, height: 6, borderRadius: "50%", background: color.teal, animation: "lkpulse 2s infinite" }}

@@ -123,13 +123,17 @@ export const detectAgents = (): Promise<AgentInfo[]> =>
 export interface AgentSettings {
   disabled: string[];
   enabled: boolean;
+  /** Selected UI theme id (v1.4). Persisted alongside agent prefs in the freeform
+   *  agents.json, so it round-trips without a Rust change. */
+  theme?: string;
 }
 
 export const readAgentSettings = (): Promise<AgentSettings> =>
   isTauri
-    ? invoke<{ disabled?: string[]; enabled?: boolean } | null>("read_agent_settings").then((s) => ({
+    ? invoke<{ disabled?: string[]; enabled?: boolean; theme?: string } | null>("read_agent_settings").then((s) => ({
         disabled: s?.disabled ?? [],
         enabled: s?.enabled ?? true,
+        theme: s?.theme,
       }))
     : Promise.resolve({ disabled: [], enabled: true });
 
@@ -276,7 +280,8 @@ export const startRun = (
   agentCmd: string,
   prompt: string,
   useWorktree: boolean,
-) => invoke<void>("start_run", { runId, repo, branch, agentCmd, prompt, useWorktree });
+  permissionMode: string,
+) => invoke<void>("start_run", { runId, repo, branch, agentCmd, prompt, useWorktree, permissionMode });
 
 /** Answer a pending tool-permission prompt (Allow/Deny) for a live run. */
 export const respondPermission = (
@@ -289,6 +294,13 @@ export const respondPermission = (
 
 /** Cancel an in-flight run (kills the agent process). */
 export const cancelRun = (runId: string) => invoke<void>("cancel_run", { runId });
+
+/**
+ * Watch a repo's `.locke/` directory for out-of-process changes (MCP edits) — the
+ * backend emits `locke:fs-change` on any change. No-op outside Tauri.
+ */
+export const watchLocke = (repo: string): Promise<void> =>
+  isTauri ? invoke<void>("watch_locke", { repo }) : Promise.resolve();
 
 /** Read all persisted run records (newest first). Empty in mock mode. */
 export const readRuns = (repo: string): Promise<RunRecord[]> =>

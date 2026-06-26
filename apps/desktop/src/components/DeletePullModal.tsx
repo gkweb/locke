@@ -24,7 +24,7 @@ export function DeletePullModal() {
   return (
     <div
       onClick={dismiss}
-      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 70 }}
+      style={{ position: "fixed", inset: 0, background: color.scrim, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 70 }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -80,7 +80,7 @@ export function DeletePullModal() {
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 22 }}>
           <button
             onClick={dismiss}
-            style={{ fontFamily: font.sans, fontSize: 12.5, color: "#aab2c0", background: "transparent", border: `1px solid ${color.borderInput}`, padding: "8px 15px", borderRadius: 8, cursor: "pointer" }}
+            style={{ fontFamily: font.sans, fontSize: 12.5, color: "var(--lk-textDim)", background: "transparent", border: `1px solid ${color.borderInput}`, padding: "8px 15px", borderRadius: 8, cursor: "pointer" }}
           >
             Cancel
           </button>

@@ -10,12 +10,12 @@ import { HoverButton } from "./primitives.js";
 // events in Tauri mode; by the scripted hero-flow in mock mode.
 
 const EV: Record<RunEvent["kind"], { ch: string; ic: string; tc: string }> = {
-  msg: { ch: "◆", ic: "#3fd0c0", tc: "#cdd3de" },
-  read: { ch: "○", ic: "#5f6878", tc: "#8b94a6" },
-  edit: { ch: "✎", ic: "#b3a8ff", tc: "#cdd3de" },
-  result: { ch: "✓", ic: "#43c46b", tc: "#9fc6ab" },
-  done: { ch: "✓", ic: "#43c46b", tc: "#bfe6c9" },
-  denied: { ch: "✕", ic: "#f0616d", tc: "#ca9aa0" },
+  msg: { ch: "◆", ic: "var(--lk-teal)", tc: "var(--lk-textSoft)" },
+  read: { ch: "○", ic: "var(--lk-textGhost)", tc: "var(--lk-textFaint)" },
+  edit: { ch: "✎", ic: "var(--lk-violetLight)", tc: "var(--lk-textSoft)" },
+  result: { ch: "✓", ic: "var(--lk-green)", tc: "#9fc6ab" },
+  done: { ch: "✓", ic: "var(--lk-green)", tc: "#bfe6c9" },
+  denied: { ch: "✕", ic: "var(--lk-red)", tc: "#ca9aa0" },
 };
 
 function statusMetaForRun(agent: string, awaiting: boolean, done: boolean, paused: boolean, active: boolean) {
@@ -41,7 +41,7 @@ function EventRow({ ev }: { ev: RunEvent }) {
           </div>
         )}
       </div>
-      <span style={{ flex: "none", fontSize: 10.5, color: "#454d5b", fontFamily: font.mono, paddingTop: 3 }}>{ev.time}</span>
+      <span style={{ flex: "none", fontSize: 10.5, color: "var(--lk-lineNo)", fontFamily: font.mono, paddingTop: 3 }}>{ev.time}</span>
     </div>
   );
 }
@@ -62,13 +62,14 @@ export function RunTab({ review }: { review: Review }) {
   const setWorkspaceTab = useStore((s) => s.setWorkspaceTab);
   const allowApproval = useStore((s) => s.allowApproval);
   const denyApproval = useStore((s) => s.denyApproval);
-  const startRun = useStore((s) => s.startRun);
+  const requestRun = useStore((s) => s.requestRun);
   const cancelRun = useStore((s) => s.cancelRun);
   const runUseWorktree = useStore((s) => s.runUseWorktree);
   const setRunUseWorktree = useStore((s) => s.setRunUseWorktree);
   const threads = useStore((s) => s.threads);
   const agents = useStore((s) => s.agents);
   const disabledAgents = useStore((s) => s.disabledAgents);
+  const runSelectedAgentId = useStore((s) => s.runSelectedAgentId);
 
   const flagCount = threads.filter((t) => t.kind === "change_request" && !t.resolved).length;
   const perm = pending.find((p) => p.reviewId === review.id);
@@ -76,10 +77,11 @@ export function RunTab({ review }: { review: Review }) {
   const runActive = (!!currentRunId || review.runState === "running") && !awaiting && !runDone && !runPaused;
   const idle = !runActive && !awaiting && !runDone && !runPaused && runEvents.length === 0;
   // Label the run surface with the agent that actually performs the run — the
-  // first detected, enabled CLI, matching startRun's selection — not
-  // review.agent, which is the branch author's git commit name. Falls back to
-  // "Claude" before any agent is detected.
-  const runner = agents.find((a) => a.detected && !disabledAgents.includes(a.id));
+  // one the user picked in the approval modal, else the first detected, enabled
+  // CLI (matching startRun's selection) — not review.agent, which is the branch
+  // author's git commit name. Falls back to "Claude" before any agent is detected.
+  const enabled = (a: typeof agents[number]) => a.detected && !disabledAgents.includes(a.id);
+  const runner = agents.find((a) => a.id === runSelectedAgentId && enabled(a)) ?? agents.find(enabled);
   const agent = runner ? (runner.id === "claude" ? "Claude" : runner.name) : "Claude";
   const sm = statusMetaForRun(agent, awaiting, runDone, runPaused, runActive);
   const runId = currentRunId ?? review.runId ?? "—";
@@ -124,12 +126,12 @@ export function RunTab({ review }: { review: Review }) {
                     {flagCount} open change request{flagCount === 1 ? "" : "s"} to action.
                   </div>
                   <HoverButton
-                    onClick={() => void startRun()}
+                    onClick={requestRun}
                     style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 16px", background: alpha.teal(0.12), border: `1px solid ${alpha.teal(0.4)}`, borderRadius: 9, color: color.teal, fontFamily: font.sans, fontSize: 13, fontWeight: 600, cursor: "pointer" }}
                     hoverStyle={{ background: alpha.teal(0.2) }}
                   >
                     <PlayIcon size={14} color="currentColor" stroke={1.6} />
-                    Run agent on the open change requests
+                    Resolve the open change requests
                   </HoverButton>
                 </>
               ) : (
@@ -206,11 +208,11 @@ export function RunTab({ review }: { review: Review }) {
                     <span style={{ fontWeight: 600, color: "#f0a5ac" }}>Run ended.</span> It was stopped or hit an error before finishing — start another run to try again.
                   </span>
                   <HoverButton
-                    onClick={() => void startRun()}
+                    onClick={requestRun}
                     style={{ flex: "none", padding: "8px 14px", background: "transparent", border: `1px solid ${color.borderInput}`, borderRadius: 8, color: color.textDim, fontFamily: font.sans, fontSize: 12, fontWeight: 600, cursor: "pointer" }}
                     hoverStyle={{ borderColor: "#3a414e" }}
                   >
-                    Run again
+                    Resolve again
                   </HoverButton>
                 </div>
               )}

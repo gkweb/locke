@@ -1,6 +1,6 @@
 import type { Review } from "@locke/core";
 import { useStore } from "../state/store.js";
-import { color, font, alpha } from "../theme/tokens.js";
+import { color, font, alpha, tint } from "../theme/tokens.js";
 import { reviewKind, reviewAccent } from "../lib/fleet.js";
 import { AgentMark } from "../components/AgentMark.js";
 import { BranchIcon, CheckCircleIcon, ChevronRightIcon, ArrowRightIcon, SpinnerIcon } from "../components/icons.js";
@@ -79,7 +79,7 @@ function InFlightCard({ r }: { r: Review }) {
         padding: "15px 16px",
         cursor: "pointer",
       }}
-      hoverStyle={{ borderColor: "#2e3645" }}
+      hoverStyle={{ borderColor: "var(--lk-borderInput)" }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
         <span
@@ -91,8 +91,8 @@ function InFlightCard({ r }: { r: Review }) {
             alignItems: "center",
             justifyContent: "center",
             color: accent,
-            background: `${accent}22`,
-            border: `1px solid ${accent}55`,
+            background: `${tint(accent, "22")}`,
+            border: `1px solid ${tint(accent, "55")}`,
           }}
         >
           <AgentMark kind={kind} label={r.initials} px={15} />
@@ -203,11 +203,11 @@ function ReadyRow({ r }: { r: Review }) {
         marginBottom: 11,
         cursor: "pointer",
       }}
-      hoverStyle={{ borderColor: "#2e3645", background: color.rowHoverBg }}
+      hoverStyle={{ borderColor: "var(--lk-borderInput)", background: color.rowHoverBg }}
     >
       <span style={{ width: 9, height: 9, borderRadius: "50%", flex: "none", background: color.green }} />
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 14, fontWeight: 600, color: "#eef1f5", letterSpacing: "-.2px" }}>{r.title}</div>
+        <div style={{ fontSize: 14, fontWeight: 600, color: "var(--lk-textBright)", letterSpacing: "-.2px" }}>{r.title}</div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 7, flexWrap: "wrap", fontSize: 11.5, color: color.textFainter }}>
           <span style={{ fontFamily: font.mono, color: "#7b8494" }}>#{r.id}</span>
           <span style={{ color: "#3a414e" }}>·</span>
@@ -225,8 +225,8 @@ function ReadyRow({ r }: { r: Review }) {
               alignItems: "center",
               justifyContent: "center",
               color: accent,
-              background: `${accent}22`,
-              border: `1px solid ${accent}55`,
+              background: `${tint(accent, "22")}`,
+              border: `1px solid ${tint(accent, "55")}`,
             }}
           >
             <AgentMark kind={kind} label={r.initials} px={11} />
@@ -243,7 +243,7 @@ function ReadyRow({ r }: { r: Review }) {
         <span style={{ color: color.green }}>+{r.add}</span>
         <span style={{ color: color.red }}>−{r.del}</span>
       </span>
-      <ChevronRightIcon size={15} color="#454d5b" stroke={1.5} />
+      <ChevronRightIcon size={15} color="var(--lk-lineNo)" stroke={1.5} />
     </HoverDiv>
   );
 }

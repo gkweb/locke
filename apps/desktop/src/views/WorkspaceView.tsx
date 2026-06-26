@@ -1,6 +1,6 @@
 import type { ChangedFile, WorkspaceTab } from "@locke/core";
 import { useStore } from "../state/store.js";
-import { color, font, alpha, runStateMeta } from "../theme/tokens.js";
+import { color, font, alpha, runStateMeta, tint } from "../theme/tokens.js";
 import { reviewKind, reviewAccent, reviewStatusMeta } from "../lib/fleet.js";
 import { fullFilePath } from "../lib/mockFleet.js";
 import { AgentMark } from "../components/AgentMark.js";
@@ -17,6 +17,8 @@ import {
   FileSimpleIcon,
   FullFileIcon,
   TrashIcon,
+  SidebarIcon,
+  RefreshIcon,
 } from "../components/icons.js";
 import { HoverButton, HoverDiv } from "../components/primitives.js";
 
@@ -30,11 +32,33 @@ function FilesRail() {
   const reviews = useStore((s) => s.reviews);
   const selectedPR = useStore((s) => s.selectedPR);
   const openFullFile = useStore((s) => s.openFullFile);
+  const filesRailWidth = useStore((s) => s.filesRailWidth);
+  const setFilesRailWidth = useStore((s) => s.setFilesRailWidth);
   const review = reviews.find((r) => r.id === selectedPR);
   const flagged = (path: string) => threads.some((t) => t.file === path && t.kind === "change_request" && !t.resolved);
 
+  // Drag-resize: record the starting pointer + width, translate movement into a
+  // width delta (rail is left-docked, so a rightward drag widens it).
+  const startResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = filesRailWidth;
+    const onMove = (ev: MouseEvent) => setFilesRailWidth(startWidth + (ev.clientX - startX));
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
   return (
-    <div style={{ width: 240, flex: "none", borderRight: `1px solid ${color.borderSubtle}`, background: color.sidebarBg, overflowY: "auto", padding: "12px 9px" }}>
+    <div style={{ position: "relative", width: filesRailWidth, flex: "none", borderRight: `1px solid ${color.borderSubtle}`, background: color.sidebarBg, overflowY: "auto", padding: "12px 9px" }}>
+      <span
+        onMouseDown={startResize}
+        title="Drag to resize"
+        style={{ position: "absolute", top: 0, bottom: 0, right: 0, width: 7, cursor: "col-resize", zIndex: 6 }}
+      />
       <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".8px", color: color.textGhost, padding: "0 8px 9px" }}>
         FILES CHANGED
       </div>
@@ -70,7 +94,7 @@ function FilesRail() {
                 fontSize: 9,
                 fontWeight: 700,
                 color: c,
-                background: `${c}22`,
+                background: `${tint(c, "22")}`,
                 border: "1px solid currentColor",
               }}
             >
@@ -101,7 +125,7 @@ function FilesRail() {
                   color: color.textGhost,
                   cursor: "pointer",
                 }}
-                hoverStyle={{ background: "#1b2230", color: color.textDim }}
+                hoverStyle={{ background: "var(--lk-rowActiveBg)", color: color.textDim }}
               >
                 <FullFileIcon size={12} stroke={1.4} />
               </HoverButton>
@@ -116,10 +140,11 @@ function FilesRail() {
 function DiffTab() {
   const files = useStore((s) => s.files);
   const selectedFile = useStore((s) => s.selectedFile);
+  const filesRailOpen = useStore((s) => s.filesRailOpen);
   const file = files[selectedFile];
   return (
     <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
-      <FilesRail />
+      {filesRailOpen && <FilesRail />}
       <div style={{ flex: 1, minWidth: 0, overflowY: "auto", padding: "18px 24px 50px" }}>
         {file ? (
           <DiffViewer file={file} />
@@ -260,7 +285,7 @@ function TabButton({ active, accent, onClick, children }: { active: boolean; acc
 const badge: React.CSSProperties = {
   fontSize: 11,
   color: color.textFainter,
-  background: "#13161d",
+  background: "var(--lk-chipBg)",
   border: `1px solid ${color.borderChip}`,
   borderRadius: 20,
   padding: "0 7px",
@@ -271,7 +296,7 @@ export function WorkspaceView() {
   const selectedPR = useStore((s) => s.selectedPR);
   const workspaceTab = useStore((s) => s.workspaceTab);
   const setWorkspaceTab = useStore((s) => s.setWorkspaceTab);
-  const startRun = useStore((s) => s.startRun);
+  const requestRun = useStore((s) => s.requestRun);
   const agentMode = useStore((s) => s.agentMode);
   const go = useStore((s) => s.go);
   const files = useStore((s) => s.files);
@@ -283,6 +308,9 @@ export function WorkspaceView() {
   const pending = useStore((s) => s.pending);
   const agents = useStore((s) => s.agents);
   const disabledAgents = useStore((s) => s.disabledAgents);
+  const filesRailOpen = useStore((s) => s.filesRailOpen);
+  const toggleFilesRail = useStore((s) => s.toggleFilesRail);
+  const refreshWorkspace = useStore((s) => s.refreshWorkspace);
 
   const review = reviews.find((r) => r.id === selectedPR) ?? reviews[0];
   if (!review) {
@@ -326,7 +354,7 @@ export function WorkspaceView() {
               {review.title}
             </h1>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 11, flexWrap: "wrap", fontSize: 12 }}>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 11px", borderRadius: 20, fontWeight: 600, color: sm.color, background: `${sm.color}1f`, border: `1px solid ${sm.color}4d` }}>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 11px", borderRadius: 20, fontWeight: 600, color: sm.color, background: `${tint(sm.color, "1f")}`, border: `1px solid ${tint(sm.color, "4d")}` }}>
                 <span style={{ width: 7, height: 7, borderRadius: "50%", background: "currentColor" }} />
                 {sm.label}
               </span>
@@ -334,7 +362,7 @@ export function WorkspaceView() {
               <ArrowRightIcon size={13} color={color.textGhost} stroke={1.4} />
               <span style={{ fontFamily: font.mono, color: color.blue }}>{review.base}</span>
               <span style={{ color: "#3a414e" }}>·</span>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "2px 10px 2px 4px", borderRadius: 20, color: accent, background: `${accent}22`, border: `1px solid ${accent}55` }}>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "2px 10px 2px 4px", borderRadius: 20, color: accent, background: `${tint(accent, "22")}`, border: `1px solid ${tint(accent, "55")}` }}>
                 <AgentMark kind={kind} label={review.initials} px={13} />
                 {review.model ?? "human"}
               </span>
@@ -344,14 +372,22 @@ export function WorkspaceView() {
           <div style={{ display: "flex", alignItems: "center", gap: 9, flex: "none" }}>
             {canRunAgent && (
               <HoverButton
-                onClick={() => void startRun()}
+                onClick={requestRun}
                 style={{ display: "flex", alignItems: "center", gap: 7, padding: "9px 13px", background: alpha.teal(0.1), border: `1px solid ${alpha.teal(0.34)}`, borderRadius: 9, color: color.teal, fontFamily: font.sans, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
                 hoverStyle={{ background: alpha.teal(0.16) }}
               >
                 <PlayIcon size={13} color="currentColor" stroke={1.5} />
-                Run agent
+                Resolve
               </HoverButton>
             )}
+            <HoverButton
+              onClick={() => void refreshWorkspace()}
+              title="Refresh diff & comments"
+              style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "9px 11px", background: "transparent", border: `1px solid ${color.borderPopover}`, borderRadius: 9, color: color.textFaint, fontFamily: font.sans, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
+              hoverStyle={{ color: color.textSoft, borderColor: "#37404f" }}
+            >
+              <RefreshIcon size={14} color="currentColor" stroke={1.5} />
+            </HoverButton>
             <HoverButton
               onClick={() => requestDeletePull(review.id)}
               title="Delete pull request"
@@ -401,6 +437,29 @@ export function WorkspaceView() {
           <TabButton active={effTab === "history"} onClick={() => setWorkspaceTab("history")}>
             History <span style={badge}>{history.length}</span>
           </TabButton>
+          {effTab === "diff" && (
+            <HoverButton
+              onClick={toggleFilesRail}
+              title={filesRailOpen ? "Hide files changed" : "Show files changed"}
+              style={{
+                marginLeft: "auto",
+                alignSelf: "center",
+                width: 30,
+                height: 30,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                border: "none",
+                borderRadius: 8,
+                cursor: "pointer",
+                background: filesRailOpen ? "var(--lk-borderRail2)" : "transparent",
+                color: filesRailOpen ? color.textSoft : color.textFaint,
+              }}
+              hoverStyle={{ background: "var(--lk-borderRowFaint)" }}
+            >
+              <SidebarIcon size={16} stroke={1.4} />
+            </HoverButton>
+          )}
         </div>
       </div>
 

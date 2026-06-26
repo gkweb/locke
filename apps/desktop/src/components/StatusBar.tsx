@@ -48,10 +48,10 @@ function NavSeg({ active, title, onClick, children }: { active: boolean; title: 
         border: "none",
         borderRadius: 6,
         cursor: "pointer",
-        background: active ? "#181d27" : "transparent",
+        background: active ? "var(--lk-borderRow2)" : "transparent",
         color: active ? color.text : "#7b8494",
       }}
-      hoverStyle={active ? undefined : { background: "#14181f" }}
+      hoverStyle={active ? undefined : { background: "var(--lk-borderRowFaint)" }}
     >
       {children}
     </HoverButton>
@@ -200,7 +200,7 @@ export function StatusBar() {
             }}
             hoverStyle={{ background: color.popoverBg, color: color.textSoft }}
           >
-            <span style={{ width: 6, height: 6, borderRadius: "50%", background: lang ? "#6e7686" : "#454d5b" }} />
+            <span style={{ width: 6, height: 6, borderRadius: "50%", background: lang ? "var(--lk-textFainter)" : "var(--lk-lineNo)" }} />
             {lang ? lang.name : "Plain text"}
             <ChevronDownIcon
               size={9}
@@ -238,9 +238,9 @@ export function StatusBar() {
                         fontSize: 9.5,
                         fontWeight: 800,
                         letterSpacing: "-.3px",
-                        background: "#1c2330",
+                        background: "var(--lk-borderRail)",
                         color: color.textDim,
-                        border: "1px solid #28303d",
+                        border: "1px solid var(--lk-borderPopover)",
                       }}
                     >
                       {lang.abbr}
@@ -310,7 +310,7 @@ export function StatusBar() {
         <ShieldIcon size={11} color={color.green} stroke={1.3} />
         {pushed ? "pushed to origin" : "nothing pushed yet"}
       </span>
-      <span style={{ fontFamily: font.mono, color: "#454d5b" }}>Locke · local</span>
+      <span style={{ fontFamily: font.mono, color: "var(--lk-lineNo)" }}>Locke · local</span>
     </div>
   );
 }

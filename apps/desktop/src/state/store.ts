@@ -51,6 +51,7 @@ import {
   startRun as startRunApi,
   respondPermission,
   cancelRun as cancelRunApi,
+  watchLocke,
   readRuns,
   isTauri,
   type CheckSpec,
@@ -77,6 +78,7 @@ import {
 } from "../lib/mockFleet.js";
 import { buildAgentPrompt } from "../lib/agentPrompt.js";
 import { lockeLang } from "../lib/lockeLang.js";
+import { applyTheme, isThemeId, DEFAULT_THEME, type ThemeId } from "../theme/themes.js";
 import { readPulls, createPull, updatePull, deletePull } from "../api/pulls.js";
 import {
   loadComments,
@@ -178,12 +180,17 @@ interface LockeState {
   panelOpen: boolean;
   panelSide: "left" | "right";
   panelWidth: number;
+  /** "Files changed" rail (diff tab) visibility + width (clamped 240–560). */
+  filesRailOpen: boolean;
+  filesRailWidth: number;
   /** Action-bar approvals tray open. */
   approvalsOpen: boolean;
   /** Global search query (action bar + side panel). */
   query: string;
   /** "Agent control" (true) vs "Reviews only" (false). Persisted app-global. */
   agentMode: boolean;
+  /** Active UI theme. Persisted app-global (alongside agent prefs). */
+  theme: ThemeId;
   /** Where each nav destination is surfaced: top bar / bottom bar / hidden. */
   navPlace: Record<NavKey, NavPlacement>;
   selectedPR: string;
@@ -262,6 +269,8 @@ interface LockeState {
   cliError: string;
   /** The view to return to when leaving the Integrations page. */
   intReturn: View;
+  /** View to return to when leaving the full Settings screen. */
+  settingsReturn: View;
   /** Whether the app-global Settings modal is open. */
   settingsOpen: boolean;
   /** Whether the New-review modal (branch pickers) is open. */
@@ -294,6 +303,12 @@ interface LockeState {
   /** Whether a streaming run executes in an isolated worktree (true, committed
    *  onto the branch) or directly in the repo's working tree (false). */
   runUseWorktree: boolean;
+  /** Pre-run approval modal: open flag, the agent the user picked to do the work
+   *  (null = auto-derive), and whether the run uses Auto mode (Claude's own
+   *  permission classifier via `--permission-mode auto`). */
+  runApprovalOpen: boolean;
+  runSelectedAgentId: string | null;
+  runAutoMode: boolean;
 
   // ---- navigation ----
   go: (view: View) => void;
@@ -303,6 +318,8 @@ interface LockeState {
   togglePanel: () => void;
   flipPanel: () => void;
   setPanelWidth: (w: number) => void;
+  toggleFilesRail: () => void;
+  setFilesRailWidth: (w: number) => void;
   toggleApprovals: () => void;
   setQuery: (q: string) => void;
   /** Set where a nav destination is surfaced (top / bottom / off). */
@@ -347,6 +364,10 @@ interface LockeState {
   goIntegrations: () => void;
   /** Leave the Integrations page, back to where it was opened from. */
   backFromInt: () => void;
+  /** Open the full Settings screen (remembers the view to return to). */
+  goSettings: () => void;
+  /** Leave the Settings screen, back to where it was opened from. */
+  backFromSettings: () => void;
   /** Reload the MCP debug call log. */
   loadMcpLog: () => Promise<void>;
   /** Clear the MCP debug call log, then reload it. */
@@ -360,6 +381,8 @@ interface LockeState {
   toggleAgentEnabled: (id: string) => void;
   /** Set the global "Agent control" vs "Reviews only" mode and persist it. */
   setAgentMode: (on: boolean) => void;
+  /** Switch the active theme: apply it live and persist app-global. */
+  setTheme: (id: ThemeId) => void;
   setSettingsOpen: (open: boolean) => void;
   /** Toggle the action-bar settings popover (closes the approvals tray). */
   toggleSettings: () => void;
@@ -378,6 +401,13 @@ interface LockeState {
    *  Claude streams live with in-app permissions; other agents fall back to a
    *  one-shot headless run surfaced as a single event. */
   startRun: () => Promise<void>;
+  /** Open the pre-run approval modal (seeds the selected agent). The actual run
+   *  only starts once the user confirms via `confirmRun`. */
+  requestRun: () => void;
+  setRunSelectedAgent: (id: string) => void;
+  setRunAutoMode: (on: boolean) => void;
+  cancelRunApproval: () => void;
+  confirmRun: () => void;
   /** Cancel the open review's in-flight run. */
   cancelRun: () => Promise<void>;
   setRunUseWorktree: (on: boolean) => void;
@@ -388,6 +418,9 @@ interface LockeState {
   /** After a run ends, refresh the diff + History for the review without
    *  clearing the completed run's event stream. */
   reloadAfterRun: (reviewId: string) => Promise<void>;
+  /** Manually re-pull the open review's diff + comments (Refresh button + the
+   *  `.locke` file-watcher), picking up agent edits and MCP comment replies. */
+  refreshWorkspace: () => Promise<void>;
 
   // ---- run permission decisions ----
   /** Approve / deny a pending permission. Real round-trip in Tauri mode; the
@@ -453,9 +486,12 @@ export const useStore = create<LockeState>((set, get) => ({
   panelOpen: true,
   panelSide: "left",
   panelWidth: 300,
+  filesRailOpen: true,
+  filesRailWidth: 240,
   approvalsOpen: false,
   query: "",
   agentMode: true,
+  theme: DEFAULT_THEME,
   navPlace: { activity: "top", reviews: "top", runs: "bottom", files: "bottom", agents: "bottom" },
   selectedPR: "",
   selectedFile: 0,
@@ -513,6 +549,7 @@ export const useStore = create<LockeState>((set, get) => ({
   cliBusy: false,
   cliError: "",
   intReturn: "activity",
+  settingsReturn: "activity",
   settingsOpen: false,
   newReviewOpen: false,
   deletePullPending: "",
@@ -529,6 +566,9 @@ export const useStore = create<LockeState>((set, get) => ({
   currentRunId: null,
   runReviewMap: {},
   runUseWorktree: true,
+  runApprovalOpen: false,
+  runSelectedAgentId: null,
+  runAutoMode: false,
 
   detectAgents: async () => {
     if (MOCK) return; // keep the seeded mock fleet's agents
@@ -543,7 +583,9 @@ export const useStore = create<LockeState>((set, get) => ({
     if (MOCK) return; // keep the seeded mock opt-outs + default agent mode
     try {
       const s = await readAgentSettings();
-      set({ disabledAgents: s.disabled, agentMode: s.enabled });
+      const theme = isThemeId(s.theme) ? s.theme : DEFAULT_THEME;
+      set({ disabledAgents: s.disabled, agentMode: s.enabled, theme });
+      applyTheme(theme);
     } catch {
       // Missing/unreadable settings just means defaults (nothing disabled, agents on).
     }
@@ -600,6 +642,23 @@ export const useStore = create<LockeState>((set, get) => ({
       get().openReview(selectedPR, get().workspaceTab);
     } else {
       get().go(intReturn === "workspace" ? "activity" : intReturn);
+    }
+  },
+
+  goSettings: () =>
+    set((s) => ({
+      settingsReturn: s.view === "settings" ? s.settingsReturn : s.view,
+      view: "settings",
+      settingsOpen: false,
+      approvalsOpen: false,
+    })),
+
+  backFromSettings: () => {
+    const { settingsReturn, selectedPR } = get();
+    if (settingsReturn === "workspace" && selectedPR) {
+      get().openReview(selectedPR, get().workspaceTab);
+    } else {
+      get().go(settingsReturn === "workspace" ? "activity" : settingsReturn);
     }
   },
 
@@ -664,7 +723,7 @@ export const useStore = create<LockeState>((set, get) => ({
       ? disabledAgents.filter((d) => d !== id)
       : [...disabledAgents, id];
     set({ disabledAgents: next });
-    void writeAgentSettings({ disabled: next, enabled: agentMode });
+    void writeAgentSettings({ disabled: next, enabled: agentMode, theme: get().theme });
   },
 
   setAgentMode: (on) => {
@@ -676,7 +735,14 @@ export const useStore = create<LockeState>((set, get) => ({
       approvalsOpen: on ? approvalsOpen : false,
       view: !on && view === "agents" ? "activity" : view,
     });
-    void writeAgentSettings({ disabled: disabledAgents, enabled: on });
+    void writeAgentSettings({ disabled: disabledAgents, enabled: on, theme: get().theme });
+  },
+
+  setTheme: (id) => {
+    const { disabledAgents, agentMode } = get();
+    set({ theme: id });
+    applyTheme(id);
+    void writeAgentSettings({ disabled: disabledAgents, enabled: agentMode, theme: id });
   },
 
   setSettingsOpen: (open) => set({ settingsOpen: open }),
@@ -711,10 +777,30 @@ export const useStore = create<LockeState>((set, get) => ({
 
   setRunUseWorktree: (on) => set({ runUseWorktree: on }),
 
+  requestRun: () => {
+    // Seed the picker with the agent that would run by default (first detected,
+    // enabled CLI) so the modal can show — and let the user change — who acts.
+    const { agents, disabledAgents, runSelectedAgentId } = get();
+    const derived = agents.find((a) => a.detected && !disabledAgents.includes(a.id));
+    const stillValid =
+      runSelectedAgentId && agents.some((a) => a.id === runSelectedAgentId && a.detected && !disabledAgents.includes(a.id));
+    set({ runApprovalOpen: true, runSelectedAgentId: stillValid ? runSelectedAgentId : derived?.id ?? null });
+  },
+  setRunSelectedAgent: (id) => set({ runSelectedAgentId: id }),
+  setRunAutoMode: (on) => set({ runAutoMode: on }),
+  cancelRunApproval: () => set({ runApprovalOpen: false }),
+  confirmRun: () => {
+    set({ runApprovalOpen: false });
+    void get().startRun();
+  },
+
   startRun: async () => {
-    const { repoPath, selectedPR, reviews, files, threads, agents, disabledAgents, runUseWorktree } = get();
+    const { repoPath, selectedPR, reviews, files, threads, agents, disabledAgents, runUseWorktree, runSelectedAgentId, runAutoMode } = get();
     const review = reviews.find((r) => r.id === selectedPR);
-    const agent = agents.find((a) => a.detected && !disabledAgents.includes(a.id));
+    // Honor the user's pick from the approval modal; fall back to the first
+    // detected, enabled agent if the selection is stale or unset.
+    const enabled = (a: AgentInfo) => a.detected && !disabledAgents.includes(a.id);
+    const agent = agents.find((a) => a.id === runSelectedAgentId && enabled(a)) ?? agents.find(enabled);
     // Always switch to the Run tab so the user sees what happens.
     set({ workspaceTab: "run" });
     if (!repoPath || !review || !agent) {
@@ -740,7 +826,10 @@ export const useStore = create<LockeState>((set, get) => ({
     try {
       if (agent.id === "claude") {
         // Live streaming with in-app permissions; events arrive via listeners.
-        await startRunApi(runId, repoPath, review.branch, agent.cmd, prompt, runUseWorktree);
+        // Auto mode hands permission decisions to Claude's own classifier
+        // (`--permission-mode auto`); off keeps the in-app Allow/Deny prompts.
+        const permissionMode = runAutoMode ? "auto" : "default";
+        await startRunApi(runId, repoPath, review.branch, agent.cmd, prompt, runUseWorktree, permissionMode);
       } else {
         // Fallback: one-shot headless run, surfaced as a single event pair.
         get().onRunEvent({ runId, key: "h0", kind: "msg", text: `Running ${agent.name} headlessly (no live stream)…`, time: "0:00" });
@@ -818,26 +907,40 @@ export const useStore = create<LockeState>((set, get) => ({
   },
 
   reloadAfterRun: async (reviewId) => {
-    const { repoPath, reviews } = get();
+    const { repoPath, reviews, selectedFile } = get();
     if (!repoPath || MOCK) return;
     const review = reviews.find((r) => r.id === reviewId);
     if (!review) return;
     try {
-      const [detail, runs] = await Promise.all([
+      // Also reload comments so agent replies written via the MCP server
+      // (reply_to_comment → .locke/comments) show up, not just the diff.
+      const [detail, saved, runs] = await Promise.all([
         getReview(repoPath, review.branch, review.base),
+        loadComments(repoPath, Number(reviewId)),
         readRuns(repoPath),
       ]);
       const files = detail.fileSummary.map(toChangedFile);
+      // Keep the user on the same file across a refresh when it still exists;
+      // rebuilt files carry empty hunks, so loadDiff re-fetches the live diff.
+      const keep = files[selectedFile] ? selectedFile : 0;
       set({
         detail: { ...EMPTY_DETAIL, commits: detail.commits },
         files,
-        selectedFile: 0,
+        selectedFile: keep,
+        threads: saved?.threads ?? get().threads,
+        viewed: saved?.viewed ?? get().viewed,
+        nextThreadId: saved?.nextThreadId ?? get().nextThreadId,
         history: runs.filter((r) => r.branch === review.branch).map(runToHistory),
       });
-      if (files.length) await get().loadDiff(0);
+      if (files.length) await get().loadDiff(keep);
     } catch (e) {
       set({ error: String(e) });
     }
+  },
+
+  refreshWorkspace: async () => {
+    const { selectedPR } = get();
+    if (selectedPR) await get().reloadAfterRun(selectedPR);
   },
 
   // Real mode: answer the live permission prompt via the stream-json control
@@ -977,6 +1080,8 @@ export const useStore = create<LockeState>((set, get) => ({
   togglePanel: () => set({ panelOpen: !get().panelOpen }),
   flipPanel: () => set({ panelSide: get().panelSide === "left" ? "right" : "left" }),
   setPanelWidth: (w) => set({ panelWidth: Math.max(240, Math.min(560, Math.round(w))) }),
+  toggleFilesRail: () => set({ filesRailOpen: !get().filesRailOpen }),
+  setFilesRailWidth: (w) => set({ filesRailWidth: Math.max(240, Math.min(560, Math.round(w))) }),
   toggleApprovals: () => set({ approvalsOpen: !get().approvalsOpen, settingsOpen: false }),
   setQuery: (q) => set({ query: q }),
   setNavPlace: (key, place) => set((s) => ({ navPlace: { ...s.navPlace, [key]: place } })),
@@ -1115,6 +1220,9 @@ export const useStore = create<LockeState>((set, get) => ({
       });
       // Populate the Files explorer for the opened repo (best-effort).
       void get().loadFileTree();
+      // Watch this repo's .locke/ so out-of-process MCP edits (agent comment
+      // replies, run records) refresh the open review without a manual reload.
+      void watchLocke(path);
     } catch (e) {
       set({ loading: false, error: String(e) });
     }

@@ -19,9 +19,11 @@ import { AgentsView } from "./views/AgentsView.js";
 import { FilesView } from "./views/FilesView.js";
 import { ExtensionsView } from "./views/ExtensionsView.js";
 import { IntegrationsView } from "./views/IntegrationsView.js";
+import { SettingsView } from "./views/SettingsView.js";
 import { WorkspaceView } from "./views/WorkspaceView.js";
 import { NewReviewModal } from "./components/NewReviewModal.js";
 import { DeletePullModal } from "./components/DeletePullModal.js";
+import { RunApprovalModal } from "./components/RunApprovalModal.js";
 import { OpenRepoEmpty } from "./components/OpenRepoEmpty.js";
 
 // The Mission Control shell: three stacked regions — top ActionBar · middle
@@ -53,6 +55,8 @@ function Main() {
       return <ExtensionsView />;
     case "integrations":
       return <IntegrationsView />;
+    case "settings":
+      return <SettingsView />;
     case "workspace":
       return <WorkspaceView />;
   }
@@ -64,6 +68,7 @@ export function App() {
   const view = useStore((s) => s.view);
   const newReviewOpen = useStore((s) => s.newReviewOpen);
   const deletePullPending = useStore((s) => s.deletePullPending);
+  const runApprovalOpen = useStore((s) => s.runApprovalOpen);
   const detectAgents = useStore((s) => s.detectAgents);
   const loadAgentSettings = useStore((s) => s.loadAgentSettings);
   const loadMcpStatus = useStore((s) => s.loadMcpStatus);
@@ -88,6 +93,8 @@ export function App() {
   useEffect(() => {
     if (!isTauri) return;
     const s = useStore.getState();
+    // Coalesce bursts of `.locke` change events into a single refresh.
+    let fsTimer: ReturnType<typeof setTimeout> | undefined;
     const unlisten = Promise.all([
       listen<RunEventPayload>("run:event", (e) => s.onRunEvent(e.payload)),
       listen<RunPermissionPayload>("run:permission", (e) => s.onRunPermission(e.payload)),
@@ -95,8 +102,20 @@ export function App() {
       // A second `locke <path>` launch is forwarded here by the single-instance
       // plugin — switch the open window to that repo.
       listen<string>("cli:open-repo", (e) => void useStore.getState().openRepo(e.payload)),
+      // The repo's `.locke/` changed out of process (MCP edits, agent comment
+      // replies). Debounce, then refresh the open review — but not mid-run, where
+      // the run:done handler already reloads and live churn would just thrash.
+      listen("locke:fs-change", () => {
+        if (fsTimer) clearTimeout(fsTimer);
+        fsTimer = setTimeout(() => {
+          const st = useStore.getState();
+          if (st.currentRunId) return;
+          if (st.view === "workspace" && st.selectedPR) void st.refreshWorkspace();
+        }, 400);
+      }),
     ]);
     return () => {
+      if (fsTimer) clearTimeout(fsTimer);
       void unlisten.then((fns) => fns.forEach((fn) => fn()));
     };
   }, []);
@@ -133,6 +152,7 @@ export function App() {
       <StatusBar />
       {newReviewOpen && <NewReviewModal />}
       {deletePullPending && <DeletePullModal />}
+      {runApprovalOpen && <RunApprovalModal />}
     </div>
   );
 }
