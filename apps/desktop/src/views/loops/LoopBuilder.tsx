@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useStore } from "../../state/store.js";
 import { color, font, alpha, tint } from "../../theme/tokens.js";
 import { riskColor } from "../../lib/loops.js";
@@ -30,6 +30,29 @@ const bareInput: React.CSSProperties = {
   padding: 0,
   fontFamily: font.sans,
 };
+
+// Suggest a git-legal seed branch from the loop title (until the user edits the
+// branch). The runner creates this branch fresh off base, so a new name is the
+// happy path.
+function slugBranch(title: string): string {
+  const slug = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40)
+    .replace(/-+$/g, "");
+  return slug ? `loops/${slug}` : "";
+}
+
+// A pragmatic subset of git's ref rules — enough to catch the names that would
+// make `git worktree add -b` fail.
+const isValidBranch = (b: string): boolean =>
+  b !== "" &&
+  !/[\s~^:?*[\]\\]/.test(b) &&
+  !b.includes("..") &&
+  !b.startsWith("/") &&
+  !b.endsWith("/") &&
+  !b.endsWith(".");
 
 function ModeButton({
   active,
@@ -135,6 +158,9 @@ export function LoopBuilder() {
   const loadLoopTargets = useStore((s) => s.loadLoopTargets);
   const loadRepoBranches = useStore((s) => s.loadRepoBranches);
 
+  // Until the user edits the seed branch, keep suggesting one from the title.
+  const [branchTouched, setBranchTouched] = useState(false);
+
   // Load the open repo's branches once for the base picker.
   useEffect(() => {
     void loadRepoBranches();
@@ -147,8 +173,12 @@ export function LoopBuilder() {
     return () => clearTimeout(id);
   }, [draftPattern, loadLoopTargets]);
 
+  const branch = draftBranch.trim();
+  const branchValid = isValidBranch(branch);
+  const branchExists = branchValid && repoBranches.includes(branch);
+
   const canStart =
-    draftTitle.trim() !== "" && draftBranch.trim() !== "" && draftPrompt.trim() !== "" && draftPattern.trim() !== "";
+    draftTitle.trim() !== "" && branchValid && draftPrompt.trim() !== "" && draftPattern.trim() !== "";
 
   const targets = loopTargets.map((t) => ({
     ...t,
@@ -187,7 +217,11 @@ export function LoopBuilder() {
         </HoverButton>
         <input
           value={draftTitle}
-          onChange={(e) => setDraftTitle(e.target.value)}
+          onChange={(e) => {
+            setDraftTitle(e.target.value);
+            // Keep the seed branch in step with the title until the user edits it.
+            if (!branchTouched) setDraftBranch(slugBranch(e.target.value));
+          }}
           placeholder="Name this loop"
           style={{
             ...bareInput,
@@ -219,7 +253,10 @@ export function LoopBuilder() {
             <BranchIcon size={13} color="#7b8494" stroke={1.4} />
             <input
               value={draftBranch}
-              onChange={(e) => setDraftBranch(e.target.value)}
+              onChange={(e) => {
+                setBranchTouched(true);
+                setDraftBranch(e.target.value);
+              }}
               placeholder="loops/your-branch"
               style={{ ...bareInput, fontFamily: font.mono, fontSize: 12.5, color: color.greenText }}
             />
@@ -260,8 +297,24 @@ export function LoopBuilder() {
             </span>
           </span>
         </div>
-        <p style={{ margin: "0 0 22px", fontSize: 11.5, color: color.textGhost }}>
+        <p style={{ margin: "0 0 6px", fontSize: 11.5, color: color.textGhost }}>
           Each item runs on its own worktree cut from this branch, then commits back to it.
+        </p>
+        <p style={{ margin: "0 0 22px", fontSize: 11.5, minHeight: 16 }}>
+          {branch === "" ? (
+            <span style={{ color: color.textGhost }} />
+          ) : !branchValid ? (
+            <span style={{ color: color.red }}>Not a valid branch name.</span>
+          ) : branchExists ? (
+            <span style={{ color: color.amber }}>
+              <span style={{ fontFamily: font.mono }}>{branch}</span> already exists — the loop would reuse it
+              (and fails if it's currently checked out). Use a new name for a clean run.
+            </span>
+          ) : (
+            <span style={{ color: color.green }}>
+              New branch — created from <span style={{ fontFamily: font.mono }}>{draftBase}</span>.
+            </span>
+          )}
         </p>
 
         {/* task prompt */}

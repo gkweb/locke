@@ -706,7 +706,7 @@ export const useStore = create<LockeState>((set, get) => ({
   draftPattern: MOCK ? MOCK_LOOP_DRAFT.pattern : "",
   draftPrompt: MOCK ? MOCK_LOOP_DRAFT.prompt : "",
   draftMode: "plan",
-  repoBranches: MOCK ? ["main", "develop", "chore/vue3-migration"] : [],
+  repoBranches: MOCK ? ["main", "develop", "release/2.4"] : [],
 
   selectedPR: "",
   selectedFile: 0,
