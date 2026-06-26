@@ -276,7 +276,8 @@ export const startRun = (
   agentCmd: string,
   prompt: string,
   useWorktree: boolean,
-) => invoke<void>("start_run", { runId, repo, branch, agentCmd, prompt, useWorktree });
+  permissionMode: string,
+) => invoke<void>("start_run", { runId, repo, branch, agentCmd, prompt, useWorktree, permissionMode });
 
 /** Answer a pending tool-permission prompt (Allow/Deny) for a live run. */
 export const respondPermission = (

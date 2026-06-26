@@ -297,6 +297,12 @@ interface LockeState {
   /** Whether a streaming run executes in an isolated worktree (true, committed
    *  onto the branch) or directly in the repo's working tree (false). */
   runUseWorktree: boolean;
+  /** Pre-run approval modal: open flag, the agent the user picked to do the work
+   *  (null = auto-derive), and whether the run uses Auto mode (Claude's own
+   *  permission classifier via `--permission-mode auto`). */
+  runApprovalOpen: boolean;
+  runSelectedAgentId: string | null;
+  runAutoMode: boolean;
 
   // ---- navigation ----
   go: (view: View) => void;
@@ -383,6 +389,13 @@ interface LockeState {
    *  Claude streams live with in-app permissions; other agents fall back to a
    *  one-shot headless run surfaced as a single event. */
   startRun: () => Promise<void>;
+  /** Open the pre-run approval modal (seeds the selected agent). The actual run
+   *  only starts once the user confirms via `confirmRun`. */
+  requestRun: () => void;
+  setRunSelectedAgent: (id: string) => void;
+  setRunAutoMode: (on: boolean) => void;
+  cancelRunApproval: () => void;
+  confirmRun: () => void;
   /** Cancel the open review's in-flight run. */
   cancelRun: () => Promise<void>;
   setRunUseWorktree: (on: boolean) => void;
@@ -536,6 +549,9 @@ export const useStore = create<LockeState>((set, get) => ({
   currentRunId: null,
   runReviewMap: {},
   runUseWorktree: true,
+  runApprovalOpen: false,
+  runSelectedAgentId: null,
+  runAutoMode: false,
 
   detectAgents: async () => {
     if (MOCK) return; // keep the seeded mock fleet's agents
@@ -718,10 +734,30 @@ export const useStore = create<LockeState>((set, get) => ({
 
   setRunUseWorktree: (on) => set({ runUseWorktree: on }),
 
+  requestRun: () => {
+    // Seed the picker with the agent that would run by default (first detected,
+    // enabled CLI) so the modal can show — and let the user change — who acts.
+    const { agents, disabledAgents, runSelectedAgentId } = get();
+    const derived = agents.find((a) => a.detected && !disabledAgents.includes(a.id));
+    const stillValid =
+      runSelectedAgentId && agents.some((a) => a.id === runSelectedAgentId && a.detected && !disabledAgents.includes(a.id));
+    set({ runApprovalOpen: true, runSelectedAgentId: stillValid ? runSelectedAgentId : derived?.id ?? null });
+  },
+  setRunSelectedAgent: (id) => set({ runSelectedAgentId: id }),
+  setRunAutoMode: (on) => set({ runAutoMode: on }),
+  cancelRunApproval: () => set({ runApprovalOpen: false }),
+  confirmRun: () => {
+    set({ runApprovalOpen: false });
+    void get().startRun();
+  },
+
   startRun: async () => {
-    const { repoPath, selectedPR, reviews, files, threads, agents, disabledAgents, runUseWorktree } = get();
+    const { repoPath, selectedPR, reviews, files, threads, agents, disabledAgents, runUseWorktree, runSelectedAgentId, runAutoMode } = get();
     const review = reviews.find((r) => r.id === selectedPR);
-    const agent = agents.find((a) => a.detected && !disabledAgents.includes(a.id));
+    // Honor the user's pick from the approval modal; fall back to the first
+    // detected, enabled agent if the selection is stale or unset.
+    const enabled = (a: AgentInfo) => a.detected && !disabledAgents.includes(a.id);
+    const agent = agents.find((a) => a.id === runSelectedAgentId && enabled(a)) ?? agents.find(enabled);
     // Always switch to the Run tab so the user sees what happens.
     set({ workspaceTab: "run" });
     if (!repoPath || !review || !agent) {
@@ -747,7 +783,10 @@ export const useStore = create<LockeState>((set, get) => ({
     try {
       if (agent.id === "claude") {
         // Live streaming with in-app permissions; events arrive via listeners.
-        await startRunApi(runId, repoPath, review.branch, agent.cmd, prompt, runUseWorktree);
+        // Auto mode hands permission decisions to Claude's own classifier
+        // (`--permission-mode auto`); off keeps the in-app Allow/Deny prompts.
+        const permissionMode = runAutoMode ? "auto" : "default";
+        await startRunApi(runId, repoPath, review.branch, agent.cmd, prompt, runUseWorktree, permissionMode);
       } else {
         // Fallback: one-shot headless run, surfaced as a single event pair.
         get().onRunEvent({ runId, key: "h0", kind: "msg", text: `Running ${agent.name} headlessly (no live stream)…`, time: "0:00" });

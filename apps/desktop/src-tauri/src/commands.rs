@@ -156,8 +156,9 @@ pub fn start_run(
     agent_cmd: String,
     prompt: String,
     use_worktree: bool,
+    permission_mode: String,
 ) -> Result<(), String> {
-    run::start_run(app.clone(), &registry, run_id, repo, branch, agent_cmd, prompt, use_worktree)
+    run::start_run(app.clone(), &registry, run_id, repo, branch, agent_cmd, prompt, use_worktree, permission_mode)
 }
 
 #[tauri::command]
