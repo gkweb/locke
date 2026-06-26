@@ -187,6 +187,58 @@ fn tools_list() -> Value {
                 "type": "object",
                 "properties": { "pull_id": { "type": "integer", "description": "Optional pull id to scope history to its branch." } }
             }
+        },
+        {
+            "name": "loop_item_complete",
+            "description": "Declare THIS loop item done. Call this only once the change is finished and its tests pass. Locke gates committing the item on this call plus its checks passing; without it the item is routed to human review. Persists a structured result record carried to the next step.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "loop_id": { "type": "string", "description": "The loop id (given in your task prompt)." },
+                    "file": { "type": "string", "description": "The repo-relative file this item is migrating (given in your task prompt)." },
+                    "summary": { "type": "string", "description": "One-line summary of what you changed." },
+                    "artifacts": { "type": "array", "items": { "type": "string" }, "description": "Optional files/tests touched." }
+                },
+                "required": ["loop_id", "file", "summary"]
+            }
+        },
+        {
+            "name": "loop_item_needs_review",
+            "description": "Flag THIS loop item for human review instead of completing it. Use when you are uncertain, a decision needs the human, or the change can't be made safely. The item will NOT be committed; your reason is shown to the reviewer.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "loop_id": { "type": "string", "description": "The loop id (given in your task prompt)." },
+                    "file": { "type": "string", "description": "The repo-relative file this item is migrating." },
+                    "reason": { "type": "string", "description": "Why this needs a human's call." }
+                },
+                "required": ["loop_id", "file", "reason"]
+            }
+        },
+        {
+            "name": "loop_write_note",
+            "description": "Persist a durable note/decision on THIS loop item that carries forward to a re-queue or the next loop (e.g. an assumption you made or a follow-up).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "loop_id": { "type": "string", "description": "The loop id." },
+                    "file": { "type": "string", "description": "The repo-relative file." },
+                    "note": { "type": "string", "description": "The note to persist." }
+                },
+                "required": ["loop_id", "file", "note"]
+            }
+        },
+        {
+            "name": "loop_read_spec",
+            "description": "Read the pre-written spec for THIS loop item (objective, planned steps, tests), if the loop creator produced one. Returns the spec markdown or a note that none exists.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "loop_id": { "type": "string", "description": "The loop id." },
+                    "file": { "type": "string", "description": "The repo-relative file." }
+                },
+                "required": ["loop_id", "file"]
+            }
         }
     ]})
 }
@@ -209,6 +261,10 @@ fn handle_tools_call(msg: &Value, id: Option<Value>, repo: Option<&str>, agent: 
         "list_comments" => tool_list_comments(repo, &args),
         "reply_to_comment" => tool_reply_to_comment(repo, agent, &args),
         "get_history" => tool_get_history(repo, &args),
+        "loop_item_complete" => tool_loop_item_complete(repo, &args),
+        "loop_item_needs_review" => tool_loop_item_needs_review(repo, &args),
+        "loop_write_note" => tool_loop_write_note(repo, &args),
+        "loop_read_spec" => tool_loop_read_spec(repo, &args),
         other => Err(format!("unknown tool: {other}")),
     };
 
@@ -346,6 +402,52 @@ fn tool_get_history(repo: &str, args: &Value) -> Result<Value, String> {
         None => runs,
     };
     Ok(Value::Array(scoped))
+}
+
+// ---- loop item tools (backed by the .locke/loops/<id>/ tree) ----
+
+fn tool_loop_item_complete(repo: &str, args: &Value) -> Result<Value, String> {
+    let loop_id = arg_str(args, "loop_id")?;
+    let file = arg_str(args, "file")?;
+    let summary = arg_str(args, "summary")?;
+    let artifacts = args.get("artifacts").cloned().unwrap_or_else(|| json!([]));
+    locke_store::merge_loop_item(
+        repo,
+        loop_id,
+        file,
+        json!({ "declared": "complete", "summary": summary, "artifacts": artifacts }),
+    )?;
+    Ok(json!({ "ok": true, "declared": "complete", "loopId": loop_id, "file": file }))
+}
+
+fn tool_loop_item_needs_review(repo: &str, args: &Value) -> Result<Value, String> {
+    let loop_id = arg_str(args, "loop_id")?;
+    let file = arg_str(args, "file")?;
+    let reason = arg_str(args, "reason")?;
+    locke_store::merge_loop_item(
+        repo,
+        loop_id,
+        file,
+        json!({ "declared": "needs_review", "reason": reason }),
+    )?;
+    Ok(json!({ "ok": true, "declared": "needs_review", "loopId": loop_id, "file": file }))
+}
+
+fn tool_loop_write_note(repo: &str, args: &Value) -> Result<Value, String> {
+    let loop_id = arg_str(args, "loop_id")?;
+    let file = arg_str(args, "file")?;
+    let note = arg_str(args, "note")?;
+    locke_store::append_loop_note(repo, loop_id, file, note)?;
+    Ok(json!({ "ok": true, "loopId": loop_id, "file": file }))
+}
+
+fn tool_loop_read_spec(repo: &str, args: &Value) -> Result<Value, String> {
+    let loop_id = arg_str(args, "loop_id")?;
+    let file = arg_str(args, "file")?;
+    match locke_store::read_loop_spec(repo, loop_id, file)? {
+        Some(spec) => Ok(json!({ "file": file, "spec": spec })),
+        None => Ok(json!({ "file": file, "spec": null, "note": "No spec was written for this item; use the task prompt." })),
+    }
 }
 
 /// Up-to-two-letter uppercase initials for the comment badge, mirroring the UI's

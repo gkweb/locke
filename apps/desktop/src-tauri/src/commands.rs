@@ -5,6 +5,7 @@ use crate::actions;
 use crate::cli;
 use crate::config;
 use crate::git;
+use crate::loops;
 use crate::mcp;
 use crate::run;
 use crate::store;
@@ -202,6 +203,61 @@ pub fn watch_locke(
 #[tauri::command]
 pub fn read_runs(repo: String) -> Result<Vec<Value>, String> {
     store::read_runs(&repo)
+}
+
+// ---- loops (the fan-out runner; .locke/loops/<id>/) ----
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn start_loop(
+    app: tauri::AppHandle,
+    registry: tauri::State<loops::LoopRegistry>,
+    loop_id: String,
+    repo: String,
+    branch: String,
+    base: String,
+    pattern: String,
+    template: String,
+    targets: Vec<String>,
+    concurrency: u64,
+    checks: Vec<actions::CheckSpec>,
+) -> Result<(), String> {
+    loops::start_loop(app.clone(), &registry, loop_id, repo, branch, base, pattern, template, targets, concurrency, checks)
+}
+
+#[tauri::command]
+pub fn pause_loop(
+    registry: tauri::State<loops::LoopRegistry>,
+    loop_id: String,
+    paused: bool,
+) -> Result<(), String> {
+    loops::pause_loop(&registry, &loop_id, paused)
+}
+
+#[tauri::command]
+pub fn stop_loop(registry: tauri::State<loops::LoopRegistry>, loop_id: String) -> Result<(), String> {
+    loops::stop_loop(&registry, &loop_id)
+}
+
+#[tauri::command]
+pub fn resolve_loop_item(
+    repo: String,
+    loop_id: String,
+    file: String,
+    decision: String,
+    feedback: String,
+) -> Result<Value, String> {
+    loops::resolve_loop_item(&repo, &loop_id, &file, &decision, &feedback)
+}
+
+#[tauri::command]
+pub fn read_loops(repo: String) -> Result<Vec<store::Loop>, String> {
+    store::read_loops(&repo)
+}
+
+#[tauri::command]
+pub fn read_loop_items(repo: String, loop_id: String) -> Result<Vec<Value>, String> {
+    store::read_loop_items(&repo, &loop_id)
 }
 
 // ---- per-PR comments (.locke/comments/<id>.json) ----

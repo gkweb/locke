@@ -5,12 +5,18 @@ import type {
   DiffMode,
   FileNode,
   HistoryEntry,
+  Loop,
+  LoopItem,
+  LoopMode,
+  LoopStreamEvent,
+  LoopView,
   NavKey,
   NavPlacement,
   Review,
   ReviewDetail,
   RunEvent,
   RunRow,
+  SpecStatus,
   Thread,
   Verdict,
   View,
@@ -54,6 +60,17 @@ import {
   setPermissionMode,
   watchLocke,
   readRuns,
+  startLoop as startLoopApi,
+  pauseLoop as pauseLoopApi,
+  stopLoop as stopLoopApi,
+  resolveLoopItem as resolveLoopItemApi,
+  readLoops as readLoopsApi,
+  readLoopItems as readLoopItemsApi,
+  type LoopItemEvent,
+  type LoopProgress,
+  type LoopEventPayload,
+  type LoopDonePayload,
+  type LoopItemRecord,
   isTauri,
   type CheckSpec,
   type LockeConfig,
@@ -76,6 +93,8 @@ import {
   MOCK_RUN_EVENTS_BY_ID,
   MOCK_FILE_TREE,
   MOCK_FILE_CONTENTS,
+  MOCK_LOOPS,
+  MOCK_LOOP_DRAFT,
 } from "../lib/mockFleet.js";
 import { buildAgentPrompt } from "../lib/agentPrompt.js";
 import { lockeLang } from "../lib/lockeLang.js";
@@ -226,6 +245,46 @@ interface LockeState {
   theme: ThemeId;
   /** Where each nav destination is surfaced: top bar / bottom bar / hidden. */
   navPlace: Record<NavKey, NavPlacement>;
+
+  // ---- loops (v2.0.0; front-end + mock — a real loop-runner is a later phase) ----
+  /** All loops in the repo (mock-seeded; empty until a real runner exists). */
+  loops: Loop[];
+  /** Which Loops sub-screen is showing (the Loops view's internal router). */
+  loopView: LoopView;
+  /** The loop the builder/plan/monitor/review act on. */
+  selectedLoop: string | null;
+  /** Monitor layout: kanban board / live stream / tile grid. */
+  monitorLayout: "board" | "stream" | "grid";
+  /** Plan-mode tab: scope interview vs per-item specs. */
+  planTab: "scope" | "specs";
+  /** Selected per-item spec in the plan Item-specs tab. */
+  selectedSpec: string;
+  /** The item open in the loop-item review, or null. */
+  loopReviewItem: string | null;
+  /** Whether the monitored loop is paused. */
+  loopPaused: boolean;
+  /** Builder per-target include override (path → included), layered over `LoopTarget.inc`. */
+  targetSel: Record<string, boolean>;
+  /** Plan-spec overrides: per-spec approach id, per-step on/off, status. */
+  specApproach: Record<string, string>;
+  specSteps: Record<string, Record<string, boolean>>;
+  specStatus: Record<string, SpecStatus>;
+  /** Feedback the user added in the item review this session (re-queue composer). */
+  loopFeedback: string[];
+  /** Live per-item state, keyed by loopId (driven by `loop:item` events / reads). */
+  loopItems: Record<string, LoopItem[]>;
+  /** Live stream log, keyed by loopId (newest first; driven by `loop:event`). */
+  loopStream: Record<string, LoopStreamEvent[]>;
+  /** Raw per-item records (incl. captured review diffs), keyed by loopId. */
+  loopItemRecords: Record<string, LoopItemRecord[]>;
+  /** New-loop draft (seeded; mode + target selection are the interactive parts). */
+  draftTitle: string;
+  draftBranch: string;
+  draftBase: string;
+  draftPattern: string;
+  draftPrompt: string;
+  draftMode: LoopMode;
+
   selectedPR: string;
   selectedFile: number;
   diffMode: DiffMode;
@@ -356,6 +415,48 @@ interface LockeState {
   setQuery: (q: string) => void;
   /** Set where a nav destination is surfaced (top / bottom / off). */
   setNavPlace: (key: NavKey, place: NavPlacement) => void;
+
+  // ---- loops (v2.0.0) ----
+  /** Open a loop, routing to builder/plan/monitor by its state. */
+  openLoop: (id: string) => void;
+  /** Start a new loop in the builder. */
+  newLoop: () => void;
+  /** Return to the loops list. */
+  loopToList: () => void;
+  setLoopView: (v: LoopView) => void;
+  setMonitorLayout: (l: "board" | "stream" | "grid") => void;
+  setPlanTab: (t: "scope" | "specs") => void;
+  selectSpec: (id: string) => void;
+  setDraftMode: (m: LoopMode) => void;
+  /** Builder: include/exclude a matched target. */
+  toggleTarget: (path: string, on: boolean) => void;
+  /** Builder Start: Build → monitor, Plan → scope interview. */
+  startLoop: () => void;
+  /** Plan: approve and begin building (→ monitor). */
+  approveLoopPlan: () => void;
+  /** Stop/cancel the loop (→ list). */
+  stopLoop: () => void;
+  /** Pause/resume the monitored loop. */
+  togglePause: () => void;
+  /** Open one item's review. */
+  openLoopReview: (itemId: string) => void;
+  /** Back from the item review to the monitor. */
+  loopReviewBack: () => void;
+  /** Resolve the item review (approve or re-queue) → back to the monitor. */
+  resolveLoopReview: (decision: "approve" | "request") => void;
+  setSpecApproach: (id: string, approach: string) => void;
+  toggleSpecStep: (id: string, k: string) => void;
+  acceptSpec: (id: string) => void;
+  excludeSpec: (id: string) => void;
+  /** Load real loops from the backend (Tauri mode; no-op in mock). */
+  loadLoops: () => Promise<void>;
+  /** Load a loop's per-item records from the backend into `loopItems`. */
+  loadLoopItems: (loopId: string) => Promise<void>;
+  /** Backend `loop:*` stream handlers (routed from App.tsx listeners). */
+  onLoopItem: (e: LoopItemEvent) => void;
+  onLoopProgress: (e: LoopProgress) => void;
+  onLoopEvent: (e: LoopEventPayload) => void;
+  onLoopDone: (e: LoopDonePayload) => void;
 
   // ---- files explorer + extensions navigation ----
   /** Open the Files screen on a full file, optionally from a review's diff. */
@@ -532,7 +633,31 @@ export const useStore = create<LockeState>((set, get) => ({
   query: "",
   agentMode: true,
   theme: DEFAULT_THEME,
-  navPlace: { activity: "top", reviews: "top", runs: "bottom", files: "bottom", agents: "bottom" },
+  navPlace: { activity: "top", loops: "top", reviews: "top", runs: "bottom", files: "bottom", agents: "bottom" },
+
+  loops: MOCK ? MOCK_LOOPS : [],
+  loopView: "list",
+  selectedLoop: MOCK ? "vue3" : null,
+  monitorLayout: "board",
+  planTab: "scope",
+  selectedSpec: "s1",
+  loopReviewItem: null,
+  loopPaused: false,
+  targetSel: {},
+  specApproach: {},
+  specSteps: {},
+  specStatus: {},
+  loopFeedback: [],
+  loopItems: {},
+  loopStream: {},
+  loopItemRecords: {},
+  draftTitle: MOCK_LOOP_DRAFT.title,
+  draftBranch: MOCK_LOOP_DRAFT.branch,
+  draftBase: MOCK_LOOP_DRAFT.base,
+  draftPattern: MOCK_LOOP_DRAFT.pattern,
+  draftPrompt: MOCK_LOOP_DRAFT.prompt,
+  draftMode: "plan",
+
   selectedPR: "",
   selectedFile: 0,
   diffMode: "unified",
@@ -1122,8 +1247,20 @@ export const useStore = create<LockeState>((set, get) => ({
     set((s) => ({ runs: mergeRun(s.runs, reviewId, { planReview: null }) }));
   },
 
-  go: (view) =>
-    set({ view, approvalsOpen: false, settingsOpen: false, fileFromReview: null, langMenuOpen: false }),
+  go: (view) => {
+    set({
+      view,
+      approvalsOpen: false,
+      settingsOpen: false,
+      fileFromReview: null,
+      langMenuOpen: false,
+      // Entering Loops from the nav always lands on the list (its own router
+      // resets), so a stale sub-view never shows.
+      ...(view === "loops" ? { loopView: "list" as LoopView, loopReviewItem: null } : {}),
+    });
+    // Pull the real loop registry when opening Loops in a live session.
+    if (view === "loops" && !MOCK) void get().loadLoops();
+  },
   openReview: (id, tab = "diff") => {
     const { repoPath, reviews, pulls } = get();
     // The run surface is per-review (`runs[id]`), so it persists across navigation
@@ -1190,6 +1327,181 @@ export const useStore = create<LockeState>((set, get) => ({
   toggleApprovals: () => set({ approvalsOpen: !get().approvalsOpen, settingsOpen: false }),
   setQuery: (q) => set({ query: q }),
   setNavPlace: (key, place) => set((s) => ({ navPlace: { ...s.navPlace, [key]: place } })),
+
+  // ---- loops (v2.0.0; mock-driven in front-end-only phase) ----
+  openLoop: (id) => {
+    const loop = get().loops.find((l) => l.id === id);
+    // Route by lifecycle: a draft resumes its builder, a planning loop opens its
+    // scope interview, anything live/done goes straight to the monitor.
+    const v: LoopView = loop?.state === "draft" ? "builder" : loop?.state === "planning" ? "plan" : "monitor";
+    set({ selectedLoop: id, loopView: v, loopReviewItem: null });
+    if (!MOCK) void get().loadLoopItems(id);
+  },
+  newLoop: () => set({ loopView: "builder", loopReviewItem: null, targetSel: {}, draftMode: "plan" }),
+  loopToList: () => set({ loopView: "list", loopReviewItem: null }),
+  setLoopView: (v) => set({ loopView: v }),
+  setMonitorLayout: (l) => set({ monitorLayout: l }),
+  setPlanTab: (t) => set({ planTab: t }),
+  selectSpec: (id) => set({ selectedSpec: id }),
+  setDraftMode: (m) => set({ draftMode: m }),
+  toggleTarget: (path, on) => set((s) => ({ targetSel: { ...s.targetSel, [path]: on } })),
+  // Mock: drives the scripted "vue3" loop. Tauri: creates a real loop from the
+  // draft and kicks off the backend runner (Build mode); Plan mode opens the
+  // scope interview (its spec generation is a later phase).
+  startLoop: () => {
+    const s = get();
+    if (s.draftMode !== "build") {
+      set({ loopView: "plan", selectedLoop: MOCK ? "vue3" : s.selectedLoop, planTab: "scope" });
+      return;
+    }
+    if (MOCK || !s.repoPath) {
+      set({ loopView: "monitor", selectedLoop: "vue3", loopPaused: false });
+      return;
+    }
+    const loopId = `loop-${Date.now()}`;
+    // Excluded targets need the backend match list to honor precisely; for now
+    // an empty `targets` globs the full pattern (exclusions are a later refinement).
+    const placeholder: Loop = {
+      id: loopId,
+      title: s.draftTitle,
+      branch: s.draftBranch,
+      base: s.draftBase,
+      mode: "build",
+      state: "building",
+      pattern: s.draftPattern,
+      total: 0,
+      done: 0,
+      running: 0,
+      review: 0,
+      failed: 0,
+      queued: 0,
+      rate: "—",
+      elapsed: "0m 0s",
+    };
+    set((st) => ({
+      loops: [placeholder, ...st.loops.filter((l) => l.id !== loopId)],
+      loopView: "monitor",
+      selectedLoop: loopId,
+      loopPaused: false,
+      loopItems: { ...st.loopItems, [loopId]: [] },
+      loopStream: { ...st.loopStream, [loopId]: [] },
+    }));
+    void startLoopApi({
+      loopId,
+      repo: s.repoPath,
+      branch: s.draftBranch,
+      base: s.draftBase,
+      pattern: s.draftPattern,
+      template: s.draftPrompt,
+      targets: [],
+      concurrency: 6,
+      checks: s.checkSpecs,
+    });
+  },
+  approveLoopPlan: () => set({ loopView: "monitor", selectedLoop: MOCK ? "vue3" : get().selectedLoop, loopPaused: false }),
+  stopLoop: () => {
+    const s = get();
+    if (!MOCK && s.selectedLoop) void stopLoopApi(s.selectedLoop);
+    set({ loopView: "list", loopReviewItem: null });
+  },
+  togglePause: () => {
+    const next = !get().loopPaused;
+    set({ loopPaused: next });
+    const s = get();
+    if (!MOCK && s.selectedLoop) void pauseLoopApi(s.selectedLoop, next);
+  },
+  openLoopReview: (itemId) => set({ loopView: "review", loopReviewItem: itemId }),
+  loopReviewBack: () => set({ loopView: "monitor", loopReviewItem: null }),
+  resolveLoopReview: (decision) => {
+    const s = get();
+    if (!MOCK && s.selectedLoop && s.repoPath) {
+      const file = (s.loopItems[s.selectedLoop] ?? []).find((i) => i.id === s.loopReviewItem)?.path;
+      if (file) {
+        void resolveLoopItemApi(s.repoPath, s.selectedLoop, file, decision === "approve" ? "approve" : "request", s.loopFeedback.join("\n"));
+      }
+    }
+    set({ loopView: "monitor", loopReviewItem: null, loopFeedback: [] });
+  },
+  setSpecApproach: (id, approach) => set((s) => ({ specApproach: { ...s.specApproach, [id]: approach } })),
+  toggleSpecStep: (id, k) =>
+    set((s) => {
+      // Steps default to on; the override map flips them off (and back).
+      const cur = { ...(s.specSteps[id] ?? {}) };
+      const eff = cur[k] === undefined ? true : cur[k];
+      cur[k] = !eff;
+      return { specSteps: { ...s.specSteps, [id]: cur } };
+    }),
+  acceptSpec: (id) => set((s) => ({ specStatus: { ...s.specStatus, [id]: "specced" } })),
+  excludeSpec: (id) =>
+    set((s) => ({ specStatus: { ...s.specStatus, [id]: s.specStatus[id] === "excluded" ? "review" : "excluded" } })),
+
+  loadLoops: async () => {
+    const { repoPath } = get();
+    if (MOCK || !repoPath) return;
+    try {
+      set({ loops: await readLoopsApi(repoPath) });
+    } catch {
+      // A failed read just leaves the prior list in place.
+    }
+  },
+  loadLoopItems: async (loopId) => {
+    const { repoPath } = get();
+    if (MOCK || !repoPath) return;
+    try {
+      const recs = await readLoopItemsApi(repoPath, loopId);
+      const items: LoopItem[] = recs.map((r) => ({
+        id: r.id ?? r.path,
+        path: r.path,
+        status: r.status ?? "queued",
+        agent: r.agent ?? "CL",
+        action: r.line,
+        note: r.reason,
+      }));
+      set((s) => ({
+        loopItems: { ...s.loopItems, [loopId]: items },
+        loopItemRecords: { ...s.loopItemRecords, [loopId]: recs },
+      }));
+    } catch {
+      // Leave prior items in place on a failed read.
+    }
+  },
+  // Upsert one item (by id, else path) into the loop's live item list.
+  onLoopItem: (e) =>
+    set((s) => {
+      const items = [...(s.loopItems[e.loopId] ?? [])];
+      const idx = items.findIndex((it) => it.id === e.itemId || it.path === e.path);
+      const next: LoopItem = {
+        id: e.itemId,
+        path: e.path,
+        status: e.status,
+        agent: e.agent,
+        action: e.line,
+        pct: e.pct,
+        t: e.t,
+      };
+      if (idx >= 0) items[idx] = { ...items[idx], ...next };
+      else items.push(next);
+      return { loopItems: { ...s.loopItems, [e.loopId]: items } };
+    }),
+  onLoopProgress: (e) =>
+    set((s) => ({
+      loops: s.loops.map((l) =>
+        l.id === e.loopId
+          ? { ...l, total: e.total, done: e.done, running: e.running, review: e.review, failed: e.failed, queued: e.queued, rate: e.rate, elapsed: e.elapsed }
+          : l,
+      ),
+    })),
+  onLoopEvent: (e) =>
+    set((s) => {
+      const arr = [{ st: e.st, path: e.path, text: e.text, t: e.t }, ...(s.loopStream[e.loopId] ?? [])].slice(0, 200);
+      return { loopStream: { ...s.loopStream, [e.loopId]: arr } };
+    }),
+  onLoopDone: (e) =>
+    set((s) => ({
+      loops: s.loops.map((l) =>
+        l.id === e.loopId ? { ...l, state: e.state === "done" ? "done" : e.state === "stopped" ? "paused" : "building" } : l,
+      ),
+    })),
 
   openFullFile: (path, review) => {
     set({

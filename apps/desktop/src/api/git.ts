@@ -1,5 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ChangedFile, Commit, FileNode, Hunk, PullRecord, Review } from "@locke/core";
+import type {
+  ChangedFile,
+  Commit,
+  FileNode,
+  Hunk,
+  Loop,
+  LoopItemState,
+  PullRecord,
+  Review,
+} from "@locke/core";
 
 // Typed wrappers over the Rust git commands. `isTauri` lets the app run under
 // plain Vite (mock mode) without throwing when the bridge is absent.
@@ -313,6 +322,102 @@ export const watchLocke = (repo: string): Promise<void> =>
 /** Read all persisted run records (newest first). Empty in mock mode. */
 export const readRuns = (repo: string): Promise<RunRecord[]> =>
   isTauri ? invoke<RunRecord[]>("read_runs", { repo }) : Promise.resolve([]);
+
+// ---- loops (the fan-out runner; loop:* events keyed by loopId) ----
+
+/** One item's state change (`loop:item`). */
+export interface LoopItemEvent {
+  loopId: string;
+  itemId: string;
+  path: string;
+  status: LoopItemState;
+  line?: string;
+  pct?: number;
+  agent: string;
+  t: string;
+}
+
+/** Aggregate loop progress (`loop:progress`). */
+export interface LoopProgress {
+  loopId: string;
+  total: number;
+  done: number;
+  running: number;
+  review: number;
+  failed: number;
+  queued: number;
+  rate: string;
+  elapsed: string;
+}
+
+/** A live stream log line (`loop:event`). */
+export interface LoopEventPayload {
+  loopId: string;
+  st: LoopItemState;
+  path: string;
+  text: string;
+  t: string;
+}
+
+/** A loop finishing (`loop:done`). */
+export interface LoopDonePayload {
+  loopId: string;
+  state: string;
+}
+
+/** A persisted per-item record (`.locke/loops/<id>/items/<path>.json`). */
+export interface LoopItemRecord {
+  id?: string;
+  path: string;
+  status?: LoopItemState;
+  declared?: "complete" | "needs_review";
+  summary?: string;
+  reason?: string;
+  line?: string;
+  agent?: string;
+  diff?: unknown[];
+  notes?: { note: string; time: string }[];
+}
+
+/** Start a Build-mode loop. Returns immediately; it streams via the `loop:*`
+ *  events keyed by `loopId`. `targets` is the selected file set ([] = glob the
+ *  pattern). No-op (resolves) outside Tauri. */
+export const startLoop = (args: {
+  loopId: string;
+  repo: string;
+  branch: string;
+  base: string;
+  pattern: string;
+  template: string;
+  targets: string[];
+  concurrency: number;
+  checks: { label: string; command: string }[];
+}): Promise<void> => (isTauri ? invoke<void>("start_loop", args) : Promise.resolve());
+
+export const pauseLoop = (loopId: string, paused: boolean): Promise<void> =>
+  isTauri ? invoke<void>("pause_loop", { loopId, paused }) : Promise.resolve();
+
+export const stopLoop = (loopId: string): Promise<void> =>
+  isTauri ? invoke<void>("stop_loop", { loopId }) : Promise.resolve();
+
+/** Resolve a review item: `"approve"` commits its diff onto the loop branch;
+ *  anything else re-queues it with `feedback` folded in as a note. */
+export const resolveLoopItem = (
+  repo: string,
+  loopId: string,
+  file: string,
+  decision: "approve" | "request",
+  feedback: string,
+): Promise<unknown> =>
+  isTauri ? invoke("resolve_loop_item", { repo, loopId, file, decision, feedback }) : Promise.resolve(null);
+
+/** Read the loop registry. Empty in mock mode. */
+export const readLoops = (repo: string): Promise<Loop[]> =>
+  isTauri ? invoke<Loop[]>("read_loops", { repo }) : Promise.resolve([]);
+
+/** Read a loop's per-item records. Empty in mock mode. */
+export const readLoopItems = (repo: string, loopId: string): Promise<LoopItemRecord[]> =>
+  isTauri ? invoke<LoopItemRecord[]>("read_loop_items", { repo, loopId }) : Promise.resolve([]);
 
 const initials = (name: string): string => {
   const parts = name.trim().split(/[\s/_-]+/).filter(Boolean);

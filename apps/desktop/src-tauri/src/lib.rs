@@ -7,6 +7,7 @@ mod cli;
 mod commands;
 mod config;
 mod git;
+mod loops;
 mod mcp;
 mod run;
 mod store;
@@ -38,6 +39,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(run::RunRegistry::default())
+        .manage(loops::LoopRegistry::default())
         .manage(watch::WatchState::default())
         .manage(cli::InitialRepo(std::sync::Mutex::new(initial_repo)))
         .invoke_handler(tauri::generate_handler![
@@ -65,6 +67,12 @@ pub fn run() {
             commands::cancel_run,
             commands::set_permission_mode,
             commands::read_runs,
+            commands::start_loop,
+            commands::pause_loop,
+            commands::stop_loop,
+            commands::resolve_loop_item,
+            commands::read_loops,
+            commands::read_loop_items,
             commands::read_comments,
             commands::write_comments,
             commands::read_check_overrides,

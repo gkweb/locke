@@ -436,6 +436,281 @@ fn migrate_from_index(repo: &str) -> R<Option<PullStore>> {
     Ok(Some(store))
 }
 
+// ---- loops (.locke/loops.json registry + .locke/loops/<id>/ tree) ----
+//
+// A "loop" runs one task across many files. The registry `.locke/loops.json`
+// holds the Loop records (counts, branch, pattern, prompt template) — like
+// pulls.json. Per-loop artifacts live under `.locke/loops/<id>/`:
+//   spec/<sanitized-path>.md    optional per-item spec the worker reads
+//   items/<sanitized-path>.json per-item runtime state + result record
+//   plan.md                     global plan / assumptions / conventions
+//   progress.jsonl              durable append-only event log
+// The desktop runner and the standalone locke-mcp tools both read/write this
+// tree, so item writes take the repo lock and use atomic writes.
+
+/// A loop — a task applied across a matched set of files. Counts are carried
+/// explicitly so a 1,000-item set needn't be rescanned on every read. Mirrors the
+/// front-end `Loop` shape, plus the backend-only `template`/`concurrency`.
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Loop {
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub branch: String,
+    #[serde(default)]
+    pub base: String,
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub pattern: String,
+    #[serde(default)]
+    pub total: u64,
+    #[serde(default)]
+    pub done: u64,
+    #[serde(default)]
+    pub running: u64,
+    #[serde(default)]
+    pub review: u64,
+    #[serde(default)]
+    pub failed: u64,
+    #[serde(default)]
+    pub queued: u64,
+    #[serde(default)]
+    pub rate: String,
+    #[serde(default)]
+    pub elapsed: String,
+    /// Per-item prompt template (the creator's, with `{{file}}` etc. interpolated).
+    #[serde(default)]
+    pub template: String,
+    #[serde(default)]
+    pub concurrency: u64,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LoopStore {
+    #[serde(default)]
+    pub loops: Vec<Loop>,
+}
+
+fn loops_index_path(repo: &str) -> PathBuf {
+    locke_dir(repo).join("loops.json")
+}
+
+fn loop_dir(repo: &str, id: &str) -> PathBuf {
+    locke_dir(repo).join("loops").join(sanitize_seg(id))
+}
+
+/// Filename-safe single segment: keep alnum/`.`/`-`/`_`, drop everything else to
+/// `-`. Used for loop ids.
+fn sanitize_seg(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '-' })
+        .collect()
+}
+
+/// Filename-safe rendering of a repo-relative path: `/` → `__`, other unsafe chars
+/// → `-`. Keeps the extension readable and avoids collisions between distinct
+/// paths (unlike collapsing every separator to `-`).
+pub fn sanitize_path(path: &str) -> String {
+    let mut out = String::new();
+    for c in path.chars() {
+        match c {
+            '/' => out.push_str("__"),
+            c if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' => out.push(c),
+            _ => out.push('-'),
+        }
+    }
+    out
+}
+
+/// Read the loop registry (empty when absent).
+pub fn read_loops(repo: &str) -> R<Vec<Loop>> {
+    match read_json(&loops_index_path(repo))? {
+        Some(v) => {
+            let store: LoopStore =
+                serde_json::from_value(v).map_err(|e| format!("parse loops.json: {e}"))?;
+            Ok(store.loops)
+        }
+        None => Ok(Vec::new()),
+    }
+}
+
+pub fn read_loop(repo: &str, id: &str) -> R<Option<Loop>> {
+    Ok(read_loops(repo)?.into_iter().find(|l| l.id == id))
+}
+
+/// Insert or replace a loop record by id (bumps `updated_at`). Serialized with the
+/// repo lock so concurrent count updates don't clobber each other.
+pub fn upsert_loop(repo: &str, mut lp: Loop) -> R<()> {
+    let _lock = lock_repo(repo)?;
+    let mut store = LoopStore { loops: read_loops(repo)? };
+    lp.updated_at = now_iso();
+    if lp.created_at.is_empty() {
+        lp.created_at = lp.updated_at.clone();
+    }
+    if let Some(slot) = store.loops.iter_mut().find(|l| l.id == lp.id) {
+        *slot = lp;
+    } else {
+        store.loops.push(lp);
+    }
+    let value = serde_json::to_value(&store).map_err(|e| format!("serialize loops: {e}"))?;
+    write_json(&loops_index_path(repo), &value)
+}
+
+/// Apply a closure to one loop record under the repo lock (read-modify-write).
+/// Used by the runner to bump counts/state atomically.
+pub fn update_loop<F: FnOnce(&mut Loop)>(repo: &str, id: &str, f: F) -> R<()> {
+    let _lock = lock_repo(repo)?;
+    let mut store = LoopStore { loops: read_loops(repo)? };
+    if let Some(lp) = store.loops.iter_mut().find(|l| l.id == id) {
+        f(lp);
+        lp.updated_at = now_iso();
+        let value = serde_json::to_value(&store).map_err(|e| format!("serialize loops: {e}"))?;
+        write_json(&loops_index_path(repo), &value)?;
+    }
+    Ok(())
+}
+
+// ---- per-item state + result records (.locke/loops/<id>/items/<path>.json) ----
+
+fn loop_item_path(repo: &str, id: &str, file: &str) -> PathBuf {
+    loop_dir(repo, id).join("items").join(format!("{}.json", sanitize_path(file)))
+}
+
+pub fn read_loop_item(repo: &str, id: &str, file: &str) -> R<Option<Value>> {
+    read_json(&loop_item_path(repo, id, file))
+}
+
+/// Overwrite an item's record (runner's final write after a worker finishes).
+pub fn write_loop_item(repo: &str, id: &str, file: &str, record: &Value) -> R<()> {
+    ensure_locke(repo)?;
+    write_json(&loop_item_path(repo, id, file), record)
+}
+
+/// Merge top-level keys into an item's record (the MCP tools' declaration write),
+/// stamping `path`/`updatedAt`. Read-modify-write under the repo lock so a worker
+/// declaration and a `loop_write_note` append can't clobber each other.
+pub fn merge_loop_item(repo: &str, id: &str, file: &str, patch: Value) -> R<()> {
+    let _lock = lock_repo(repo)?;
+    let path = loop_item_path(repo, id, file);
+    let mut cur = read_json(&path)?.unwrap_or_else(|| json!({}));
+    if let (Some(obj), Some(p)) = (cur.as_object_mut(), patch.as_object()) {
+        for (k, v) in p {
+            obj.insert(k.clone(), v.clone());
+        }
+    }
+    cur["path"] = json!(file);
+    cur["updatedAt"] = json!(now_iso());
+    write_json(&path, &cur)
+}
+
+/// Append a note to an item's `notes` array (carries forward to the next step).
+pub fn append_loop_note(repo: &str, id: &str, file: &str, note: &str) -> R<()> {
+    let _lock = lock_repo(repo)?;
+    let path = loop_item_path(repo, id, file);
+    let mut cur = read_json(&path)?.unwrap_or_else(|| json!({}));
+    let obj = cur.as_object_mut().ok_or("item record is not an object")?;
+    obj.entry("notes").or_insert_with(|| json!([]));
+    if let Some(arr) = obj.get_mut("notes").and_then(|n| n.as_array_mut()) {
+        arr.push(json!({ "note": note, "time": now_iso() }));
+    }
+    obj.insert("path".into(), json!(file));
+    obj.insert("updatedAt".into(), json!(now_iso()));
+    write_json(&path, &cur)
+}
+
+/// Read every item record for a loop (unordered).
+pub fn read_loop_items(repo: &str, id: &str) -> R<Vec<Value>> {
+    let dir = loop_dir(repo, id).join("items");
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut items = Vec::new();
+    for entry in fs::read_dir(&dir).map_err(|e| format!("read items dir: {e}"))? {
+        let path = entry.map_err(|e| format!("read entry: {e}"))?.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("json") {
+            if let Some(v) = read_json(&path)? {
+                items.push(v);
+            }
+        }
+    }
+    Ok(items)
+}
+
+// ---- per-item specs (.locke/loops/<id>/spec/<path>.md) ----
+
+fn loop_spec_path(repo: &str, id: &str, file: &str) -> PathBuf {
+    loop_dir(repo, id).join("spec").join(format!("{}.md", sanitize_path(file)))
+}
+
+pub fn read_loop_spec(repo: &str, id: &str, file: &str) -> R<Option<String>> {
+    let path = loop_spec_path(repo, id, file);
+    if !path.exists() {
+        return Ok(None);
+    }
+    fs::read_to_string(&path).map(Some).map_err(|e| format!("read spec: {e}"))
+}
+
+pub fn write_loop_spec(repo: &str, id: &str, file: &str, content: &str) -> R<()> {
+    let path = loop_spec_path(repo, id, file);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create spec dir: {e}"))?;
+    }
+    fs::write(&path, content).map_err(|e| format!("write spec: {e}"))
+}
+
+/// Global plan / conventions for the loop (Plan mode writes this; Build may omit).
+pub fn read_loop_plan(repo: &str, id: &str) -> R<Option<String>> {
+    let path = loop_dir(repo, id).join("plan.md");
+    if !path.exists() {
+        return Ok(None);
+    }
+    fs::read_to_string(&path).map(Some).map_err(|e| format!("read plan: {e}"))
+}
+
+pub fn write_loop_plan(repo: &str, id: &str, content: &str) -> R<()> {
+    let dir = loop_dir(repo, id);
+    fs::create_dir_all(&dir).map_err(|e| format!("create loop dir: {e}"))?;
+    fs::write(dir.join("plan.md"), content).map_err(|e| format!("write plan: {e}"))
+}
+
+// ---- durable progress log (.locke/loops/<id>/progress.jsonl) ----
+
+/// Append one event (a `LoopStreamEvent`-shaped value) as a JSONL line. O_APPEND
+/// keeps concurrent writers from interleaving lines. Powers the Stream layout and
+/// restart recovery.
+pub fn append_loop_event(repo: &str, id: &str, event: &Value) -> R<()> {
+    let dir = loop_dir(repo, id);
+    fs::create_dir_all(&dir).map_err(|e| format!("create loop dir: {e}"))?;
+    let line = serde_json::to_string(event).map_err(|e| format!("serialize event: {e}"))?;
+    let mut f = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("progress.jsonl"))
+        .map_err(|e| format!("open progress.jsonl: {e}"))?;
+    use std::io::Write;
+    writeln!(f, "{line}").map_err(|e| format!("append progress: {e}"))
+}
+
+/// Read the durable progress log (one JSON value per line; malformed lines skipped).
+pub fn read_loop_progress(repo: &str, id: &str) -> R<Vec<Value>> {
+    let path = loop_dir(repo, id).join("progress.jsonl");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = fs::read_to_string(&path).map_err(|e| format!("read progress: {e}"))?;
+    Ok(text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect())
+}
+
 // ---- git-tracking toggle (.locke/.gitignore) ----
 
 fn gitignore_path(repo: &str) -> PathBuf {
@@ -682,6 +957,81 @@ mod tests {
         assert_eq!(read_pulls(repo).unwrap().pulls.len(), 2);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn loops_registry_and_item_tree_round_trip() {
+        let dir = tmp("loops");
+        let repo = dir.to_str().unwrap();
+
+        assert!(read_loops(repo).unwrap().is_empty());
+        let lp = Loop {
+            id: "loop-1".into(),
+            title: "Migrate".into(),
+            branch: "chore/x".into(),
+            pattern: "src/**/*.vue".into(),
+            state: "building".into(),
+            total: 3,
+            queued: 3,
+            template: "Migrate {{file}}".into(),
+            concurrency: 6,
+            ..Default::default()
+        };
+        upsert_loop(repo, lp).unwrap();
+        assert!(dir.join(".locke/loops.json").exists());
+
+        // Count update is read-modify-write.
+        update_loop(repo, "loop-1", |l| {
+            l.done = 1;
+            l.queued = 2;
+            l.state = "building".into();
+        })
+        .unwrap();
+        let got = read_loop(repo, "loop-1").unwrap().unwrap();
+        assert_eq!(got.done, 1);
+        assert_eq!(got.queued, 2);
+        assert!(!got.updated_at.is_empty());
+
+        // A spec the worker would read; path sanitization keeps it unique.
+        write_loop_spec(repo, "loop-1", "src/components/Checkout.vue", "# spec\nDo X.").unwrap();
+        assert_eq!(
+            read_loop_spec(repo, "loop-1", "src/components/Checkout.vue").unwrap().as_deref(),
+            Some("# spec\nDo X.")
+        );
+        assert!(dir.join(".locke/loops/loop-1/spec/src__components__Checkout.vue.md").exists());
+
+        // MCP-style declaration merge + note append, then runner overwrite.
+        merge_loop_item(
+            repo,
+            "loop-1",
+            "src/components/Checkout.vue",
+            json!({ "declared": "complete", "summary": "converted" }),
+        )
+        .unwrap();
+        append_loop_note(repo, "loop-1", "src/components/Checkout.vue", "kept Options API").unwrap();
+        let item = read_loop_item(repo, "loop-1", "src/components/Checkout.vue").unwrap().unwrap();
+        assert_eq!(item["declared"], "complete");
+        assert_eq!(item["summary"], "converted");
+        assert_eq!(item["notes"][0]["note"], "kept Options API");
+        assert_eq!(item["path"], "src/components/Checkout.vue");
+
+        assert_eq!(read_loop_items(repo, "loop-1").unwrap().len(), 1);
+
+        // Durable progress log appends + reads as JSONL.
+        append_loop_event(repo, "loop-1", &json!({ "st": "done", "path": "a.vue", "text": "ok", "t": "12:00:00" })).unwrap();
+        append_loop_event(repo, "loop-1", &json!({ "st": "review", "path": "b.vue", "text": "paused", "t": "12:01:00" })).unwrap();
+        let prog = read_loop_progress(repo, "loop-1").unwrap();
+        assert_eq!(prog.len(), 2);
+        assert_eq!(prog[1]["st"], "review");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sanitize_path_is_collision_free_and_readable() {
+        assert_eq!(sanitize_path("src/a/b.vue"), "src__a__b.vue");
+        // Distinct paths that would collide under naive `/`→`-` stay distinct.
+        assert_ne!(sanitize_path("a/b.c"), sanitize_path("a-b.c"));
     }
 
     #[test]

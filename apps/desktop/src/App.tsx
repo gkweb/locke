@@ -7,12 +7,17 @@ import {
   type RunDonePayload,
   type RunEventPayload,
   type RunPermissionPayload,
+  type LoopItemEvent,
+  type LoopProgress,
+  type LoopEventPayload,
+  type LoopDonePayload,
 } from "./api/git.js";
 import { color, font } from "./theme/tokens.js";
 import { ActionBar } from "./components/ActionBar.js";
 import { SidePanel } from "./components/SidePanel.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { ActivityView } from "./views/ActivityView.js";
+import { LoopsView } from "./views/loops/LoopsView.js";
 import { ReviewsView } from "./views/ReviewsView.js";
 import { RunsView } from "./views/RunsView.js";
 import { AgentsView } from "./views/AgentsView.js";
@@ -43,6 +48,8 @@ function Main() {
   switch (view) {
     case "activity":
       return <ActivityView />;
+    case "loops":
+      return <LoopsView />;
     case "reviews":
       return <ReviewsView />;
     case "runs":
@@ -99,6 +106,11 @@ export function App() {
       listen<RunEventPayload>("run:event", (e) => s.onRunEvent(e.payload)),
       listen<RunPermissionPayload>("run:permission", (e) => s.onRunPermission(e.payload)),
       listen<RunDonePayload>("run:done", (e) => s.onRunDone(e.payload)),
+      // The loop runner's fan-out stream (parallel to run:*).
+      listen<LoopItemEvent>("loop:item", (e) => s.onLoopItem(e.payload)),
+      listen<LoopProgress>("loop:progress", (e) => s.onLoopProgress(e.payload)),
+      listen<LoopEventPayload>("loop:event", (e) => s.onLoopEvent(e.payload)),
+      listen<LoopDonePayload>("loop:done", (e) => s.onLoopDone(e.payload)),
       // A second `locke <path>` launch is forwarded here by the single-instance
       // plugin — switch the open window to that repo.
       listen<string>("cli:open-repo", (e) => void useStore.getState().openRepo(e.payload)),
@@ -146,8 +158,9 @@ export function App() {
           minHeight: 0,
         }}
       >
-        {/* The Files screen carries its own explorer, so the review panel hides there. */}
-        {panelOpen && view !== "files" && <SidePanel />}
+        {/* Files carries its own explorer and Loops its own rails/navigation, so
+            the review quick-switch panel hides on both. */}
+        {panelOpen && view !== "files" && view !== "loops" && <SidePanel />}
         <Main />
       </div>
 
