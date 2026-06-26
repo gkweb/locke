@@ -67,13 +67,20 @@ export function RunTab({ review }: { review: Review }) {
   const runUseWorktree = useStore((s) => s.runUseWorktree);
   const setRunUseWorktree = useStore((s) => s.setRunUseWorktree);
   const threads = useStore((s) => s.threads);
+  const agents = useStore((s) => s.agents);
+  const disabledAgents = useStore((s) => s.disabledAgents);
 
   const flagCount = threads.filter((t) => t.kind === "change_request" && !t.resolved).length;
   const perm = pending.find((p) => p.reviewId === review.id);
   const awaiting = !!perm && !runDone && !runPaused;
   const runActive = (!!currentRunId || review.runState === "running") && !awaiting && !runDone && !runPaused;
   const idle = !runActive && !awaiting && !runDone && !runPaused && runEvents.length === 0;
-  const agent = review.agent || "Claude";
+  // Label the run surface with the agent that actually performs the run — the
+  // first detected, enabled CLI, matching startRun's selection — not
+  // review.agent, which is the branch author's git commit name. Falls back to
+  // "Claude" before any agent is detected.
+  const runner = agents.find((a) => a.detected && !disabledAgents.includes(a.id));
+  const agent = runner ? (runner.id === "claude" ? "Claude" : runner.name) : "Claude";
   const sm = statusMetaForRun(agent, awaiting, runDone, runPaused, runActive);
   const runId = currentRunId ?? review.runId ?? "—";
   const editCount = runEvents.filter((e) => e.kind === "edit").length;
