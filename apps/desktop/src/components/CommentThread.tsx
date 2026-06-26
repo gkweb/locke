@@ -2,7 +2,21 @@ import type { Thread } from "@locke/core";
 import { useStore } from "../state/store.js";
 import { alpha, color, font } from "../theme/tokens.js";
 import { HoverButton } from "./primitives.js";
+import { CommentBody } from "./CommentBody.js";
 import { ChatIcon, CheckIcon, CommentIcon } from "./icons.js";
+
+// A deterministic colour per agent so multiple agents are distinguishable at a
+// glance — e.g. a change by Claude and a review comment by Codex get different
+// avatars. Humans keep the neutral slate avatar.
+function agentTint(name: string): { bg: string; border: string; fg: string } {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
+  return { bg: `hsl(${h} 42% 17%)`, border: `hsl(${h} 42% 32%)`, fg: `hsl(${h} 60% 80%)` };
+}
+
+// Agent identities arrive lowercased from $LOCKE_AGENT (e.g. "claude", "codex");
+// title-case the first letter for display. Humans are shown verbatim.
+const prettyAgent = (name: string) => (name ? name[0].toUpperCase() + name.slice(1) : name);
 
 export function CommentThread({ thread }: { thread: Thread }) {
   const replyOpen = useStore((s) => s.replyOpen) === thread.id;
@@ -140,7 +154,9 @@ export function CommentThread({ thread }: { thread: Thread }) {
       </div>
 
       <div style={{ padding: "2px 0" }}>
-        {thread.items.map((item, i) => (
+        {thread.items.map((item, i) => {
+          const tint = item.isAgent ? agentTint(item.author) : null;
+          return (
           <div key={i} style={{ display: "flex", gap: 10, padding: "11px 14px" }}>
             <div
               style={{
@@ -153,16 +169,18 @@ export function CommentThread({ thread }: { thread: Thread }) {
                 justifyContent: "center",
                 fontSize: 10.5,
                 fontWeight: 600,
-                background: "#232a36",
-                color: "#c3cad6",
-                border: "1px solid #2e3744",
+                background: tint?.bg ?? "#232a36",
+                color: tint?.fg ?? "#c3cad6",
+                border: `1px solid ${tint?.border ?? "#2e3744"}`,
               }}
             >
               {item.initials}
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
-                <span style={{ fontSize: 12.5, fontWeight: 600, color: color.text }}>{item.author}</span>
+                <span style={{ fontSize: 12.5, fontWeight: 600, color: color.text }}>
+                  {item.isAgent ? prettyAgent(item.author) : item.author}
+                </span>
                 {item.isAgent ? (
                   <span
                     style={{
@@ -202,10 +220,11 @@ export function CommentThread({ thread }: { thread: Thread }) {
                 )}
                 <span style={{ fontSize: 11, color: color.textGhost }}>{item.time}</span>
               </div>
-              <div style={{ fontSize: 12.8, lineHeight: 1.55, color: color.textMuted }}>{item.body}</div>
+              <CommentBody body={item.body} />
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
 
       {replyOpen ? (

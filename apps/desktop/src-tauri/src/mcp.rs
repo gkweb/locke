@@ -50,10 +50,12 @@ fn claude_bin() -> Option<String> {
     }
 }
 
-/// The config snippet for registering Locke in any MCP client. No `LOCKE_REPO` —
-/// the server discovers the repo from the client's working directory.
+/// The config snippet for registering Locke in another MCP client. No `LOCKE_REPO`
+/// (the server discovers the repo from the client's working directory), but
+/// `LOCKE_AGENT` is included so that client's comments are attributed to it — set
+/// it to that agent's name (e.g. "Codex", "Gemini").
 fn snippet(bin: &str) -> Value {
-    json!({ "mcpServers": { "locke": { "command": bin } } })
+    json!({ "mcpServers": { "locke": { "command": bin, "env": { "LOCKE_AGENT": "Codex" } } } })
 }
 
 /// Report whether the `locke` server is registered in Claude Code, plus the data
@@ -77,13 +79,18 @@ pub fn status(app: &AppHandle) -> Value {
     })
 }
 
-/// Register `locke-mcp` in Claude Code at user scope: `claude mcp add --scope user
-/// locke -- <binary>`. User-initiated; errors if the binary or `claude` is missing.
+/// Register `locke-mcp` in Claude Code at user scope, attributing its comments to
+/// "Claude" via `LOCKE_AGENT`: `claude mcp add --scope user -e LOCKE_AGENT=Claude
+/// locke -- <binary>`. Upserts (removes any prior registration first) so clicking
+/// Add again refreshes the binary path / env. Errors if the binary or `claude` is
+/// missing.
 pub fn install(app: &AppHandle) -> Result<(), String> {
     let bin = binary_path(app).ok_or("locke-mcp binary not found alongside the app")?;
     let claude = claude_bin().ok_or("Claude Code CLI (`claude`) not found on PATH")?;
+    // Best-effort remove so a re-install updates rather than failing on "exists".
+    let _ = Command::new(&claude).args(["mcp", "remove", "--scope", "user", "locke"]).output();
     let out = Command::new(&claude)
-        .args(["mcp", "add", "--scope", "user", "locke", "--"])
+        .args(["mcp", "add", "--scope", "user", "-e", "LOCKE_AGENT=Claude", "locke", "--"])
         .arg(&bin)
         .output()
         .map_err(|e| format!("run `claude mcp add`: {e}"))?;

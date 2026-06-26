@@ -152,7 +152,9 @@ function McpServerCard() {
           </pre>
           <div style={{ fontSize: 11, color: color.textFainter, marginTop: 7, lineHeight: 1.45, maxWidth: 560 }}>
             The server finds the target repo from the client's working directory — run your agent inside a repo and it
-            operates on that repo. Set <span style={{ fontFamily: font.mono }}>LOCKE_REPO</span> to override.
+            operates on that repo. Set <span style={{ fontFamily: font.mono }}>LOCKE_REPO</span> to override, and{" "}
+            <span style={{ fontFamily: font.mono }}>LOCKE_AGENT</span> to that agent's name (e.g. Codex) so its comments
+            are labelled accordingly in Locke.
           </div>
         </div>
       ) : null}

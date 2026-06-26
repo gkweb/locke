@@ -149,7 +149,7 @@ export interface McpStatus {
   /** Whether the Claude Code CLI (`claude`) is available to install with. */
   claudeAvailable: boolean;
   /** Copy-able config snippet for registering Locke in any other MCP client. */
-  snippet: { mcpServers: { locke: { command: string } } };
+  snippet: { mcpServers: { locke: { command: string; env?: Record<string, string> } } };
 }
 
 const MOCK_MCP_STATUS: McpStatus = {
