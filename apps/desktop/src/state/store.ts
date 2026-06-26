@@ -51,6 +51,7 @@ import {
   startRun as startRunApi,
   respondPermission,
   cancelRun as cancelRunApi,
+  setPermissionMode,
   watchLocke,
   readRuns,
   isTauri,
@@ -90,6 +91,38 @@ import {
 import type { Check, PullRecord, ReviewStatus } from "@locke/core";
 
 const EMPTY_DETAIL: ReviewDetail = { prompt: "", summary: "", bullets: [], note: "", commits: [] };
+
+/**
+ * One review's live agent-run surface. Held per-review (keyed by reviewId) so a
+ * run's event stream, pending plan, and lifecycle survive navigating away — and
+ * several reviews can have runs in flight at once, each checked on independently.
+ */
+interface RunSurface {
+  /** Streamed run events, oldest first. */
+  events: RunEvent[];
+  /** The run finished cleanly. */
+  done: boolean;
+  /** The run stopped or failed before finishing. */
+  paused: boolean;
+  /** Plan→Build phase while a run is live; null when idle/finished. */
+  phase: "plan" | "build" | null;
+  /** The live run's id, or null when no run is in flight for this review. */
+  runId: string | null;
+  /** A plan blocked on the Plan→Build approval gate (reviewId is the map key), else null. */
+  planReview: { runId: string; requestId: string; plan: string } | null;
+}
+
+const EMPTY_SURFACE: RunSurface = { events: [], done: false, paused: false, phase: null, runId: null, planReview: null };
+
+/** Immutably patch one review's run surface within the `runs` map. */
+const mergeRun = (
+  runs: Record<string, RunSurface>,
+  reviewId: string,
+  patch: Partial<RunSurface>,
+): Record<string, RunSurface> => ({
+  ...runs,
+  [reviewId]: { ...(runs[reviewId] ?? EMPTY_SURFACE), ...patch },
+});
 
 // Human-relative time from an epoch-seconds stamp (best-effort, coarse buckets).
 function relTime(epochSecs: number): string {
@@ -286,18 +319,14 @@ interface LockeState {
   //      design hero-flow is kept only in mock mode) ----
   /** Pending permission approvals across the fleet (drives the tray + counts). */
   pending: Approval[];
-  /** Live event stream for the open review's run (Run tab). */
-  runEvents: RunEvent[];
+  /** Per-review live run surface, keyed by reviewId: event stream, plan, phase,
+   *  and lifecycle. Held per-review so runs survive navigation and several can be
+   *  in flight and checked on independently. */
+  runs: Record<string, RunSurface>;
   /** Global runs table rows. */
   runRows: RunRow[];
   /** Saved runs for the open review (History tab). */
   history: HistoryEntry[];
-  /** Whether the inline permission card is showing in the Run tab. */
-  showPermission: boolean;
-  runDone: boolean;
-  runPaused: boolean;
-  /** The live run currently shown in the open review's Run tab (real mode). */
-  currentRunId: string | null;
   /** runId → reviewId, so streamed events can be routed to their review. */
   runReviewMap: Record<string, string>;
   /** Whether a streaming run executes in an isolated worktree (true, committed
@@ -309,6 +338,9 @@ interface LockeState {
   runApprovalOpen: boolean;
   runSelectedAgentId: string | null;
   runAutoMode: boolean;
+  /** "Plan first" (v1.5): start the run in `--permission-mode plan` so the agent
+   *  investigates and presents a plan before editing. Claude-only. */
+  runPlanFirst: boolean;
 
   // ---- navigation ----
   go: (view: View) => void;
@@ -406,8 +438,16 @@ interface LockeState {
   requestRun: () => void;
   setRunSelectedAgent: (id: string) => void;
   setRunAutoMode: (on: boolean) => void;
+  setRunPlanFirst: (on: boolean) => void;
   cancelRunApproval: () => void;
   confirmRun: () => void;
+  /** Approve the plan under review: transition the live run from plan→build (the
+   *  same process continues editing). When `auto`, the build phase is switched to
+   *  Auto mode first, so it runs unattended. No-op outside a real plan-review. */
+  approvePlan: (auto?: boolean) => void;
+  /** Send the agent back to revise its plan with the given feedback (deny the
+   *  ExitPlanMode permission with a message); it re-presents a plan. */
+  requestPlanChanges: (feedback: string) => void;
   /** Cancel the open review's in-flight run. */
   cancelRun: () => Promise<void>;
   setRunUseWorktree: (on: boolean) => void;
@@ -557,18 +597,15 @@ export const useStore = create<LockeState>((set, get) => ({
   agentOutput: null,
 
   pending: MOCK ? MOCK_PENDING : [],
-  runEvents: [],
+  runs: {},
   runRows: MOCK ? MOCK_RUN_ROWS : [],
   history: [],
-  showPermission: false,
-  runDone: false,
-  runPaused: false,
-  currentRunId: null,
   runReviewMap: {},
   runUseWorktree: true,
   runApprovalOpen: false,
   runSelectedAgentId: null,
   runAutoMode: false,
+  runPlanFirst: false,
 
   detectAgents: async () => {
     if (MOCK) return; // keep the seeded mock fleet's agents
@@ -749,7 +786,19 @@ export const useStore = create<LockeState>((set, get) => ({
 
   toggleSettings: () => set({ settingsOpen: !get().settingsOpen, approvalsOpen: false }),
 
-  setNewReviewOpen: (open) => set({ newReviewOpen: open }),
+  setNewReviewOpen: (open) => {
+    set({ newReviewOpen: open });
+    // Refresh the branch list when opening the picker so branches created outside
+    // Locke since the repo was opened show up without reopening the folder/app.
+    const { repoPath } = get();
+    if (open && repoPath && !MOCK) {
+      listBranches(repoPath)
+        .then((branches) => set({ branches }))
+        .catch(() => {
+          // Best-effort refresh; the picker still works with the cached list.
+        });
+    }
+  },
   requestDeletePull: (id) => set({ deletePullPending: id }),
 
   runAgent: async () => {
@@ -788,6 +837,7 @@ export const useStore = create<LockeState>((set, get) => ({
   },
   setRunSelectedAgent: (id) => set({ runSelectedAgentId: id }),
   setRunAutoMode: (on) => set({ runAutoMode: on }),
+  setRunPlanFirst: (on) => set({ runPlanFirst: on }),
   cancelRunApproval: () => set({ runApprovalOpen: false }),
   confirmRun: () => {
     set({ runApprovalOpen: false });
@@ -795,7 +845,7 @@ export const useStore = create<LockeState>((set, get) => ({
   },
 
   startRun: async () => {
-    const { repoPath, selectedPR, reviews, files, threads, agents, disabledAgents, runUseWorktree, runSelectedAgentId, runAutoMode } = get();
+    const { repoPath, selectedPR, reviews, files, threads, agents, disabledAgents, runUseWorktree, runSelectedAgentId, runAutoMode, runPlanFirst } = get();
     const review = reviews.find((r) => r.id === selectedPR);
     // Honor the user's pick from the approval modal; fall back to the first
     // detected, enabled agent if the selection is stale or unset.
@@ -804,31 +854,33 @@ export const useStore = create<LockeState>((set, get) => ({
     // Always switch to the Run tab so the user sees what happens.
     set({ workspaceTab: "run" });
     if (!repoPath || !review || !agent) {
-      set({ runEvents: [{ key: "x", kind: "denied", text: "No enabled agent detected to run.", time: "" }], runDone: false, runPaused: true });
+      set((s) => ({ runs: mergeRun(s.runs, selectedPR, { events: [{ key: "x", kind: "denied", text: "No enabled agent detected to run.", time: "" }], done: false, paused: true, runId: null, phase: null }) }));
       return;
     }
     // The agent acts on open change requests; with none there's nothing to do.
     const openCRs = threads.filter((t) => !t.resolved && t.kind === "change_request").length;
     if (openCRs === 0) {
-      set({ runEvents: [{ key: "x", kind: "msg", text: "No open change requests to action on this review.", time: "" }], runDone: false, runPaused: false, currentRunId: null });
+      set((s) => ({ runs: mergeRun(s.runs, review.id, { events: [{ key: "x", kind: "msg", text: "No open change requests to action on this review.", time: "" }], done: false, paused: false, runId: null, phase: null, planReview: null }) }));
       return;
     }
-    const prompt = buildAgentPrompt({ repoPath, selectedPR, reviews, files, threads });
+    // "Plan first" is Claude-only (it's the `--permission-mode plan` flow); other
+    // agents don't take the flag, so they always run directly.
+    const planFirst = runPlanFirst && agent.id === "claude";
+    const prompt = buildAgentPrompt({ repoPath, selectedPR, reviews, files, threads, planFirst });
     const runId = `run-${Date.now()}`;
     set((s) => ({
-      runEvents: [],
-      runDone: false,
-      runPaused: false,
-      currentRunId: runId,
+      runs: mergeRun(s.runs, review.id, { events: [], done: false, paused: false, planReview: null, phase: planFirst ? "plan" : "build", runId }),
       runReviewMap: { ...s.runReviewMap, [runId]: review.id },
       reviews: s.reviews.map((r) => (r.id === review.id ? { ...r, runId, runState: "running" } : r)),
     }));
     try {
       if (agent.id === "claude") {
         // Live streaming with in-app permissions; events arrive via listeners.
-        // Auto mode hands permission decisions to Claude's own classifier
-        // (`--permission-mode auto`); off keeps the in-app Allow/Deny prompts.
-        const permissionMode = runAutoMode ? "auto" : "default";
+        // Plan first starts in `--permission-mode plan` (the agent investigates,
+        // then blocks on ExitPlanMode for the Plan→Build gate). Otherwise Auto mode
+        // hands permission decisions to Claude's own classifier (`auto`); off keeps
+        // the in-app Allow/Deny prompts (`default`).
+        const permissionMode = planFirst ? "plan" : runAutoMode ? "auto" : "default";
         await startRunApi(runId, repoPath, review.branch, agent.cmd, prompt, runUseWorktree, permissionMode);
       } else {
         // Fallback: one-shot headless run, surfaced as a single event pair.
@@ -844,28 +896,42 @@ export const useStore = create<LockeState>((set, get) => ({
   },
 
   cancelRun: async () => {
-    const { currentRunId } = get();
-    if (!currentRunId || MOCK) return;
+    const { runs, selectedPR } = get();
+    const runId = runs[selectedPR]?.runId;
+    if (!runId || MOCK) return;
     try {
-      await cancelRunApi(currentRunId);
+      await cancelRunApi(runId);
     } catch {
       // Best-effort; the run:done handler settles UI state regardless.
     }
   },
 
   onRunEvent: (e) => {
-    const { runReviewMap, selectedPR, runEvents } = get();
+    const { runReviewMap } = get();
     const reviewId = runReviewMap[e.runId];
-    // Only the open review streams into the live view; background runs persist
-    // to disk and surface later via History.
-    if (reviewId !== selectedPR) return;
-    set({ runEvents: [...runEvents, { key: e.key, kind: e.kind, text: e.text, sub: e.sub, time: e.time }] });
+    // Route the event to its review's surface (keyed by reviewId) — it accumulates
+    // there whether or not that review is currently open, so navigating away never
+    // loses the stream.
+    if (!reviewId) return;
+    set((s) => ({
+      runs: mergeRun(s.runs, reviewId, {
+        events: [...(s.runs[reviewId]?.events ?? []), { key: e.key, kind: e.kind, text: e.text, sub: e.sub, time: e.time }],
+      }),
+    }));
   },
 
   onRunPermission: (e) => {
     const { runReviewMap, reviews, pending } = get();
     const reviewId = runReviewMap[e.runId];
     if (!reviewId) return;
+    // ExitPlanMode is the Plan→Build gate, not a tool prompt: the agent has
+    // finished planning and is blocked until the user approves. Route it to the
+    // review's dedicated plan-review surface (carrying the plan markdown in `cmd`)
+    // instead of the generic permission tray.
+    if (e.tool === "ExitPlanMode") {
+      set((s) => ({ runs: mergeRun(s.runs, reviewId, { planReview: { runId: e.runId, requestId: e.requestId, plan: e.cmd } }) }));
+      return;
+    }
     const review = reviews.find((r) => r.id === reviewId);
     set({
       // id is the CLI request_id — the key for the control_response round-trip.
@@ -890,20 +956,24 @@ export const useStore = create<LockeState>((set, get) => ({
   onRunDone: (e) => {
     const { runReviewMap, selectedPR } = get();
     const reviewId = runReviewMap[e.runId];
+    if (!reviewId) return;
     const finalState = e.state === "done" ? "done" : "failed";
     set((s) => ({
       reviews: s.reviews.map((r) => (r.id === reviewId ? { ...r, runState: finalState } : r)),
       // Clear any stale permission cards for this run.
       pending: s.pending.filter((p) => p.runId !== e.runId),
+      // Settle this review's surface (works whether or not it's the open review).
+      runs: mergeRun(s.runs, reviewId, {
+        runId: null,
+        phase: null,
+        done: e.state === "done",
+        paused: e.state !== "done",
+        planReview: null,
+      }),
     }));
-    if (reviewId !== selectedPR) return;
-    set({
-      currentRunId: null,
-      runDone: e.state === "done",
-      runPaused: e.state !== "done",
-    });
-    // Reload the diff (the agent may have edited/committed) and the history list.
-    void get().reloadAfterRun(reviewId);
+    // Reloading mutates the global diff slice, so only do it for the open review;
+    // a background run's diff refreshes lazily when the user next opens it.
+    if (reviewId === selectedPR) void get().reloadAfterRun(reviewId);
   },
 
   reloadAfterRun: async (reviewId) => {
@@ -953,12 +1023,13 @@ export const useStore = create<LockeState>((set, get) => ({
       set((s) => ({ pending: s.pending.filter((x) => x.id !== id) }));
       return;
     }
-    const { pending, runEvents, runDone } = get();
+    const { pending, runs } = get();
     const p = pending.find((x) => x.id === id);
     if (!p) return;
+    const surface = runs[p.reviewId] ?? EMPTY_SURFACE;
     let nextPending = pending.filter((x) => x.id !== id);
-    const events = runEvents.slice();
-    let done = runDone;
+    const events = surface.events.slice();
+    let done = surface.done;
     if (id === "a1") {
       events.push({
         key: "e4",
@@ -994,7 +1065,7 @@ export const useStore = create<LockeState>((set, get) => ({
       events.push({ key: "e7", kind: "done", text: "Done. Both change requests addressed — the diff is updated and ready to re-review.", time: "0:49" });
       done = true;
     }
-    set({ pending: nextPending, runEvents: events, runDone: done });
+    set((s) => ({ pending: nextPending, runs: mergeRun(s.runs, p.reviewId, { events, done }) }));
   },
   denyApproval: (id) => {
     if (!MOCK) {
@@ -1003,47 +1074,81 @@ export const useStore = create<LockeState>((set, get) => ({
       set((s) => ({ pending: s.pending.filter((x) => x.id !== id) }));
       return;
     }
-    const { pending, runEvents, runPaused } = get();
+    const { pending, runs } = get();
     const p = pending.find((x) => x.id === id);
     if (!p) return;
-    const events = runEvents.slice();
-    let paused = runPaused;
+    const surface = runs[p.reviewId] ?? EMPTY_SURFACE;
+    const events = surface.events.slice();
+    let paused = surface.paused;
     if (p.reviewId === "142") {
       events.push({ key: "ed", kind: "denied", text: "Denied `" + p.cmd + "` — run paused.", time: "—" });
       paused = true;
     }
-    set({ pending: pending.filter((x) => x.id !== id), runEvents: events, runPaused: paused });
+    set((s) => ({ pending: s.pending.filter((x) => x.id !== id), runs: mergeRun(s.runs, p.reviewId, { events, paused }) }));
+  },
+
+  // Approve the plan → allow the ExitPlanMode permission. The same Claude process
+  // exits plan mode and continues into the build phase, streaming its edits; later
+  // tool prompts arrive as normal permission cards.
+  approvePlan: (auto = false) => {
+    const reviewId = get().selectedPR;
+    const p = get().runs[reviewId]?.planReview;
+    if (!p) return;
+    set((s) => ({ runs: mergeRun(s.runs, reviewId, { planReview: null, phase: "build" }), runAutoMode: auto }));
+    if (MOCK) return;
+    // Order matters: the mode switch must reach the CLI (its stdin write flushed)
+    // BEFORE the plan is allowed, or the build exits plan mode in default and the
+    // first tool prompts before Auto takes. Await sequentially so the two control
+    // messages can't be reordered across separate Tauri IPC calls.
+    void (async () => {
+      try {
+        if (auto) await setPermissionMode(p.runId, "auto");
+        await respondPermission(p.runId, p.requestId, true);
+      } catch {
+        // The run:done handler settles UI state if the round-trip fails.
+      }
+    })();
+  },
+  // Request changes → deny the ExitPlanMode permission with the user's feedback as
+  // the message. Claude revises and re-presents a plan (a fresh ExitPlanMode
+  // permission routes back into the surface's planReview), so the run stays in the
+  // plan phase.
+  requestPlanChanges: (feedback) => {
+    const reviewId = get().selectedPR;
+    const p = get().runs[reviewId]?.planReview;
+    if (!p) return;
+    const msg = feedback.trim() || "Please revise the plan.";
+    if (!MOCK) void respondPermission(p.runId, p.requestId, false, undefined, msg);
+    set((s) => ({ runs: mergeRun(s.runs, reviewId, { planReview: null }) }));
   },
 
   go: (view) =>
     set({ view, approvalsOpen: false, settingsOpen: false, fileFromReview: null, langMenuOpen: false }),
   openReview: (id, tab = "diff") => {
     const { repoPath, reviews, pulls } = get();
+    // The run surface is per-review (`runs[id]`), so it persists across navigation
+    // automatically — opening a review just selects it; nothing to reset or restore.
     // Verdict is registry-backed; seed it from the pull so the workspace reflects
-    // any prior decision. Reset the (prototype) run surface for the new review.
+    // any prior decision.
     set({
       view: "workspace",
       workspaceTab: tab,
       selectedPR: id,
       verdict: pulls[id]?.verdict ?? null,
       approvalsOpen: false,
-      runEvents: [],
-      runDone: false,
-      runPaused: false,
-      showPermission: false,
-      currentRunId: null,
     });
     if (MOCK) {
       // Seed the design's workspace data for the opened review (only #142 is
-      // detailed; others open with an empty diff).
-      set({
+      // detailed; others open with an empty diff). Seed its run surface from the
+      // mock events only if it has none yet, so a scripted run-in-progress survives.
+      set((s) => ({
         files: MOCK_FILES_BY_ID[id] ?? [],
         threads: MOCK_THREADS_BY_ID[id] ?? [],
         history: MOCK_HISTORY_BY_ID[id] ?? [],
-        runEvents: MOCK_RUN_EVENTS_BY_ID[id] ?? [],
+        runs: s.runs[id] ? s.runs : mergeRun(s.runs, id, { events: MOCK_RUN_EVENTS_BY_ID[id] ?? [] }),
         liveChecks: MOCK_CHECKS,
         selectedFile: 0,
-      });
+      }));
       return;
     }
     if (!repoPath) return;

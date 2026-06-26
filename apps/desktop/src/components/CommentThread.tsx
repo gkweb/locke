@@ -28,14 +28,14 @@ export function CommentThread({ thread }: { thread: Thread }) {
   const toggleChangeRequest = useStore((s) => s.toggleChangeRequest);
   const reviews = useStore((s) => s.reviews);
   const selectedPR = useStore((s) => s.selectedPR);
-  const currentRunId = useStore((s) => s.currentRunId);
+  const liveRunId = useStore((s) => s.runs[s.selectedPR]?.runId ?? null);
   const isChangeRequest = thread.kind === "change_request";
 
   // While an agent run is in flight on this review, an open change request is
   // actively being addressed — surface which run is on it.
   const review = reviews.find((r) => r.id === selectedPR);
   const beingAddressed = isChangeRequest && !thread.resolved && review?.runState === "running";
-  const activeRunId = currentRunId ?? review?.runId;
+  const activeRunId = liveRunId ?? review?.runId;
 
   return (
     <div

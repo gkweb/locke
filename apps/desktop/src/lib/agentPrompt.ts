@@ -10,6 +10,10 @@ export interface AgentPromptInput {
   reviews: Review[];
   files: ChangedFile[];
   threads: Thread[];
+  /** "Plan first": ask the agent to investigate read-only and present a plan via
+   *  ExitPlanMode before editing. Approving the plan transitions the same run into
+   *  the build phase, where the instructions below are carried out. */
+  planFirst?: boolean;
 }
 
 /** Open, actionable change-request threads — the builder's unit of work. */
@@ -44,6 +48,22 @@ export function buildAgentPrompt(state: AgentPromptInput): string {
   lines.push(`Repository: \`${repo}\``);
   lines.push(`Branch: \`${review.branch}\` (based on \`${review.base}\`)`);
   lines.push("");
+
+  if (state.planFirst) {
+    lines.push(
+      "**Work in two phases.** First investigate the change requests below " +
+        "read-only and present a concise plan for addressing them via the " +
+        "`ExitPlanMode` tool — do not edit any files yet. Once the reviewer " +
+        "approves the plan, carry it out following the instructions below.",
+    );
+    lines.push("");
+    lines.push(
+      "Don't use AskUserQuestion — interactive questions aren't available here. " +
+        "If something is genuinely ambiguous, lay the options out in the plan itself " +
+        "so the reviewer can decide when they approve it.",
+    );
+    lines.push("");
+  }
   lines.push(
     `You are working on the branch \`${review.branch}\`. A reviewer has left ` +
       `${requests.length} change request${requests.length === 1 ? "" : "s"} on this pull ` +

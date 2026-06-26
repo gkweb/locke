@@ -17,8 +17,10 @@ export function RunApprovalModal() {
   const runUseWorktree = useStore((s) => s.runUseWorktree);
   const runSelectedAgentId = useStore((s) => s.runSelectedAgentId);
   const runAutoMode = useStore((s) => s.runAutoMode);
+  const runPlanFirst = useStore((s) => s.runPlanFirst);
   const setRunSelectedAgent = useStore((s) => s.setRunSelectedAgent);
   const setRunAutoMode = useStore((s) => s.setRunAutoMode);
+  const setRunPlanFirst = useStore((s) => s.setRunPlanFirst);
   const cancel = useStore((s) => s.cancelRunApproval);
   const confirm = useStore((s) => s.confirmRun);
 
@@ -31,12 +33,22 @@ export function RunApprovalModal() {
   // `--permission-mode` flag. Codex effectively always runs unattended.
   const isClaude = selected?.id === "claude";
   const isCodex = selected?.id === "codex";
-  const autoSupported = isClaude;
-  const autoNote = isClaude
-    ? "Claude approves its own in-scope actions (no per-tool prompts). Anything risky still stops for you."
-    : isCodex
-      ? "Codex already runs unattended — this toggle has no effect for it."
-      : `${selected?.name ?? "This agent"} runs headlessly; Locke can't set its permission mode.`;
+  // Plan first is the `--permission-mode plan` flow — Claude-only.
+  const planSupported = isClaude;
+  const planFirst = runPlanFirst && planSupported;
+  // When planning first, the build phase runs with per-tool prompts (Auto can't be
+  // pre-armed for it), so Auto and Plan are mutually exclusive in the UI.
+  const autoSupported = isClaude && !planFirst;
+  const autoNote = planFirst
+    ? "You'll choose whether the build runs unattended (Auto mode) when you approve the plan."
+    : isClaude
+      ? "Claude approves its own in-scope actions (no per-tool prompts). Anything risky still stops for you."
+      : isCodex
+        ? "Codex already runs unattended — this toggle has no effect for it."
+        : `${selected?.name ?? "This agent"} runs headlessly; Locke can't set its permission mode.`;
+  const planNote = planSupported
+    ? "Claude investigates and presents a plan for your approval before editing. Approve it to start the work."
+    : `${selected?.name ?? "This agent"} doesn't support plan mode — it runs directly.`;
 
   const accent = selected ? agentIdAccent[selected.id] ?? color.violet : color.violet;
 
@@ -101,6 +113,46 @@ export function RunApprovalModal() {
             })}
           </div>
         )}
+
+        {/* plan first */}
+        <button
+          onClick={() => planSupported && setRunPlanFirst(!runPlanFirst)}
+          disabled={!planSupported}
+          style={{
+            width: "100%",
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            padding: "12px 13px",
+            borderRadius: 10,
+            textAlign: "left",
+            cursor: planSupported ? "pointer" : "default",
+            background: color.appBg,
+            border: `1px solid ${planFirst ? alpha.violet(0.5) : color.borderInput}`,
+            opacity: planSupported ? 1 : 0.6,
+            fontFamily: font.sans,
+            marginBottom: 10,
+          }}
+        >
+          <span
+            style={{
+              width: 34,
+              height: 20,
+              flex: "none",
+              borderRadius: 11,
+              padding: 2,
+              display: "flex",
+              background: planFirst ? color.violet : "var(--lk-borderPopover)",
+              justifyContent: planFirst ? "flex-end" : "flex-start",
+            }}
+          >
+            <span style={{ width: 16, height: 16, borderRadius: "50%", background: "#fff" }} />
+          </span>
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: color.textSoft, display: "block" }}>Plan first</span>
+            <span style={{ fontSize: 11.5, color: color.textGhost, lineHeight: 1.45 }}>{planNote}</span>
+          </span>
+        </button>
 
         {/* auto mode */}
         <button
@@ -168,7 +220,7 @@ export function RunApprovalModal() {
             }}
           >
             <CheckIcon size={13} color="#fff" stroke={1.8} />
-            Resolve with {selected?.name ?? "agent"}
+            {planFirst ? `Plan with ${selected?.name ?? "agent"}` : `Resolve with ${selected?.name ?? "agent"}`}
           </button>
         </div>
       </div>

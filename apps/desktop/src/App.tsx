@@ -109,7 +109,9 @@ export function App() {
         if (fsTimer) clearTimeout(fsTimer);
         fsTimer = setTimeout(() => {
           const st = useStore.getState();
-          if (st.currentRunId) return;
+          // Don't refresh mid-run on the open review — run:done already reloads,
+          // and live churn would thrash.
+          if (st.runs[st.selectedPR]?.runId) return;
           if (st.view === "workspace" && st.selectedPR) void st.refreshWorkspace();
         }, 400);
       }),

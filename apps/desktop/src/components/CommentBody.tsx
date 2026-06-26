@@ -1,10 +1,11 @@
-import { Fragment, type ReactNode } from "react";
+import { Fragment, type CSSProperties, type ReactNode } from "react";
 import { color, font } from "../theme/tokens.js";
 
-// Lightweight markdown for comment bodies. Agents reply in markdown — fenced code
-// blocks, inline `code`, **bold** — which would otherwise render as a
-// run-together single line. Dependency-free; handles the common subset agents
-// actually emit, and preserves newlines for everything else.
+// Lightweight markdown for agent-authored bodies (comment replies, run-stream
+// narration, and plan-review cards). Agents reply in markdown — headings, bullet
+// lists, fenced/inline `code`, **bold**, *italic* — which would otherwise render as
+// raw `#`/`*` markers run together on one line. Dependency-free; handles the common
+// subset agents actually emit.
 
 type Seg = { type: "code"; content: string } | { type: "text"; content: string };
 
@@ -12,7 +13,10 @@ type Seg = { type: "code"; content: string } | { type: "text"; content: string }
 // `\w*` stops the language token at the first space/newline, so it works whether
 // the fence is on its own line or written inline (as agents sometimes do).
 const FENCE = /```(\w*)[ \t]*\n?([\s\S]*?)```/g;
-const INLINE = /(`[^`]+`)|(\*\*[^*]+\*\*)/g;
+// Inline spans, tried left-to-right: `code`, then **bold**, then *italic*. Italic
+// requires a non-space after the opening `*` (and is lazy) so it doesn't fire on
+// arithmetic (`a * b`) or eat into bold.
+const INLINE = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*\s][^*\n]*?\*)/g;
 
 const inlineCode = {
   fontFamily: font.mono,
@@ -39,6 +43,16 @@ const codeBlock = {
   whiteSpace: "pre" as const,
 };
 
+const paraStyle: CSSProperties = { margin: "0 0 7px", lineHeight: 1.55 };
+const ulStyle: CSSProperties = { margin: "4px 0 8px", paddingLeft: 18 };
+const liStyle: CSSProperties = { margin: "3px 0", lineHeight: 1.5 };
+
+function headingStyle(level: number): CSSProperties {
+  if (level <= 1) return { fontSize: 14.5, fontWeight: 700, color: color.textBright, margin: "12px 0 6px", lineHeight: 1.4 };
+  if (level === 2) return { fontSize: 13, fontWeight: 700, color: color.text, margin: "12px 0 5px", lineHeight: 1.4 };
+  return { fontSize: 12.5, fontWeight: 600, color: color.textSoft, margin: "10px 0 4px", lineHeight: 1.4 };
+}
+
 function splitFences(body: string): Seg[] {
   const segs: Seg[] = [];
   let last = 0;
@@ -53,7 +67,7 @@ function splitFences(body: string): Seg[] {
   return segs;
 }
 
-// Inline `code` and **bold** within a text run; everything else is plain.
+// Inline `code`, **bold**, and *italic* within a text run; everything else plain.
 function inline(text: string): ReactNode[] {
   const out: ReactNode[] = [];
   let last = 0;
@@ -69,11 +83,17 @@ function inline(text: string): ReactNode[] {
           {tok.slice(1, -1)}
         </code>,
       );
-    } else {
+    } else if (tok.startsWith("**")) {
       out.push(
         <strong key={key++} style={{ color: color.text, fontWeight: 600 }}>
           {tok.slice(2, -2)}
         </strong>,
+      );
+    } else {
+      out.push(
+        <em key={key++} style={{ fontStyle: "italic" }}>
+          {tok.slice(1, -1)}
+        </em>,
       );
     }
     last = m.index + tok.length;
@@ -82,19 +102,81 @@ function inline(text: string): ReactNode[] {
   return out;
 }
 
-export function CommentBody({ body }: { body: string }) {
+// Block-level: headings (`#`..`####`), bullet lists (`-`/`*`), and paragraphs
+// (consecutive non-blank lines joined with soft breaks; blank lines separate).
+function blocks(text: string): ReactNode[] {
+  const out: ReactNode[] = [];
+  let key = 0;
+  let para: string[] = [];
+  let list: string[] = [];
+  const flushPara = () => {
+    if (!para.length) return;
+    const lines = para;
+    out.push(
+      <p key={key++} style={paraStyle}>
+        {lines.map((l, i) => (
+          <Fragment key={i}>
+            {i > 0 && <br />}
+            {inline(l)}
+          </Fragment>
+        ))}
+      </p>,
+    );
+    para = [];
+  };
+  const flushList = () => {
+    if (!list.length) return;
+    const items = list;
+    out.push(
+      <ul key={key++} style={ulStyle}>
+        {items.map((l, i) => (
+          <li key={i} style={liStyle}>
+            {inline(l)}
+          </li>
+        ))}
+      </ul>,
+    );
+    list = [];
+  };
+  for (const raw of text.split("\n")) {
+    const t = raw.trim();
+    const h = /^(#{1,4})\s+(.*)$/.exec(t);
+    const b = /^[-*]\s+(.*)$/.exec(t);
+    if (h) {
+      flushPara();
+      flushList();
+      out.push(
+        <div key={key++} style={headingStyle(h[1].length)}>
+          {inline(h[2])}
+        </div>,
+      );
+    } else if (b) {
+      flushPara();
+      list.push(b[1]);
+    } else if (t === "") {
+      flushPara();
+      flushList();
+    } else {
+      flushList();
+      para.push(raw.trimEnd());
+    }
+  }
+  flushPara();
+  flushList();
+  return out;
+}
+
+export function CommentBody({ body, tone }: { body: string; tone?: string }) {
   const segs = splitFences(body.trim());
   return (
-    <div style={{ fontSize: 12.8, lineHeight: 1.55, color: color.textMuted, wordBreak: "break-word" }}>
+    <div style={{ fontSize: 12.8, lineHeight: 1.55, color: tone ?? color.textMuted, wordBreak: "break-word" }}>
       {segs.map((s, i) =>
         s.type === "code" ? (
           <pre key={i} style={codeBlock}>
             {s.content}
           </pre>
         ) : (
-          <span key={i} style={{ whiteSpace: "pre-wrap" }}>
-            {inline(s.content)}
-          </span>
+          <Fragment key={i}>{blocks(s.content)}</Fragment>
         ),
       )}
     </div>
