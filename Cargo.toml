@@ -1,0 +1,20 @@
+# Cargo workspace tying the Tauri desktop crate together with the shared
+# persistence crate (`locke-store`) and the standalone MCP server (`locke-mcp`),
+# so all three build from one `target/` and share `locke-store` as the single
+# source of truth for the `.locke/` on-disk format.
+[workspace]
+resolver = "2"
+members = [
+    "apps/desktop/src-tauri",
+    "crates/locke-store",
+    "crates/locke-mcp",
+]
+
+# Profiles must live at the workspace root (a member's `[profile]` is ignored once
+# a workspace exists). These mirror the desktop app's prior release settings.
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

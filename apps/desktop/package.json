@@ -8,7 +8,9 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "mcp:stage": "bash scripts/stage-mcp-sidecar.sh debug",
+    "mcp:stage:release": "bash scripts/stage-mcp-sidecar.sh release"
   },
   "dependencies": {
     "@fontsource/geist-mono": "^5.1.0",

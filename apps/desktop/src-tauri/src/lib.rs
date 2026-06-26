@@ -6,6 +6,7 @@ mod actions;
 mod commands;
 mod config;
 mod git;
+mod mcp;
 mod run;
 mod store;
 
@@ -48,6 +49,11 @@ pub fn run() {
             commands::read_config,
             commands::get_locke_tracking,
             commands::set_locke_tracking,
+            commands::mcp_server_status,
+            commands::install_mcp_server,
+            commands::uninstall_mcp_server,
+            commands::mcp_call_log,
+            commands::clear_mcp_call_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Locke");

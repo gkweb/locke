@@ -158,6 +158,8 @@ export function SettingsPopover() {
   const navPlace = useStore((s) => s.navPlace);
   const setNavPlace = useStore((s) => s.setNavPlace);
   const goExtensions = useStore((s) => s.goExtensions);
+  const goIntegrations = useStore((s) => s.goIntegrations);
+  const mcpInstalled = useStore((s) => s.mcpStatus?.installed ?? false);
 
   const navItems = NAV_ITEMS.filter((item) => !item.agentOnly || agentMode);
 
@@ -167,7 +169,7 @@ export function SettingsPopover() {
         position: "absolute",
         top: 50,
         right: 13,
-        width: 300,
+        width: 344,
         background: color.popoverBg,
         border: `1px solid ${color.borderPopover}`,
         borderRadius: 13,
@@ -221,6 +223,67 @@ export function SettingsPopover() {
             onSet={(p) => setNavPlace(item.key, p)}
           />
         ))}
+
+        <div style={{ height: 1, background: color.borderRail, margin: "13px 0" }} />
+
+        <HoverButton
+          onClick={goIntegrations}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 11,
+            width: "100%",
+            textAlign: "left",
+            padding: "11px 12px",
+            borderRadius: 10,
+            cursor: "pointer",
+            fontFamily: font.sans,
+            background: "#0e1117",
+            border: `1px solid ${color.borderRow2}`,
+            marginBottom: 8,
+          }}
+          hoverStyle={{ borderColor: color.borderPopover }}
+        >
+          <span
+            style={{
+              width: 30,
+              height: 30,
+              flex: "none",
+              borderRadius: 8,
+              background: alpha.teal(0.12),
+              border: `1px solid ${alpha.teal(0.3)}`,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: color.teal,
+            }}
+          >
+            <AgentsIcon size={16} stroke={1.4} />
+          </span>
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: color.text }}>Integrations</span>
+              <span
+                style={{
+                  fontSize: 9,
+                  fontWeight: 700,
+                  letterSpacing: ".4px",
+                  padding: "1px 5px",
+                  borderRadius: 5,
+                  color: mcpInstalled ? color.teal : color.textGhost,
+                  background: mcpInstalled ? alpha.teal(0.12) : "#141821",
+                  border: `1px solid ${mcpInstalled ? alpha.teal(0.3) : color.borderRow2}`,
+                }}
+              >
+                {mcpInstalled ? "MCP ON" : "MCP OFF"}
+              </span>
+            </span>
+            <span style={{ display: "block", fontSize: 11.5, color: color.textFaint, lineHeight: 1.45, marginTop: 2 }}>
+              Expose Locke to your agents over MCP, and watch their calls.
+            </span>
+          </span>
+          <ChevronRightIcon size={14} color={color.textGhost} stroke={1.7} style={{ flex: "none" }} />
+        </HoverButton>
 
         <div style={{ height: 1, background: color.borderRail, margin: "13px 0" }} />
 

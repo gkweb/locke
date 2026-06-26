@@ -1,0 +1,12 @@
+# Shared, Tauri-free persistence for Locke's `.locke/` review state (pulls,
+# comments, runs, …). Depended on by both the desktop app (`locke_lib`) and the
+# standalone MCP server (`locke-mcp`) so the on-disk format has one owner.
+[package]
+name = "locke-store"
+version = "0.1.1"
+edition = "2021"
+rust-version = "1.77.2"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

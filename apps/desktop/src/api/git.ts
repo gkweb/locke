@@ -136,6 +136,54 @@ export const readAgentSettings = (): Promise<AgentSettings> =>
 export const writeAgentSettings = (settings: AgentSettings): Promise<void> =>
   isTauri ? invoke("write_agent_settings", { settings }) : Promise.resolve();
 
+// ---- MCP integration (Settings → Integrations) ----
+
+/** Status of the Locke MCP server registration, for the Settings panel. */
+export interface McpStatus {
+  /** Whether the `locke` server is registered in Claude Code (user scope). */
+  installed: boolean;
+  /** Whether the `locke-mcp` binary was found to install/point clients at. */
+  binaryAvailable: boolean;
+  /** Absolute path to the resolved `locke-mcp` binary ("" if not found). */
+  binaryPath: string;
+  /** Whether the Claude Code CLI (`claude`) is available to install with. */
+  claudeAvailable: boolean;
+  /** Copy-able config snippet for registering Locke in any other MCP client. */
+  snippet: { mcpServers: { locke: { command: string } } };
+}
+
+const MOCK_MCP_STATUS: McpStatus = {
+  installed: false,
+  binaryAvailable: false,
+  binaryPath: "",
+  claudeAvailable: false,
+  snippet: { mcpServers: { locke: { command: "locke-mcp" } } },
+};
+
+export const mcpServerStatus = (): Promise<McpStatus> =>
+  isTauri ? invoke<McpStatus>("mcp_server_status") : Promise.resolve(MOCK_MCP_STATUS);
+
+export const installMcpServer = (): Promise<void> => invoke("install_mcp_server");
+
+export const uninstallMcpServer = (): Promise<void> => invoke("uninstall_mcp_server");
+
+/** One logged MCP tool call (written by locke-mcp into ~/.locke/mcp-log.jsonl). */
+export interface McpCallLogEntry {
+  time: string;
+  tool: string;
+  agent: string;
+  repo: string;
+  args: unknown;
+  ok: boolean;
+  error: string | null;
+}
+
+export const mcpCallLog = (limit = 200): Promise<McpCallLogEntry[]> =>
+  isTauri ? invoke<McpCallLogEntry[]>("mcp_call_log", { limit }) : Promise.resolve([]);
+
+export const clearMcpCallLog = (): Promise<void> =>
+  isTauri ? invoke("clear_mcp_call_log") : Promise.resolve();
+
 export const runChecks = (repo: string, branch: string, checks: CheckSpec[]) =>
   invoke<CheckResult[]>("run_checks", { repo, branch, checks });
 

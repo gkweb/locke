@@ -36,6 +36,13 @@ import {
   detectAgents,
   readAgentSettings,
   writeAgentSettings,
+  mcpServerStatus,
+  installMcpServer,
+  uninstallMcpServer,
+  mcpCallLog,
+  clearMcpCallLog,
+  type McpStatus,
+  type McpCallLogEntry,
   runAgent as runAgentApi,
   startRun as startRunApi,
   respondPermission,
@@ -235,6 +242,16 @@ interface LockeState {
   agents: AgentInfo[];
   /** Agent ids the user has explicitly opted out of (app-global, persisted). */
   disabledAgents: string[];
+  /** Status of the Locke MCP server registration (Settings → Integrations). */
+  mcpStatus: McpStatus | null;
+  /** True while an MCP install/uninstall is in flight. */
+  mcpBusy: boolean;
+  /** Last MCP install/uninstall error to surface in Settings ("" when none). */
+  mcpError: string;
+  /** Recent MCP tool calls (newest first) for the Integrations debug log. */
+  mcpLog: McpCallLogEntry[];
+  /** The view to return to when leaving the Integrations page. */
+  intReturn: View;
   /** Whether the app-global Settings modal is open. */
   settingsOpen: boolean;
   /** Whether the New-review modal (branch pickers) is open. */
@@ -310,6 +327,20 @@ interface LockeState {
   // ---- agents + settings (app-global) ----
   detectAgents: () => Promise<void>;
   loadAgentSettings: () => Promise<void>;
+  /** Refresh the Locke MCP server registration status. */
+  loadMcpStatus: () => Promise<void>;
+  /** Register the Locke MCP server in Claude Code, then refresh status. */
+  installMcp: () => Promise<void>;
+  /** Remove the Locke MCP server registration, then refresh status. */
+  uninstallMcp: () => Promise<void>;
+  /** Open the Integrations page (remembers the view to return to). */
+  goIntegrations: () => void;
+  /** Leave the Integrations page, back to where it was opened from. */
+  backFromInt: () => void;
+  /** Reload the MCP debug call log. */
+  loadMcpLog: () => Promise<void>;
+  /** Clear the MCP debug call log, then reload it. */
+  clearMcpLog: () => Promise<void>;
   toggleAgentEnabled: (id: string) => void;
   /** Set the global "Agent control" vs "Reviews only" mode and persist it. */
   setAgentMode: (on: boolean) => void;
@@ -458,6 +489,11 @@ export const useStore = create<LockeState>((set, get) => ({
   editingChecks: false,
   agents: MOCK ? MOCK_AGENTS : [],
   disabledAgents: MOCK ? MOCK_DISABLED : [],
+  mcpStatus: null,
+  mcpBusy: false,
+  mcpError: "",
+  mcpLog: [],
+  intReturn: "activity",
   settingsOpen: false,
   newReviewOpen: false,
   deletePullPending: "",
@@ -491,6 +527,78 @@ export const useStore = create<LockeState>((set, get) => ({
       set({ disabledAgents: s.disabled, agentMode: s.enabled });
     } catch {
       // Missing/unreadable settings just means defaults (nothing disabled, agents on).
+    }
+  },
+
+  loadMcpStatus: async () => {
+    if (MOCK) return; // no Tauri bridge in mock mode; leave status null
+    try {
+      const status = await mcpServerStatus();
+      set({ mcpStatus: status });
+    } catch {
+      // A failed probe just leaves the panel in its prior/empty state.
+    }
+  },
+
+  installMcp: async () => {
+    if (MOCK || get().mcpBusy) return;
+    set({ mcpBusy: true, mcpError: "" });
+    try {
+      await installMcpServer();
+    } catch (e) {
+      set({ mcpError: String(e) });
+    } finally {
+      // Always refresh real status from Claude so the toggle reflects ground truth.
+      await get().loadMcpStatus();
+      set({ mcpBusy: false });
+    }
+  },
+
+  uninstallMcp: async () => {
+    if (MOCK || get().mcpBusy) return;
+    set({ mcpBusy: true, mcpError: "" });
+    try {
+      await uninstallMcpServer();
+    } catch (e) {
+      set({ mcpError: String(e) });
+    } finally {
+      await get().loadMcpStatus();
+      set({ mcpBusy: false });
+    }
+  },
+
+  goIntegrations: () =>
+    set((s) => ({
+      intReturn: s.view === "integrations" ? s.intReturn : s.view,
+      view: "integrations",
+      settingsOpen: false,
+      approvalsOpen: false,
+    })),
+
+  backFromInt: () => {
+    const { intReturn, selectedPR } = get();
+    if (intReturn === "workspace" && selectedPR) {
+      get().openReview(selectedPR, get().workspaceTab);
+    } else {
+      get().go(intReturn === "workspace" ? "activity" : intReturn);
+    }
+  },
+
+  loadMcpLog: async () => {
+    if (MOCK) return;
+    try {
+      set({ mcpLog: await mcpCallLog() });
+    } catch {
+      // A failed read just leaves the prior log in place.
+    }
+  },
+
+  clearMcpLog: async () => {
+    if (MOCK) return;
+    try {
+      await clearMcpCallLog();
+    } finally {
+      await get().loadMcpLog();
     }
   },
 

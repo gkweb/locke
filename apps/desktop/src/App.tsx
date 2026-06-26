@@ -12,6 +12,7 @@ import { RunsView } from "./views/RunsView.js";
 import { AgentsView } from "./views/AgentsView.js";
 import { FilesView } from "./views/FilesView.js";
 import { ExtensionsView } from "./views/ExtensionsView.js";
+import { IntegrationsView } from "./views/IntegrationsView.js";
 import { WorkspaceView } from "./views/WorkspaceView.js";
 import { NewReviewModal } from "./components/NewReviewModal.js";
 import { DeletePullModal } from "./components/DeletePullModal.js";
@@ -44,6 +45,8 @@ function Main() {
       return <FilesView />;
     case "extensions":
       return <ExtensionsView />;
+    case "integrations":
+      return <IntegrationsView />;
     case "workspace":
       return <WorkspaceView />;
   }
@@ -57,13 +60,16 @@ export function App() {
   const deletePullPending = useStore((s) => s.deletePullPending);
   const detectAgents = useStore((s) => s.detectAgents);
   const loadAgentSettings = useStore((s) => s.loadAgentSettings);
+  const loadMcpStatus = useStore((s) => s.loadMcpStatus);
 
   // Probe installed agent CLIs and load app-global opt-outs + mode once on launch
-  // (repo-independent — the agents directory is reachable with no repo open).
+  // (repo-independent — the agents directory is reachable with no repo open). Also
+  // probe the Locke MCP server registration status for the Settings panel.
   useEffect(() => {
     void detectAgents();
     void loadAgentSettings();
-  }, [detectAgents, loadAgentSettings]);
+    void loadMcpStatus();
+  }, [detectAgents, loadAgentSettings, loadMcpStatus]);
 
   // Route the backend's live run stream (Tauri events) into the store. Set up
   // once; handlers resolve the target review by runId internally.

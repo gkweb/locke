@@ -1,0 +1,18 @@
+# Standalone MCP server exposing Locke's local pull-request system (pulls,
+# comments, history) to any MCP client. Speaks newline-delimited JSON-RPC over
+# stdio — the MCP stdio transport — with no async runtime, reusing `locke-store`
+# for all `.locke/` reads and writes so the on-disk format has a single owner.
+[package]
+name = "locke-mcp"
+version = "0.1.1"
+edition = "2021"
+rust-version = "1.77.2"
+
+[[bin]]
+name = "locke-mcp"
+path = "src/main.rs"
+
+[dependencies]
+locke-store = { path = "../locke-store" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -34,7 +34,10 @@ MODE="${1:-dmg}"
 # Repo root is three levels up from this script (apps/desktop/scripts).
 cd "$(dirname "$0")/../../.."
 
-BUNDLE_DIR="apps/desktop/src-tauri/target/release/bundle"
+# Cargo workspace target dir lives at the repo root (`target/`), so bundles land
+# under target/release/bundle. `pnpm tauri build` stages the locke-mcp sidecar via
+# its `beforeBuildCommand` before bundling.
+BUNDLE_DIR="target/release/bundle"
 VER="$(sed -n 's/.*"version": "\(.*\)".*/\1/p' apps/desktop/package.json | head -1)"
 
 # --- helpers ---------------------------------------------------------------

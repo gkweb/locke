@@ -32,6 +32,7 @@ export type View =
   | "agents"
   | "files"
   | "extensions"
+  | "integrations"
   | "workspace";
 
 /** A configurable navigation destination (excludes `workspace`/`extensions`,

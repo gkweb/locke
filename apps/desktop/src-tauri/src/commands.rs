@@ -4,6 +4,7 @@
 use crate::actions;
 use crate::config;
 use crate::git;
+use crate::mcp;
 use crate::run;
 use crate::store;
 use serde_json::Value;
@@ -229,4 +230,31 @@ pub fn get_locke_tracking(repo: String) -> bool {
 #[tauri::command]
 pub fn set_locke_tracking(repo: String, tracked: bool) -> Result<(), String> {
     store::set_locke_tracking(&repo, tracked)
+}
+
+// ---- MCP server install/status (Settings → Integrations) ----
+
+#[tauri::command]
+pub fn mcp_server_status(app: tauri::AppHandle) -> Value {
+    mcp::status(&app)
+}
+
+#[tauri::command]
+pub fn install_mcp_server(app: tauri::AppHandle) -> Result<(), String> {
+    mcp::install(&app)
+}
+
+#[tauri::command]
+pub fn uninstall_mcp_server() -> Result<(), String> {
+    mcp::uninstall()
+}
+
+#[tauri::command]
+pub fn mcp_call_log(limit: Option<usize>) -> Vec<Value> {
+    mcp::call_log(limit.unwrap_or(200))
+}
+
+#[tauri::command]
+pub fn clear_mcp_call_log() -> Result<(), String> {
+    mcp::clear_call_log()
 }
