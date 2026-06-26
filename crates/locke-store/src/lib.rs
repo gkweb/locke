@@ -683,6 +683,85 @@ pub fn write_loop_plan(repo: &str, id: &str, content: &str) -> R<()> {
     fs::write(dir.join("plan.md"), content).map_err(|e| format!("write plan: {e}"))
 }
 
+// ---- target+spec manifest (.locke/loops/<id>/manifest.json) ----
+
+/// One row of a loop's manifest: a target file plus (once Plan mode runs) its
+/// spec. The manifest is the loop's checked-in, hand-editable source of truth —
+/// the runner takes its active set from here, not a live glob. A superset of the
+/// builder's `LoopTarget` (path/loc/risk/flags/inc/reason) plus spec fields.
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ManifestEntry {
+    pub path: String,
+    #[serde(default)]
+    pub loc: u64,
+    #[serde(default)]
+    pub risk: String,
+    #[serde(default)]
+    pub flags: Vec<String>,
+    /// Whether this file is in scope (the builder audit toggle).
+    #[serde(default)]
+    pub inc: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    // ---- spec enrichment (written by Plan mode) ----
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approach: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub detected: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tests: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// Repo-relative ref to the per-item markdown spec, once written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<String>,
+    /// Spec lifecycle: "" | speccing | specced | review | excluded.
+    #[serde(default)]
+    pub status: String,
+}
+
+fn loop_manifest_path(repo: &str, id: &str) -> PathBuf {
+    loop_dir(repo, id).join("manifest.json")
+}
+
+pub fn read_loop_manifest(repo: &str, id: &str) -> R<Vec<ManifestEntry>> {
+    match read_json(&loop_manifest_path(repo, id))? {
+        Some(v) => serde_json::from_value(v).map_err(|e| format!("parse manifest: {e}")),
+        None => Ok(Vec::new()),
+    }
+}
+
+pub fn write_loop_manifest(repo: &str, id: &str, entries: &[ManifestEntry]) -> R<()> {
+    ensure_locke(repo)?;
+    let _lock = lock_repo(repo)?;
+    let value = serde_json::to_value(entries).map_err(|e| format!("serialize manifest: {e}"))?;
+    write_json(&loop_manifest_path(repo, id), &value)
+}
+
+/// Read-modify-write a single manifest entry under the repo lock, applying `f` to
+/// the row matching `file` (created if absent). Lets concurrent Plan-mode workers
+/// enrich their own row without clobbering the manifest.
+pub fn merge_loop_manifest_entry<F: FnOnce(&mut ManifestEntry)>(repo: &str, id: &str, file: &str, f: F) -> R<()> {
+    ensure_locke(repo)?;
+    let _lock = lock_repo(repo)?;
+    let mut entries: Vec<ManifestEntry> = match read_json(&loop_manifest_path(repo, id))? {
+        Some(v) => serde_json::from_value(v).map_err(|e| format!("parse manifest: {e}"))?,
+        None => Vec::new(),
+    };
+    if let Some(e) = entries.iter_mut().find(|e| e.path == file) {
+        f(e);
+    } else {
+        let mut e = ManifestEntry { path: file.to_string(), inc: true, ..Default::default() };
+        f(&mut e);
+        entries.push(e);
+    }
+    let value = serde_json::to_value(&entries).map_err(|e| format!("serialize manifest: {e}"))?;
+    write_json(&loop_manifest_path(repo, id), &value)
+}
+
 // ---- durable progress log (.locke/loops/<id>/progress.jsonl) ----
 
 /// Append one event (a `LoopStreamEvent`-shaped value) as a JSONL line. O_APPEND
@@ -775,6 +854,46 @@ mod tests {
         let reread = read_pulls(repo).unwrap();
         assert_eq!(reread.pulls[0].status, "merged");
         assert_eq!(reread.pulls[0].verdict.as_deref(), Some("approve"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manifest_round_trips_and_merges_entries() {
+        let dir = tmp("manifest");
+        let repo = dir.to_str().unwrap();
+
+        assert!(read_loop_manifest(repo, "lp1").unwrap().is_empty());
+
+        let entries = vec![
+            ManifestEntry { path: "src/a.js".into(), loc: 10, risk: "low".into(), inc: true, ..Default::default() },
+            ManifestEntry { path: "src/b.js".into(), loc: 400, risk: "high".into(), inc: false, ..Default::default() },
+        ];
+        write_loop_manifest(repo, "lp1", &entries).unwrap();
+        assert!(dir.join(".locke/loops/lp1/manifest.json").exists());
+
+        let back = read_loop_manifest(repo, "lp1").unwrap();
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[1].path, "src/b.js");
+        assert!(!back[1].inc);
+
+        // Enrich an existing row (Plan-mode spec write) without clobbering the rest.
+        merge_loop_manifest_entry(repo, "lp1", "src/a.js", |e| {
+            e.status = "specced".into();
+            e.approach = Some("refactor".into());
+            e.spec = Some("spec/src__a.js.md".into());
+        })
+        .unwrap();
+        // Merge a brand-new row in.
+        merge_loop_manifest_entry(repo, "lp1", "src/c.js", |e| e.status = "specced".into()).unwrap();
+
+        let m = read_loop_manifest(repo, "lp1").unwrap();
+        assert_eq!(m.len(), 3);
+        let a = m.iter().find(|e| e.path == "src/a.js").unwrap();
+        assert_eq!(a.status, "specced");
+        assert_eq!(a.approach.as_deref(), Some("refactor"));
+        assert_eq!(a.loc, 10, "existing fields preserved through merge");
+        assert!(m.iter().any(|e| e.path == "src/c.js" && e.inc));
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -9,8 +9,9 @@ import type {
   LoopItem,
   LoopMode,
   LoopStreamEvent,
-  LoopTarget,
   LoopView,
+  ManifestEntry,
+  ResolverSpec,
   NavKey,
   NavPlacement,
   Review,
@@ -67,7 +68,8 @@ import {
   resolveLoopItem as resolveLoopItemApi,
   readLoops as readLoopsApi,
   readLoopItems as readLoopItemsApi,
-  matchLoopTargets as matchLoopTargetsApi,
+  resolveTargets as resolveTargetsApi,
+  writeLoopManifest as writeLoopManifestApi,
   listBranches as listBranchesApi,
   type LoopItemEvent,
   type LoopProgress,
@@ -104,6 +106,7 @@ import {
 } from "../lib/mockFleet.js";
 import { buildAgentPrompt } from "../lib/agentPrompt.js";
 import { lockeLang } from "../lib/lockeLang.js";
+import { resolverSummary } from "../lib/loops.js";
 import { applyTheme, isThemeId, DEFAULT_THEME, type ThemeId } from "../theme/themes.js";
 import { readPulls, createPull, updatePull, deletePull } from "../api/pulls.js";
 import {
@@ -271,8 +274,8 @@ interface LockeState {
   loopPaused: boolean;
   /** Builder per-target include override (path → included), layered over `LoopTarget.inc`. */
   targetSel: Record<string, boolean>;
-  /** Builder audit rows — matched files (real in Tauri, mock in plain Vite). */
-  loopTargets: LoopTarget[];
+  /** Builder audit rows — resolved manifest entries (real in Tauri, mock in plain Vite). */
+  loopTargets: ManifestEntry[];
   /** Total files the draft's pattern matched. */
   loopMatched: number;
   /** Files auto-included off the audit list (mock aggregate; 0 in Tauri). */
@@ -293,7 +296,8 @@ interface LockeState {
   draftTitle: string;
   draftBranch: string;
   draftBase: string;
-  draftPattern: string;
+  /** How the draft's targets are resolved (glob / globs / list / command / custom). */
+  draftResolver: ResolverSpec;
   draftPrompt: string;
   draftMode: LoopMode;
   /** The open repo's local branches, for the builder's base-branch picker. */
@@ -445,7 +449,7 @@ interface LockeState {
   setDraftTitle: (v: string) => void;
   setDraftBranch: (v: string) => void;
   setDraftBase: (v: string) => void;
-  setDraftPattern: (v: string) => void;
+  setDraftResolver: (r: ResolverSpec) => void;
   setDraftPrompt: (v: string) => void;
   /** Load the open repo's branches for the base picker (Tauri; no-op in mock). */
   loadRepoBranches: () => Promise<void>;
@@ -703,7 +707,7 @@ export const useStore = create<LockeState>((set, get) => ({
   draftTitle: MOCK ? MOCK_LOOP_DRAFT.title : "",
   draftBranch: MOCK ? MOCK_LOOP_DRAFT.branch : "",
   draftBase: MOCK ? MOCK_LOOP_DRAFT.base : "main",
-  draftPattern: MOCK ? MOCK_LOOP_DRAFT.pattern : "",
+  draftResolver: { kind: "glob", pattern: MOCK ? MOCK_LOOP_DRAFT.pattern : "" },
   draftPrompt: MOCK ? MOCK_LOOP_DRAFT.prompt : "",
   draftMode: "plan",
   repoBranches: MOCK ? ["main", "develop", "release/2.4"] : [],
@@ -1403,7 +1407,7 @@ export const useStore = create<LockeState>((set, get) => ({
             draftTitle: "",
             draftBranch: "",
             draftBase: get().base,
-            draftPattern: "",
+            draftResolver: { kind: "glob" as const, pattern: "" },
             draftPrompt: "",
             loopTargets: [],
             loopMatched: 0,
@@ -1419,7 +1423,7 @@ export const useStore = create<LockeState>((set, get) => ({
   setDraftTitle: (v) => set({ draftTitle: v }),
   setDraftBranch: (v) => set({ draftBranch: v }),
   setDraftBase: (v) => set({ draftBase: v }),
-  setDraftPattern: (v) => set({ draftPattern: v }),
+  setDraftResolver: (r) => set({ draftResolver: r }),
   setDraftPrompt: (v) => set({ draftPrompt: v }),
   loadRepoBranches: async () => {
     const { repoPath } = get();
@@ -1445,14 +1449,14 @@ export const useStore = create<LockeState>((set, get) => ({
       return;
     }
     const loopId = slugId("loop");
-    // The selected set is the matched targets minus the user's exclusions
-    // (`targetSel` layered over each target's `inc`). An empty set falls back to
-    // a full-pattern glob in the runner.
-    const targets = s.loopTargets
-      .filter((t) =>
-        Object.prototype.hasOwnProperty.call(s.targetSel, t.path) ? s.targetSel[t.path] : t.inc,
-      )
-      .map((t) => t.path);
+    // Fold the user's audit (`targetSel` over each row's `inc`) into the resolved
+    // entries, persist that as the loop's manifest, and run the included set.
+    const entries: ManifestEntry[] = s.loopTargets.map((t) => ({
+      ...t,
+      inc: Object.prototype.hasOwnProperty.call(s.targetSel, t.path) ? s.targetSel[t.path] : t.inc,
+    }));
+    const targets = entries.filter((t) => t.inc).map((t) => t.path);
+    const pattern = resolverSummary(s.draftResolver);
     const placeholder: Loop = {
       id: loopId,
       title: s.draftTitle,
@@ -1460,7 +1464,7 @@ export const useStore = create<LockeState>((set, get) => ({
       base: s.draftBase,
       mode: "build",
       state: "building",
-      pattern: s.draftPattern,
+      pattern,
       total: 0,
       done: 0,
       running: 0,
@@ -1478,12 +1482,13 @@ export const useStore = create<LockeState>((set, get) => ({
       loopItems: { ...st.loopItems, [loopId]: [] },
       loopStream: { ...st.loopStream, [loopId]: [] },
     }));
+    void writeLoopManifestApi(s.repoPath, loopId, entries);
     void startLoopApi({
       loopId,
       repo: s.repoPath,
       branch: s.draftBranch,
       base: s.draftBase,
-      pattern: s.draftPattern,
+      pattern,
       template: s.draftPrompt,
       targets,
       concurrency: 6,
@@ -1558,15 +1563,15 @@ export const useStore = create<LockeState>((set, get) => ({
     }
   },
   loadLoopTargets: async () => {
-    const { repoPath, draftPattern } = get();
+    const { repoPath, draftResolver } = get();
     if (MOCK || !repoPath) return;
     try {
-      const list = await matchLoopTargetsApi(repoPath, draftPattern);
-      // A real match surfaces every file in the audit list, so nothing is
+      const list = await resolveTargetsApi(repoPath, draftResolver);
+      // A real resolve surfaces every file in the audit list, so nothing is
       // auto-included off-list (that aggregate is a mock-only nicety).
       set({ loopTargets: list, loopMatched: list.length, loopAutoIncluded: 0 });
     } catch {
-      // A failed match just leaves the prior audit list in place.
+      // A failed resolve just leaves the prior audit list in place.
     }
   },
   // Upsert one item (by id, else path) into the loop's live item list.

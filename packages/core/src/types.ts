@@ -258,6 +258,32 @@ export interface LoopTarget {
   reason?: string;
 }
 
+/** How a loop's target set is produced. Every kind yields a path list that
+ *  materializes into the checked-in `manifest.json`. `list` is the universal
+ *  sink — a custom resolver (Rust or a TS function) just produces paths. */
+export type ResolverSpec =
+  | { kind: "glob"; pattern: string }
+  | { kind: "globs"; include: string[]; exclude: string[] }
+  | { kind: "list"; paths: string[] }
+  | { kind: "command"; command: string }
+  | { kind: "custom"; id: string; args: string[] };
+
+/** One row of a loop's `manifest.json`: a target plus (once Plan mode runs) its
+ *  spec. A superset of `LoopTarget` — the builder reads the target fields, the
+ *  plan view reads the spec fields. */
+export interface ManifestEntry extends LoopTarget {
+  /** Strategy id once specced, e.g. "script-setup". */
+  approach?: string;
+  detected?: string[];
+  steps?: string[];
+  tests?: string[];
+  note?: string;
+  /** Repo-relative ref to the per-item markdown spec, once written. */
+  spec?: string;
+  /** Spec lifecycle: "" | speccing | specced | review | excluded. */
+  status?: string;
+}
+
 /** One planned edit step within a per-item spec. */
 export interface LoopSpecStep {
   /** Stable key for the per-spec on/off override map. */

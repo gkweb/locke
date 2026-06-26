@@ -261,8 +261,18 @@ pub fn read_loop_items(repo: String, loop_id: String) -> Result<Vec<Value>, Stri
 }
 
 #[tauri::command]
-pub fn match_loop_targets(repo: String, pattern: String) -> Result<Vec<loops::LoopTarget>, String> {
-    Ok(loops::match_loop_targets(&repo, &pattern))
+pub fn resolve_targets(repo: String, resolver: loops::ResolverSpec) -> Result<Vec<store::ManifestEntry>, String> {
+    Ok(loops::resolve_targets(&repo, &resolver))
+}
+
+#[tauri::command]
+pub fn read_loop_manifest(repo: String, loop_id: String) -> Result<Vec<store::ManifestEntry>, String> {
+    store::read_loop_manifest(&repo, &loop_id)
+}
+
+#[tauri::command]
+pub fn write_loop_manifest(repo: String, loop_id: String, entries: Vec<store::ManifestEntry>) -> Result<(), String> {
+    store::write_loop_manifest(&repo, &loop_id, &entries)
 }
 
 // ---- per-PR comments (.locke/comments/<id>.json) ----

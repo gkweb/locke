@@ -6,7 +6,8 @@ import type {
   Hunk,
   Loop,
   LoopItemState,
-  LoopTarget,
+  ManifestEntry,
+  ResolverSpec,
   PullRecord,
   Review,
 } from "@locke/core";
@@ -420,9 +421,17 @@ export const readLoops = (repo: string): Promise<Loop[]> =>
 export const readLoopItems = (repo: string, loopId: string): Promise<LoopItemRecord[]> =>
   isTauri ? invoke<LoopItemRecord[]>("read_loop_items", { repo, loopId }) : Promise.resolve([]);
 
-/** Match a glob against the repo into per-file audit rows. Empty in mock mode. */
-export const matchLoopTargets = (repo: string, pattern: string): Promise<LoopTarget[]> =>
-  isTauri ? invoke<LoopTarget[]>("match_loop_targets", { repo, pattern }) : Promise.resolve([]);
+/** Resolve a target spec against the repo into manifest rows. Empty in mock mode. */
+export const resolveTargets = (repo: string, resolver: ResolverSpec): Promise<ManifestEntry[]> =>
+  isTauri ? invoke<ManifestEntry[]>("resolve_targets", { repo, resolver }) : Promise.resolve([]);
+
+/** Read a loop's checked-in target+spec manifest. Empty in mock mode. */
+export const readLoopManifest = (repo: string, loopId: string): Promise<ManifestEntry[]> =>
+  isTauri ? invoke<ManifestEntry[]>("read_loop_manifest", { repo, loopId }) : Promise.resolve([]);
+
+/** Persist a loop's manifest (the resolved + audited set). No-op in mock mode. */
+export const writeLoopManifest = (repo: string, loopId: string, entries: ManifestEntry[]): Promise<void> =>
+  isTauri ? invoke<void>("write_loop_manifest", { repo, loopId, entries }) : Promise.resolve();
 
 const initials = (name: string): string => {
   const parts = name.trim().split(/[\s/_-]+/).filter(Boolean);

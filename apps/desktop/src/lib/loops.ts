@@ -1,4 +1,4 @@
-import type { Loop, LoopItemState, LoopRisk, LoopState, SpecStatus } from "@locke/core";
+import type { Loop, LoopItemState, LoopRisk, LoopState, ResolverSpec, SpecStatus } from "@locke/core";
 import { color } from "../theme/tokens.js";
 
 // Shared Loops meta + math, kept beside lib/fleet.ts so every Loops surface
@@ -64,3 +64,36 @@ export function modeChip(mode: "plan" | "build"): { label: string; color: string
 
 /** Last segment of a path, e.g. "Checkout.vue". */
 export const baseName = (path: string): string => path.split("/").pop() ?? path;
+
+/** A short, human label for a resolver — shown as the loop's `pattern` and the
+ *  builder chip. */
+export function resolverSummary(r: ResolverSpec): string {
+  switch (r.kind) {
+    case "glob":
+      return r.pattern;
+    case "globs":
+      return [...r.include, ...r.exclude.map((e) => `!${e}`)].join(" ");
+    case "list":
+      return `${r.paths.length} file${r.paths.length === 1 ? "" : "s"} (list)`;
+    case "command":
+      return `$ ${r.command}`;
+    case "custom":
+      return `custom:${r.id}`;
+  }
+}
+
+/** True when a resolver has nothing to resolve yet (drives the builder's Start gate). */
+export function resolverEmpty(r: ResolverSpec): boolean {
+  switch (r.kind) {
+    case "glob":
+      return r.pattern.trim() === "";
+    case "globs":
+      return r.include.every((g) => g.trim() === "");
+    case "list":
+      return r.paths.length === 0;
+    case "command":
+      return r.command.trim() === "";
+    case "custom":
+      return r.id.trim() === "";
+  }
+}

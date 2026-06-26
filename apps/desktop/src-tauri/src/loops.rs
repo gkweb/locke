@@ -12,7 +12,7 @@
 // serialized committer (cherry-pick) so concurrent items never race the ref.
 
 use crate::actions::CheckSpec;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
@@ -185,16 +185,21 @@ fn wild(p: &[char], t: &[char]) -> bool {
     }
 }
 
-/// Walk the repo working tree, returning repo-relative paths matching `pattern`.
+/// Walk the repo working tree, returning all repo-relative file paths (sorted).
 /// Skips dotfiles/dirs (incl. `.git`/`.locke`), `node_modules`, and `target`.
-fn collect_targets(repo: &str, pattern: &str) -> Vec<String> {
+pub fn walk_files(repo: &str) -> Vec<String> {
     let mut out = Vec::new();
-    walk(Path::new(repo), repo, pattern, &mut out);
+    walk(Path::new(repo), repo, &mut out);
     out.sort();
     out
 }
 
-fn walk(dir: &Path, repo: &str, pattern: &str, out: &mut Vec<String>) {
+/// Repo-relative paths matching a single `pattern` glob.
+fn collect_targets(repo: &str, pattern: &str) -> Vec<String> {
+    walk_files(repo).into_iter().filter(|rel| glob_match(pattern, rel)).collect()
+}
+
+fn walk(dir: &Path, repo: &str, out: &mut Vec<String>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -203,54 +208,105 @@ fn walk(dir: &Path, repo: &str, pattern: &str, out: &mut Vec<String>) {
             continue;
         }
         if path.is_dir() {
-            walk(&path, repo, pattern, out);
+            walk(&path, repo, out);
         } else if let Ok(rel) = path.strip_prefix(repo) {
-            let rel = rel.to_string_lossy().replace('\\', "/");
-            if glob_match(pattern, &rel) {
-                out.push(rel);
-            }
+            out.push(rel.to_string_lossy().replace('\\', "/"));
         }
     }
 }
 
-// ---- target audit (the builder's "audit & select" rows) ----
+// ---- target resolvers (the builder's "audit & select" rows) ----
 
-/// One matched file the builder surfaces for the user's include/exclude call.
-/// Mirrors `LoopTarget` in `packages/core/src/types.ts`.
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct LoopTarget {
-    pub path: String,
-    pub loc: u64,
-    /// Coarse risk band: "low" | "med" | "high".
-    pub risk: String,
-    /// Detected concerns — empty for now (real detection is a later phase).
-    pub flags: Vec<String>,
-    /// Default inclusion (always true until auto-exclusion lands).
-    pub inc: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
+use locke_store::ManifestEntry;
+
+/// How a loop's target set is produced. `List` is the universal sink: any custom
+/// resolver (a Rust fn behind `Custom`, or a TS function in the app) ultimately
+/// produces paths fed in as `List`. Serialized tagged by `kind`.
+#[derive(Deserialize, Clone)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ResolverSpec {
+    /// A single `**`/`*` glob, e.g. `src/**/*.vue`.
+    Glob { pattern: String },
+    /// Include globs minus exclude globs.
+    Globs {
+        #[serde(default)]
+        include: Vec<String>,
+        #[serde(default)]
+        exclude: Vec<String>,
+    },
+    /// An explicit list of repo-relative paths (paste / CSV / a custom resolver).
+    List {
+        #[serde(default)]
+        paths: Vec<String>,
+    },
+    /// A shell command whose stdout lines are repo-relative paths.
+    Command { command: String },
+    /// A named built-in resolver (the extension point), e.g. `changed-vs-base`.
+    Custom {
+        id: String,
+        #[serde(default)]
+        args: Vec<String>,
+    },
 }
 
-/// Match `pattern` against the repo and return per-file audit rows: line count,
-/// a coarse size-driven risk band, and (for now) empty flags. Reuses the runner's
-/// exact `collect_targets` matcher, so this preview equals what an empty `targets`
-/// list would actually run over.
-pub fn match_loop_targets(repo: &str, pattern: &str) -> Vec<LoopTarget> {
-    collect_targets(repo, pattern)
-        .into_iter()
-        .map(|rel| {
-            let loc = count_loc(repo, &rel);
-            LoopTarget {
-                path: rel,
-                loc,
-                risk: risk_band(loc).to_string(),
-                flags: Vec::new(),
-                inc: true,
-                reason: None,
-            }
-        })
-        .collect()
+/// Resolve a `ResolverSpec` against the repo into manifest rows (loc + coarse risk
+/// per file, all included by default). Only existing repo files survive — `List`
+/// and `Command` outputs are validated against the working tree.
+pub fn resolve_targets(repo: &str, spec: &ResolverSpec) -> Vec<ManifestEntry> {
+    let paths: Vec<String> = match spec {
+        ResolverSpec::Glob { pattern } => collect_targets(repo, pattern),
+        ResolverSpec::Globs { include, exclude } => walk_files(repo)
+            .into_iter()
+            .filter(|p| include.iter().any(|g| glob_match(g, p)) && !exclude.iter().any(|g| glob_match(g, p)))
+            .collect(),
+        ResolverSpec::List { paths } => keep_existing(repo, paths),
+        ResolverSpec::Command { command } => keep_existing(repo, &run_resolver_command(repo, command)),
+        ResolverSpec::Custom { id, args } => keep_existing(repo, &run_custom_resolver(repo, id, args)),
+    };
+    paths.into_iter().map(|rel| entry_for(repo, rel)).collect()
+}
+
+/// Build a default (unspecced, included) manifest row for a path.
+fn entry_for(repo: &str, rel: String) -> ManifestEntry {
+    let loc = count_loc(repo, &rel);
+    ManifestEntry { path: rel, loc, risk: risk_band(loc).to_string(), inc: true, ..Default::default() }
+}
+
+/// Keep only inputs that are real, in-repo files — normalized, de-duped, sorted.
+/// Rejects absolute paths and `..` escapes (confinement, cf. `git.rs::read_repo_file`).
+fn keep_existing(repo: &str, paths: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = paths
+        .iter()
+        .map(|p| p.trim().replace('\\', "/"))
+        .filter(|p| !p.is_empty() && !p.starts_with('/') && !p.split('/').any(|c| c == ".."))
+        .filter(|p| Path::new(repo).join(p).is_file())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Run a user-supplied shell command in the repo; its stdout lines are paths.
+fn run_resolver_command(repo: &str, command: &str) -> Vec<String> {
+    let out = Command::new("sh").arg("-c").arg(command).current_dir(repo).output();
+    match out {
+        Ok(o) if o.status.success() => {
+            String::from_utf8_lossy(&o.stdout).lines().map(|l| l.to_string()).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The `Custom` resolver registry — the extension point. Add named resolvers here.
+fn run_custom_resolver(repo: &str, id: &str, args: &[String]) -> Vec<String> {
+    match id {
+        // Files changed on the current branch vs a base (default `main`).
+        "changed-vs-base" => {
+            let base = args.first().map(String::as_str).unwrap_or("main");
+            run_resolver_command(repo, &format!("git diff --name-only {base}...HEAD"))
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Count lines in a matched file, capped so a huge/binary blob can't stall the
@@ -881,28 +937,41 @@ mod tests {
     }
 
     #[test]
-    fn matches_targets_with_loc_and_risk_band() {
-        let dir = std::env::temp_dir().join(format!("locke-match-{}", std::process::id()));
+    fn resolves_targets_across_kinds() {
+        let dir = std::env::temp_dir().join(format!("locke-resolve-{}", std::process::id()));
         let src = dir.join("src");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("small.txt"), "a\nb\nc\n").unwrap();
         std::fs::write(src.join("big.txt"), "x\n".repeat(305)).unwrap();
-        std::fs::write(src.join("skip.md"), "no match\n").unwrap();
+        std::fs::write(src.join("note.md"), "no match\n").unwrap();
+        let repo = dir.to_string_lossy().to_string();
 
-        let repo = dir.to_string_lossy();
-        let targets = match_loop_targets(&repo, "src/**/*.txt");
+        // Glob: loc + risk band, included by default, sorted, .txt only.
+        let g = resolve_targets(&repo, &ResolverSpec::Glob { pattern: "src/**/*.txt".into() });
+        let paths: Vec<&str> = g.iter().map(|t| t.path.as_str()).collect();
+        assert_eq!(paths, vec!["src/big.txt", "src/small.txt"]);
+        let big = g.iter().find(|t| t.path == "src/big.txt").unwrap();
+        assert_eq!((big.loc, big.risk.as_str(), big.inc), (305, "high", true));
+        assert_eq!(g.iter().find(|t| t.path == "src/small.txt").unwrap().risk, "low");
 
-        let paths: Vec<&str> = targets.iter().map(|t| t.path.as_str()).collect();
-        assert_eq!(paths, vec!["src/big.txt", "src/small.txt"], "only .txt, sorted");
+        // Globs: include .txt + .md, exclude big.
+        let gs = resolve_targets(
+            &repo,
+            &ResolverSpec::Globs { include: vec!["src/**/*.txt".into(), "src/**/*.md".into()], exclude: vec!["**/big.txt".into()] },
+        );
+        let paths: Vec<&str> = gs.iter().map(|t| t.path.as_str()).collect();
+        assert_eq!(paths, vec!["src/note.md", "src/small.txt"]);
 
-        let big = targets.iter().find(|t| t.path == "src/big.txt").unwrap();
-        assert_eq!(big.loc, 305);
-        assert_eq!(big.risk, "high");
-        assert!(big.inc && big.flags.is_empty() && big.reason.is_none());
+        // List: real files kept, escapes/missing dropped.
+        let ls = resolve_targets(
+            &repo,
+            &ResolverSpec::List { paths: vec!["src/small.txt".into(), "../etc/passwd".into(), "nope.txt".into()] },
+        );
+        assert_eq!(ls.iter().map(|t| t.path.as_str()).collect::<Vec<_>>(), vec!["src/small.txt"]);
 
-        let small = targets.iter().find(|t| t.path == "src/small.txt").unwrap();
-        assert_eq!(small.loc, 3);
-        assert_eq!(small.risk, "low");
+        // Command: stdout lines, validated against the tree.
+        let cmd = resolve_targets(&repo, &ResolverSpec::Command { command: "printf 'src/big.txt\\nsrc/missing.txt\\n'".into() });
+        assert_eq!(cmd.iter().map(|t| t.path.as_str()).collect::<Vec<_>>(), vec!["src/big.txt"]);
 
         std::fs::remove_dir_all(&dir).ok();
     }

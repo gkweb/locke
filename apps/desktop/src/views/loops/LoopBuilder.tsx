@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
+import type { ResolverSpec } from "@locke/core";
 import { useStore } from "../../state/store.js";
 import { color, font, alpha, tint } from "../../theme/tokens.js";
-import { riskColor } from "../../lib/loops.js";
+import { riskColor, resolverEmpty } from "../../lib/loops.js";
 import { BranchIcon, ChevronDownIcon, ChevronLeftIcon, CheckIcon, PlanDocIcon, PlayIcon } from "../../components/icons.js";
 import { HoverButton } from "../../components/primitives.js";
 
@@ -53,6 +54,130 @@ const isValidBranch = (b: string): boolean =>
   !b.startsWith("/") &&
   !b.endsWith("/") &&
   !b.endsWith(".");
+
+const RESOLVER_KINDS: { kind: ResolverSpec["kind"]; label: string }[] = [
+  { kind: "glob", label: "Glob" },
+  { kind: "globs", label: "Globs ±" },
+  { kind: "list", label: "List" },
+  { kind: "command", label: "Command" },
+];
+
+function emptyResolver(kind: ResolverSpec["kind"]): ResolverSpec {
+  switch (kind) {
+    case "glob":
+      return { kind: "glob", pattern: "" };
+    case "globs":
+      return { kind: "globs", include: [], exclude: [] };
+    case "list":
+      return { kind: "list", paths: [] };
+    case "command":
+      return { kind: "command", command: "" };
+    case "custom":
+      return { kind: "custom", id: "", args: [] };
+  }
+}
+
+const resolverField: React.CSSProperties = {
+  width: "100%",
+  padding: "7px 9px",
+  borderRadius: 8,
+  background: color.popoverBg,
+  border: `1px solid ${color.borderRow}`,
+  fontFamily: font.mono,
+  fontSize: 11.5,
+  color: color.textSoft,
+  outline: "none",
+};
+
+// The target resolver: a segmented kind switch (Glob / Globs± / List / Command)
+// over the matching input. Globs/List parse one entry per line; the result drives
+// the live audit list and is persisted as the loop's manifest.
+function ResolverPicker({ resolver, onChange }: { resolver: ResolverSpec; onChange: (r: ResolverSpec) => void }) {
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div
+        style={{
+          display: "inline-flex",
+          gap: 3,
+          marginBottom: 8,
+          background: FIELD,
+          border: `1px solid ${color.borderRow}`,
+          borderRadius: 9,
+          padding: 3,
+        }}
+      >
+        {RESOLVER_KINDS.map((k) => {
+          const active = resolver.kind === k.kind;
+          return (
+            <button
+              key={k.kind}
+              onClick={() => onChange(emptyResolver(k.kind))}
+              style={{
+                padding: "4px 11px",
+                borderRadius: 6,
+                border: "none",
+                cursor: "pointer",
+                fontFamily: font.sans,
+                fontSize: 11.5,
+                fontWeight: 600,
+                background: active ? color.violet : "transparent",
+                color: active ? "#fff" : color.textFaint,
+              }}
+            >
+              {k.label}
+            </button>
+          );
+        })}
+      </div>
+      {resolver.kind === "glob" && (
+        <input
+          value={resolver.pattern}
+          onChange={(e) => onChange({ kind: "glob", pattern: e.target.value })}
+          placeholder="src/**/*.ts"
+          style={resolverField}
+        />
+      )}
+      {resolver.kind === "globs" && (
+        <textarea
+          value={[...resolver.include, ...resolver.exclude.map((e) => `!${e}`)].join("\n")}
+          onChange={(e) => {
+            const lines = e.target.value.split("\n").map((l) => l.trim()).filter(Boolean);
+            onChange({
+              kind: "globs",
+              include: lines.filter((l) => !l.startsWith("!")),
+              exclude: lines.filter((l) => l.startsWith("!")).map((l) => l.slice(1)),
+            });
+          }}
+          rows={3}
+          placeholder={"src/**/*.ts\n!**/*.test.ts"}
+          style={{ ...resolverField, resize: "vertical" }}
+        />
+      )}
+      {resolver.kind === "list" && (
+        <textarea
+          value={resolver.paths.join("\n")}
+          onChange={(e) => onChange({ kind: "list", paths: e.target.value.split(/[\n,]/).map((p) => p.trim()).filter(Boolean) })}
+          rows={3}
+          placeholder={"src/a.ts\nsrc/b.ts\n(newline- or comma-separated; paste a CSV column)"}
+          style={{ ...resolverField, resize: "vertical" }}
+        />
+      )}
+      {resolver.kind === "command" && (
+        <>
+          <input
+            value={resolver.command}
+            onChange={(e) => onChange({ kind: "command", command: e.target.value })}
+            placeholder="git diff --name-only main"
+            style={resolverField}
+          />
+          <div style={{ fontSize: 10.5, color: color.textGhost, marginTop: 5 }}>
+            Runs in the repo; each stdout line is treated as a repo-relative path.
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 function ModeButton({
   active,
@@ -139,7 +264,7 @@ export function LoopBuilder() {
   const draftBranch = useStore((s) => s.draftBranch);
   const draftBase = useStore((s) => s.draftBase);
   const draftPrompt = useStore((s) => s.draftPrompt);
-  const draftPattern = useStore((s) => s.draftPattern);
+  const draftResolver = useStore((s) => s.draftResolver);
   const draftMode = useStore((s) => s.draftMode);
   const targetSel = useStore((s) => s.targetSel);
   const loopTargets = useStore((s) => s.loopTargets);
@@ -150,7 +275,7 @@ export function LoopBuilder() {
   const setDraftTitle = useStore((s) => s.setDraftTitle);
   const setDraftBranch = useStore((s) => s.setDraftBranch);
   const setDraftBase = useStore((s) => s.setDraftBase);
-  const setDraftPattern = useStore((s) => s.setDraftPattern);
+  const setDraftResolver = useStore((s) => s.setDraftResolver);
   const setDraftPrompt = useStore((s) => s.setDraftPrompt);
   const toggleTarget = useStore((s) => s.toggleTarget);
   const startLoop = useStore((s) => s.startLoop);
@@ -166,19 +291,19 @@ export function LoopBuilder() {
     void loadRepoBranches();
   }, [loadRepoBranches]);
 
-  // Re-match the pattern (debounced) as the user types it. `loadLoopTargets`
-  // reads the latest draft pattern and no-ops in mock mode.
+  // Re-resolve targets (debounced) as the user edits the resolver. `loadLoopTargets`
+  // reads the latest draft resolver and no-ops in mock mode.
   useEffect(() => {
     const id = setTimeout(() => void loadLoopTargets(), 300);
     return () => clearTimeout(id);
-  }, [draftPattern, loadLoopTargets]);
+  }, [draftResolver, loadLoopTargets]);
 
   const branch = draftBranch.trim();
   const branchValid = isValidBranch(branch);
   const branchExists = branchValid && repoBranches.includes(branch);
 
   const canStart =
-    draftTitle.trim() !== "" && branchValid && draftPrompt.trim() !== "" && draftPattern.trim() !== "";
+    draftTitle.trim() !== "" && branchValid && draftPrompt.trim() !== "" && !resolverEmpty(draftResolver);
 
   const targets = loopTargets.map((t) => ({
     ...t,
@@ -369,6 +494,7 @@ export function LoopBuilder() {
 
         {/* targets */}
         <div style={{ ...label, marginBottom: 5 }}>AUDIT &amp; SELECT TARGETS</div>
+        <ResolverPicker resolver={draftResolver} onChange={setDraftResolver} />
         <div
           style={{
             display: "flex",
@@ -380,22 +506,6 @@ export function LoopBuilder() {
             flexWrap: "wrap",
           }}
         >
-          <input
-            value={draftPattern}
-            onChange={(e) => setDraftPattern(e.target.value)}
-            placeholder="src/**/*.ts"
-            style={{
-              width: 220,
-              padding: "4px 9px",
-              borderRadius: 7,
-              background: color.popoverBg,
-              border: `1px solid ${color.borderRow}`,
-              fontFamily: font.mono,
-              fontSize: 11.5,
-              color: color.textSoft,
-              outline: "none",
-            }}
-          />
           <span style={{ fontFamily: font.mono, color: color.textFaint }}>{loopMatched.toLocaleString()} files match</span>
           <span style={{ color: "#3a414e" }}>·</span>
           <span style={{ color: color.green }}>{loopAutoIncluded.toLocaleString()} auto-included</span>
