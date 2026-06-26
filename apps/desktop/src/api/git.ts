@@ -184,6 +184,26 @@ export const mcpCallLog = (limit = 200): Promise<McpCallLogEntry[]> =>
 export const clearMcpCallLog = (): Promise<void> =>
   isTauri ? invoke("clear_mcp_call_log") : Promise.resolve();
 
+// ---- `locke <path>` CLI launch ----
+
+/** Status of the `locke` shell command shim (Settings → Integrations). */
+export interface CliStatus {
+  installed: boolean;
+  /** Absolute path of the installed shim (~/.local/bin/locke). */
+  path: string;
+}
+
+/** Consume the repo path from a cold `locke <path>` launch (one-shot). */
+export const takeInitialRepo = (): Promise<string | null> =>
+  isTauri ? invoke<string | null>("take_initial_repo") : Promise.resolve(null);
+
+export const cliCommandStatus = (): Promise<CliStatus> =>
+  isTauri ? invoke<CliStatus>("cli_command_status") : Promise.resolve({ installed: false, path: "" });
+
+export const installCliCommand = (): Promise<void> => invoke("install_cli_command");
+
+export const uninstallCliCommand = (): Promise<void> => invoke("uninstall_cli_command");
+
 export const runChecks = (repo: string, branch: string, checks: CheckSpec[]) =>
   invoke<CheckResult[]>("run_checks", { repo, branch, checks });
 

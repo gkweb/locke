@@ -3,6 +3,7 @@
 // wrappers are in `commands`.
 
 mod actions;
+mod cli;
 mod commands;
 mod config;
 mod git;
@@ -12,10 +13,31 @@ mod store;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    // Repo path from a cold `locke <path>` launch; taken once by the frontend.
+    let initial_repo = cli::repo_from_argv(&std::env::args().collect::<Vec<_>>());
+
+    let mut builder = tauri::Builder::default();
+    // Must be the first plugin registered. A second `locke <path>` launch forwards
+    // its argv here (instead of opening a new window) so we switch repo + focus.
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            use tauri::{Emitter, Manager};
+            if let Some(repo) = cli::repo_from_argv(&argv) {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.unminimize();
+                    let _ = w.set_focus();
+                }
+                let _ = app.emit("cli:open-repo", repo);
+            }
+        }));
+    }
+
+    builder
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(run::RunRegistry::default())
+        .manage(cli::InitialRepo(std::sync::Mutex::new(initial_repo)))
         .invoke_handler(tauri::generate_handler![
             commands::review_summary,
             commands::list_branches,
@@ -54,6 +76,10 @@ pub fn run() {
             commands::uninstall_mcp_server,
             commands::mcp_call_log,
             commands::clear_mcp_call_log,
+            commands::take_initial_repo,
+            commands::cli_command_status,
+            commands::install_cli_command,
+            commands::uninstall_cli_command,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Locke");

@@ -41,8 +41,12 @@ import {
   uninstallMcpServer,
   mcpCallLog,
   clearMcpCallLog,
+  cliCommandStatus,
+  installCliCommand,
+  uninstallCliCommand,
   type McpStatus,
   type McpCallLogEntry,
+  type CliStatus,
   runAgent as runAgentApi,
   startRun as startRunApi,
   respondPermission,
@@ -250,6 +254,12 @@ interface LockeState {
   mcpError: string;
   /** Recent MCP tool calls (newest first) for the Integrations debug log. */
   mcpLog: McpCallLogEntry[];
+  /** Status of the `locke` CLI shim (Settings → Integrations). */
+  cliStatus: CliStatus | null;
+  /** True while a CLI install/uninstall is in flight. */
+  cliBusy: boolean;
+  /** Last CLI install/uninstall error to surface in Settings ("" when none). */
+  cliError: string;
   /** The view to return to when leaving the Integrations page. */
   intReturn: View;
   /** Whether the app-global Settings modal is open. */
@@ -341,6 +351,12 @@ interface LockeState {
   loadMcpLog: () => Promise<void>;
   /** Clear the MCP debug call log, then reload it. */
   clearMcpLog: () => Promise<void>;
+  /** Refresh the `locke` CLI shim status. */
+  loadCliStatus: () => Promise<void>;
+  /** Install the `locke` CLI shim, then refresh status. */
+  installCli: () => Promise<void>;
+  /** Remove the `locke` CLI shim, then refresh status. */
+  uninstallCli: () => Promise<void>;
   toggleAgentEnabled: (id: string) => void;
   /** Set the global "Agent control" vs "Reviews only" mode and persist it. */
   setAgentMode: (on: boolean) => void;
@@ -493,6 +509,9 @@ export const useStore = create<LockeState>((set, get) => ({
   mcpBusy: false,
   mcpError: "",
   mcpLog: [],
+  cliStatus: null,
+  cliBusy: false,
+  cliError: "",
   intReturn: "activity",
   settingsOpen: false,
   newReviewOpen: false,
@@ -599,6 +618,41 @@ export const useStore = create<LockeState>((set, get) => ({
       await clearMcpCallLog();
     } finally {
       await get().loadMcpLog();
+    }
+  },
+
+  loadCliStatus: async () => {
+    if (MOCK) return;
+    try {
+      set({ cliStatus: await cliCommandStatus() });
+    } catch {
+      // A failed probe leaves the panel in its prior/empty state.
+    }
+  },
+
+  installCli: async () => {
+    if (MOCK || get().cliBusy) return;
+    set({ cliBusy: true, cliError: "" });
+    try {
+      await installCliCommand();
+    } catch (e) {
+      set({ cliError: String(e) });
+    } finally {
+      await get().loadCliStatus();
+      set({ cliBusy: false });
+    }
+  },
+
+  uninstallCli: async () => {
+    if (MOCK || get().cliBusy) return;
+    set({ cliBusy: true, cliError: "" });
+    try {
+      await uninstallCliCommand();
+    } catch (e) {
+      set({ cliError: String(e) });
+    } finally {
+      await get().loadCliStatus();
+      set({ cliBusy: false });
     }
   },
 

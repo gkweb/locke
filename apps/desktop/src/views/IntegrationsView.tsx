@@ -162,6 +162,84 @@ function McpServerCard() {
   );
 }
 
+function CliCard() {
+  const status = useStore((s) => s.cliStatus);
+  const busy = useStore((s) => s.cliBusy);
+  const error = useStore((s) => s.cliError);
+  const installCli = useStore((s) => s.installCli);
+  const uninstallCli = useStore((s) => s.uninstallCli);
+
+  const installed = status?.installed ?? false;
+
+  return (
+    <div
+      style={{
+        border: `1px solid ${color.borderRail}`,
+        borderRadius: 12,
+        background: color.panelBg,
+        padding: "18px 18px 16px",
+        marginBottom: 28,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+        <span style={{ fontSize: 15, fontWeight: 700, color: color.text }}>Command line</span>
+        <span
+          style={{
+            fontSize: 9.5,
+            fontWeight: 700,
+            letterSpacing: ".4px",
+            padding: "2px 6px",
+            borderRadius: 5,
+            color: installed ? color.teal : color.textGhost,
+            background: installed ? alpha.teal(0.12) : "#141821",
+            border: `1px solid ${installed ? alpha.teal(0.3) : color.borderRow2}`,
+          }}
+        >
+          {installed ? "INSTALLED" : "NOT INSTALLED"}
+        </span>
+      </div>
+
+      <p style={{ margin: "8px 0 0", fontSize: 12.5, color: color.textFaint, lineHeight: 1.5, maxWidth: 560 }}>
+        Install the{" "}
+        <code style={{ fontFamily: font.mono, fontSize: "0.92em", color: color.textMuted }}>locke</code> command, then
+        open any folder from your terminal — <code style={{ fontFamily: font.mono, fontSize: "0.92em", color: color.textMuted }}>locke .</code>{" "}
+        or <code style={{ fontFamily: font.mono, fontSize: "0.92em", color: color.textMuted }}>locke ~/path/to/repo</code>{" "}
+        — just like <code style={{ fontFamily: font.mono, fontSize: "0.92em", color: color.textMuted }}>code .</code>. If
+        Locke is already open it switches to that repo.
+      </p>
+      {error ? <p style={{ margin: "8px 0 0", fontSize: 12, color: "#e0795f", lineHeight: 1.45 }}>{error}</p> : null}
+
+      <div style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 14 }}>
+        <button
+          onClick={installed ? uninstallCli : installCli}
+          disabled={busy}
+          style={{
+            fontFamily: font.sans,
+            fontSize: 12.5,
+            fontWeight: 600,
+            padding: "7px 14px",
+            borderRadius: 8,
+            cursor: busy ? "not-allowed" : "pointer",
+            color: installed ? color.textSoft : "#0a0c11",
+            background: installed ? "transparent" : busy ? "#1c212b" : color.teal,
+            border: `1px solid ${installed ? color.borderRow2 : "transparent"}`,
+            opacity: busy ? 0.6 : 1,
+          }}
+        >
+          {busy ? "Working…" : installed ? "Remove" : "Install “locke” command"}
+        </button>
+      </div>
+
+      {installed && status?.path ? (
+        <div style={{ fontSize: 11, color: color.textFainter, marginTop: 11, lineHeight: 1.5, maxWidth: 560 }}>
+          Installed at <span style={{ fontFamily: font.mono, color: color.textFaint }}>{status.path}</span>. Make sure{" "}
+          <span style={{ fontFamily: font.mono }}>~/.local/bin</span> is on your <span style={{ fontFamily: font.mono }}>PATH</span>.
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function CallLog() {
   const log = useStore((s) => s.mcpLog);
   const loadMcpLog = useStore((s) => s.loadMcpLog);
@@ -273,12 +351,14 @@ export function IntegrationsView() {
   const backFromInt = useStore((s) => s.backFromInt);
   const loadMcpStatus = useStore((s) => s.loadMcpStatus);
   const loadMcpLog = useStore((s) => s.loadMcpLog);
+  const loadCliStatus = useStore((s) => s.loadCliStatus);
 
-  // Refresh registration status + the call log whenever the page is opened.
+  // Refresh MCP registration, CLI status, and the call log whenever the page opens.
   useEffect(() => {
     void loadMcpStatus();
     void loadMcpLog();
-  }, [loadMcpStatus, loadMcpLog]);
+    void loadCliStatus();
+  }, [loadMcpStatus, loadMcpLog, loadCliStatus]);
 
   const returnLabel = RETURN_LABEL[intReturn as View] ?? "Back";
 
@@ -314,6 +394,7 @@ export function IntegrationsView() {
 
       <div style={{ maxWidth: 760 }}>
         <McpServerCard />
+        <CliCard />
         <CallLog />
       </div>
     </div>

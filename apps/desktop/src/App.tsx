@@ -1,7 +1,13 @@
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useStore } from "./state/store.js";
-import { isTauri, type RunDonePayload, type RunEventPayload, type RunPermissionPayload } from "./api/git.js";
+import {
+  isTauri,
+  takeInitialRepo,
+  type RunDonePayload,
+  type RunEventPayload,
+  type RunPermissionPayload,
+} from "./api/git.js";
 import { color, font } from "./theme/tokens.js";
 import { ActionBar } from "./components/ActionBar.js";
 import { SidePanel } from "./components/SidePanel.js";
@@ -61,15 +67,21 @@ export function App() {
   const detectAgents = useStore((s) => s.detectAgents);
   const loadAgentSettings = useStore((s) => s.loadAgentSettings);
   const loadMcpStatus = useStore((s) => s.loadMcpStatus);
+  const loadCliStatus = useStore((s) => s.loadCliStatus);
 
   // Probe installed agent CLIs and load app-global opt-outs + mode once on launch
   // (repo-independent — the agents directory is reachable with no repo open). Also
-  // probe the Locke MCP server registration status for the Settings panel.
+  // probe the Locke MCP server + `locke` CLI status for the Integrations panel, and
+  // open the repo passed by a cold `locke <path>` launch.
   useEffect(() => {
     void detectAgents();
     void loadAgentSettings();
     void loadMcpStatus();
-  }, [detectAgents, loadAgentSettings, loadMcpStatus]);
+    void loadCliStatus();
+    void takeInitialRepo().then((path) => {
+      if (path) void useStore.getState().openRepo(path);
+    });
+  }, [detectAgents, loadAgentSettings, loadMcpStatus, loadCliStatus]);
 
   // Route the backend's live run stream (Tauri events) into the store. Set up
   // once; handlers resolve the target review by runId internally.
@@ -80,6 +92,9 @@ export function App() {
       listen<RunEventPayload>("run:event", (e) => s.onRunEvent(e.payload)),
       listen<RunPermissionPayload>("run:permission", (e) => s.onRunPermission(e.payload)),
       listen<RunDonePayload>("run:done", (e) => s.onRunDone(e.payload)),
+      // A second `locke <path>` launch is forwarded here by the single-instance
+      // plugin — switch the open window to that repo.
+      listen<string>("cli:open-repo", (e) => void useStore.getState().openRepo(e.payload)),
     ]);
     return () => {
       void unlisten.then((fns) => fns.forEach((fn) => fn()));

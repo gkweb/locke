@@ -2,6 +2,7 @@
 // functions (git.rs) lets it be unit-tested without a Tauri runtime.
 
 use crate::actions;
+use crate::cli;
 use crate::config;
 use crate::git;
 use crate::mcp;
@@ -257,4 +258,27 @@ pub fn mcp_call_log(limit: Option<usize>) -> Vec<Value> {
 #[tauri::command]
 pub fn clear_mcp_call_log() -> Result<(), String> {
     mcp::clear_call_log()
+}
+
+// ---- `locke <path>` CLI launch (Settings → Integrations) ----
+
+/// Consume the repo path from a cold `locke <path>` launch (one-shot).
+#[tauri::command]
+pub fn take_initial_repo(state: tauri::State<cli::InitialRepo>) -> Option<String> {
+    state.0.lock().unwrap().take()
+}
+
+#[tauri::command]
+pub fn cli_command_status() -> Value {
+    cli::status()
+}
+
+#[tauri::command]
+pub fn install_cli_command(app: tauri::AppHandle) -> Result<(), String> {
+    cli::install(&app)
+}
+
+#[tauri::command]
+pub fn uninstall_cli_command() -> Result<(), String> {
+    cli::uninstall()
 }
