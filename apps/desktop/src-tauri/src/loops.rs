@@ -368,12 +368,56 @@ fn now_clock() -> String {
 
 // ---- glob matching (no deps) ----
 
-/// Match a repo-relative path against a glob with `**` (any depth) and `*`
-/// (within a segment), e.g. `src/**/*.vue`.
+/// Match a repo-relative path against a glob with `**` (any depth), `*` (within a
+/// segment), and `{a,b}` brace alternation, e.g. `packages/**/*.{vue,ts}`.
 pub fn glob_match(pat: &str, path: &str) -> bool {
+    expand_braces(pat).iter().any(|p| glob_match_one(p, path))
+}
+
+fn glob_match_one(pat: &str, path: &str) -> bool {
     let p: Vec<&str> = pat.split('/').filter(|s| !s.is_empty()).collect();
     let s: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     seg_match(&p, &s)
+}
+
+/// Expand `{a,b,c}` alternations into concrete patterns (recursing for nesting and
+/// multiple groups). An unbalanced `{` is left literal.
+fn expand_braces(pat: &str) -> Vec<String> {
+    let Some(open) = pat.find('{') else { return vec![pat.to_string()] };
+    let mut depth = 0;
+    let mut close = None;
+    for (i, c) in pat.char_indices().skip_while(|(i, _)| *i < open) {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(close) = close else { return vec![pat.to_string()] };
+    let (pre, post) = (&pat[..open], &pat[close + 1..]);
+    let inner = &pat[open + 1..close];
+    // Split the group on top-level commas only.
+    let mut parts = Vec::new();
+    let (mut d, mut start) = (0, 0);
+    for (i, c) in inner.char_indices() {
+        match c {
+            '{' => d += 1,
+            '}' => d -= 1,
+            ',' if d == 0 => {
+                parts.push(&inner[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&inner[start..]);
+    parts.into_iter().flat_map(|part| expand_braces(&format!("{pre}{part}{post}"))).collect()
 }
 
 fn seg_match(p: &[&str], s: &[&str]) -> bool {
@@ -1210,6 +1254,16 @@ mod tests {
         assert!(glob_match("**/*.txt", "a/b.txt"));
         assert!(!glob_match("src/**/*.vue", "lib/C.vue"));
         assert!(!glob_match("src/**/*.vue", "src/C.ts"));
+    }
+
+    #[test]
+    fn glob_expands_braces() {
+        assert!(glob_match("packages/**/*.{vue,ts}", "packages/ui/src/B.vue"));
+        assert!(glob_match("packages/**/*.{vue,ts}", "packages/core/x.ts"));
+        assert!(!glob_match("packages/**/*.{vue,ts}", "packages/core/x.js"));
+        // multiple groups
+        assert!(glob_match("{src,lib}/*.{ts,tsx}", "lib/a.tsx"));
+        assert!(!glob_match("{src,lib}/*.{ts,tsx}", "app/a.tsx"));
     }
 
     #[test]

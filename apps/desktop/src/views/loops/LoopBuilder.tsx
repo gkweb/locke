@@ -89,6 +89,46 @@ const resolverField: React.CSSProperties = {
   outline: "none",
 };
 
+// Multi-line resolver inputs keep their own raw text so blank lines (and the
+// Enter that creates them) survive — the structured resolver is parsed from it,
+// dropping empties. Mounted per-kind, so switching kinds re-seeds cleanly.
+function GlobsInput({ resolver, onChange }: { resolver: Extract<ResolverSpec, { kind: "globs" }>; onChange: (r: ResolverSpec) => void }) {
+  const [raw, setRaw] = useState(() => [...resolver.include, ...resolver.exclude.map((e) => `!${e}`)].join("\n"));
+  return (
+    <textarea
+      value={raw}
+      onChange={(e) => {
+        setRaw(e.target.value);
+        const lines = e.target.value.split("\n").map((l) => l.trim()).filter(Boolean);
+        onChange({
+          kind: "globs",
+          include: lines.filter((l) => !l.startsWith("!")),
+          exclude: lines.filter((l) => l.startsWith("!")).map((l) => l.slice(1)),
+        });
+      }}
+      rows={4}
+      placeholder={"packages/**/*.{vue,ts}\n!**/*.test.ts"}
+      style={{ ...resolverField, resize: "vertical" }}
+    />
+  );
+}
+
+function ListInput({ resolver, onChange }: { resolver: Extract<ResolverSpec, { kind: "list" }>; onChange: (r: ResolverSpec) => void }) {
+  const [raw, setRaw] = useState(() => resolver.paths.join("\n"));
+  return (
+    <textarea
+      value={raw}
+      onChange={(e) => {
+        setRaw(e.target.value);
+        onChange({ kind: "list", paths: e.target.value.split(/[\n,]/).map((p) => p.trim()).filter(Boolean) });
+      }}
+      rows={4}
+      placeholder={"src/a.ts\nsrc/b.ts\n(newline- or comma-separated; paste a CSV column)"}
+      style={{ ...resolverField, resize: "vertical" }}
+    />
+  );
+}
+
 // The target resolver: a segmented kind switch (Glob / Globs± / List / Command)
 // over the matching input. Globs/List parse one entry per line; the result drives
 // the live audit list and is persisted as the loop's manifest.
@@ -137,31 +177,8 @@ function ResolverPicker({ resolver, onChange }: { resolver: ResolverSpec; onChan
           style={resolverField}
         />
       )}
-      {resolver.kind === "globs" && (
-        <textarea
-          value={[...resolver.include, ...resolver.exclude.map((e) => `!${e}`)].join("\n")}
-          onChange={(e) => {
-            const lines = e.target.value.split("\n").map((l) => l.trim()).filter(Boolean);
-            onChange({
-              kind: "globs",
-              include: lines.filter((l) => !l.startsWith("!")),
-              exclude: lines.filter((l) => l.startsWith("!")).map((l) => l.slice(1)),
-            });
-          }}
-          rows={3}
-          placeholder={"src/**/*.ts\n!**/*.test.ts"}
-          style={{ ...resolverField, resize: "vertical" }}
-        />
-      )}
-      {resolver.kind === "list" && (
-        <textarea
-          value={resolver.paths.join("\n")}
-          onChange={(e) => onChange({ kind: "list", paths: e.target.value.split(/[\n,]/).map((p) => p.trim()).filter(Boolean) })}
-          rows={3}
-          placeholder={"src/a.ts\nsrc/b.ts\n(newline- or comma-separated; paste a CSV column)"}
-          style={{ ...resolverField, resize: "vertical" }}
-        />
-      )}
+      {resolver.kind === "globs" && <GlobsInput resolver={resolver} onChange={onChange} />}
+      {resolver.kind === "list" && <ListInput resolver={resolver} onChange={onChange} />}
       {resolver.kind === "command" && (
         <>
           <input
