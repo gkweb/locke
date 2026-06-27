@@ -15,6 +15,7 @@ import {
   BoardIcon,
   StreamIcon,
   GridIcon,
+  FolderTreeIcon,
 } from "../../components/icons.js";
 import { HoverButton } from "../../components/primitives.js";
 
@@ -42,6 +43,8 @@ function itemLine(it: LoopItem): { text: string; color: string } {
   if (it.status === "review") return { text: it.note ?? "", color: "#caa46a" };
   if (it.status === "failed") return { text: it.note ?? "", color: "#ca9aa0" };
   if (it.status === "done") return { text: "migrated · tests pass", color: "#7b8494" };
+  if (it.status === "blocked")
+    return { text: it.blockedBy?.length ? `blocked by ${it.blockedBy.join(", ")}` : it.note ?? "blocked", color: color.violetLight };
   return { text: "queued", color: "#7b8494" };
 }
 
@@ -139,6 +142,7 @@ function LayoutToggle() {
   const setMonitorLayout = useStore((s) => s.setMonitorLayout);
   const opts = [
     { key: "board" as const, label: "Board", Icon: BoardIcon },
+    { key: "waves" as const, label: "Waves", Icon: FolderTreeIcon },
     { key: "stream" as const, label: "Stream", Icon: StreamIcon },
     { key: "grid" as const, label: "Grid", Icon: GridIcon },
   ];
@@ -349,6 +353,36 @@ function GridLayout({ loop, paused, items }: { loop: Loop; paused: boolean; item
   );
 }
 
+// Dependency-ordered view: items grouped by their topological wave (foundation
+// first), each wave sorted by priority. Read-only — curation is via manifest.json.
+function WavesLayout({ paused, items }: { paused: boolean; items: LoopItem[] }) {
+  const waves = [...new Set(items.map((i) => i.wave ?? 0))].sort((a, b) => a - b);
+  return (
+    <div style={{ flex: 1, overflowY: "auto", padding: "18px 28px 28px" }}>
+      {waves.map((w) => {
+        const its = items.filter((i) => (i.wave ?? 0) === w).sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
+        const done = its.filter((i) => i.status === "done").length;
+        return (
+          <div key={w} style={{ marginBottom: 22 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+              <span style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: ".5px", color: color.textBright }}>WAVE {w}</span>
+              <span style={{ fontSize: 11, color: color.textGhost, fontFamily: font.mono }}>
+                {done}/{its.length} done
+              </span>
+              <span style={{ flex: 1, height: 1, background: color.borderSubtle }} />
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 10 }}>
+              {its.map((it) => (
+                <ItemCard key={it.id} it={it} paused={paused} />
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export function LoopMonitor() {
   const loops = useStore((s) => s.loops);
   const selectedLoop = useStore((s) => s.selectedLoop);
@@ -463,6 +497,7 @@ export function LoopMonitor() {
       </div>
 
       {monitorLayout === "board" && <BoardLayout loop={loop} paused={loopPaused} items={items} />}
+      {monitorLayout === "waves" && <WavesLayout paused={loopPaused} items={items} />}
       {monitorLayout === "stream" && <StreamLayout paused={loopPaused} items={items} stream={stream} />}
       {monitorLayout === "grid" && <GridLayout loop={loop} paused={loopPaused} items={items} />}
     </div>

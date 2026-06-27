@@ -336,6 +336,9 @@ export interface LoopItemEvent {
   line?: string;
   pct?: number;
   agent: string;
+  wave: number;
+  priority: number;
+  blockedBy?: string[];
   t: string;
 }
 
@@ -348,6 +351,7 @@ export interface LoopProgress {
   review: number;
   failed: number;
   queued: number;
+  blocked: number;
   rate: string;
   elapsed: string;
 }
@@ -377,6 +381,9 @@ export interface LoopItemRecord {
   reason?: string;
   line?: string;
   agent?: string;
+  wave?: number;
+  priority?: number;
+  blockedBy?: string[];
   diff?: unknown[];
   notes?: { note: string; time: string }[];
 }

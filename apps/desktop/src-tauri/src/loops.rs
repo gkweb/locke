@@ -14,13 +14,13 @@
 use crate::actions::CheckSpec;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 type R<T> = Result<T, String>;
@@ -33,13 +33,19 @@ struct ItemPayload {
     loop_id: String,
     item_id: String,
     path: String,
-    /// queued | running | review | done | failed.
+    /// queued | running | review | done | failed | blocked.
     status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     line: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pct: Option<u32>,
     agent: String,
+    /// Topological tier (parallel within a wave, gated across).
+    wave: u32,
+    priority: i64,
+    /// Ids of unmet (not-yet-done) dependencies — drives the "blocked by …" UI.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    blocked_by: Vec<String>,
     t: String,
 }
 
@@ -53,6 +59,7 @@ struct ProgressPayload {
     review: u64,
     failed: u64,
     queued: u64,
+    blocked: u64,
     rate: String,
     elapsed: String,
 }
@@ -91,6 +98,217 @@ struct Counts {
     review: u64,
     failed: u64,
     queued: u64,
+    blocked: u64,
+}
+
+// ---- the work-graph scheduler ----
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum St {
+    Queued,
+    Running,
+    Done,
+    Review,
+    Failed,
+    Blocked,
+}
+
+impl St {
+    fn as_str(self) -> &'static str {
+        match self {
+            St::Queued => "queued",
+            St::Running => "running",
+            St::Done => "done",
+            St::Review => "review",
+            St::Failed => "failed",
+            St::Blocked => "blocked",
+        }
+    }
+}
+
+/// One node of the loop's work graph.
+struct Node {
+    id: String,
+    /// Item key used for the worktree / agent / item-record (path for files, id for tasks).
+    key: String,
+    /// What the prompt addresses: a repo-relative path (file) or a task title.
+    target: String,
+    is_task: bool,
+    requires: Vec<String>,
+    priority: i64,
+    wave: u32,
+    status: St,
+}
+
+/// A dependency-aware scheduler: hands out items whose `requires` are all `done`,
+/// highest `priority` first; parks the rest. The build runs parallel within a
+/// wave (the topological tier) and gated across waves — because a dependent only
+/// becomes ready once its prerequisites have committed.
+struct Scheduler {
+    nodes: Vec<Node>,
+    idx: HashMap<String, usize>,
+}
+
+/// What a worker needs to run an item, copied out so the scheduler lock is released
+/// during the (long) agent run.
+struct Picked {
+    i: usize,
+    id: String,
+    key: String,
+    target: String,
+    is_task: bool,
+    wave: u32,
+    priority: i64,
+}
+
+impl Scheduler {
+    /// Build from the in-scope manifest entries, assigning waves topologically
+    /// (pinned `wave > 0` is respected; otherwise derived from `requires`).
+    fn new(entries: &[ManifestEntry]) -> Self {
+        let waves = compute_waves(entries);
+        let nodes: Vec<Node> = entries
+            .iter()
+            .map(|e| {
+                let id = if e.id.is_empty() { e.path.clone() } else { e.id.clone() };
+                let is_task = e.kind == "task";
+                Node {
+                    key: if is_task { id.clone() } else { e.path.clone() },
+                    target: if is_task { e.title.clone().unwrap_or_else(|| id.clone()) } else { e.path.clone() },
+                    is_task,
+                    requires: e.requires.clone(),
+                    priority: e.priority,
+                    wave: if e.wave > 0 { e.wave } else { *waves.get(&id).unwrap_or(&0) },
+                    status: St::Queued,
+                    id,
+                }
+            })
+            .collect();
+        let idx = nodes.iter().enumerate().map(|(i, n)| (n.id.clone(), i)).collect();
+        Scheduler { nodes, idx }
+    }
+
+    fn total(&self) -> u64 {
+        self.nodes.len() as u64
+    }
+
+    /// A `requires` id is satisfied if it's unknown to this graph (excluded/typo —
+    /// treated as already met so we never deadlock) or its node is `Done`.
+    fn satisfied(&self, dep: &str) -> bool {
+        match self.idx.get(dep) {
+            Some(&i) => self.nodes[i].status == St::Done,
+            None => true,
+        }
+    }
+
+    /// Unmet (known, not-done) deps of a node — for the "blocked by" readout.
+    fn unmet(&self, i: usize) -> Vec<String> {
+        self.nodes[i].requires.iter().filter(|d| !self.satisfied(d)).cloned().collect()
+    }
+
+    /// Highest-priority queued item whose deps are all done; marks it Running.
+    fn next_ready(&mut self) -> Option<Picked> {
+        let pick = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.status == St::Queued && n.requires.iter().all(|d| self.satisfied(d)))
+            .max_by_key(|(_, n)| (n.priority, -(n.wave as i64)))
+            .map(|(i, _)| i)?;
+        self.nodes[pick].status = St::Running;
+        let n = &self.nodes[pick];
+        Some(Picked {
+            i: pick,
+            id: n.id.clone(),
+            key: n.key.clone(),
+            target: n.target.clone(),
+            is_task: n.is_task,
+            wave: n.wave,
+            priority: n.priority,
+        })
+    }
+
+    fn mark(&mut self, i: usize, status: St) {
+        self.nodes[i].status = status;
+    }
+
+    /// Nothing running and nothing currently runnable → the run can't advance.
+    fn settled(&self) -> bool {
+        let running = self.nodes.iter().any(|n| n.status == St::Running);
+        let ready = self
+            .nodes
+            .iter()
+            .any(|n| n.status == St::Queued && n.requires.iter().all(|d| self.satisfied(d)));
+        !running && !ready
+    }
+
+    /// Mark every still-queued item Blocked (its deps can never complete now).
+    fn finalize_blocked(&mut self) {
+        for n in &mut self.nodes {
+            if n.status == St::Queued {
+                n.status = St::Blocked;
+            }
+        }
+    }
+
+    /// `(id, key, wave, priority, unmet-deps)` for each Blocked node — for emit.
+    fn blocked_emissions(&self) -> Vec<(String, String, u32, i64, Vec<String>)> {
+        let idxs: Vec<usize> =
+            self.nodes.iter().enumerate().filter(|(_, n)| n.status == St::Blocked).map(|(i, _)| i).collect();
+        idxs.into_iter()
+            .map(|i| {
+                let n = &self.nodes[i];
+                (n.id.clone(), n.key.clone(), n.wave, n.priority, self.unmet(i))
+            })
+            .collect()
+    }
+
+    fn counts(&self) -> Counts {
+        let mut c = Counts::default();
+        for n in &self.nodes {
+            match n.status {
+                St::Queued => c.queued += 1,
+                St::Running => c.running += 1,
+                St::Done => c.done += 1,
+                St::Review => c.review += 1,
+                St::Failed => c.failed += 1,
+                St::Blocked => c.blocked += 1,
+            }
+        }
+        c
+    }
+}
+
+/// Topological wave levels: 0 for items with no in-graph deps, else 1 + max(dep
+/// waves). Cycles resolve to 0 (the scheduler still gates on `requires`, so a
+/// cyclic edge just never becomes satisfiable → blocked).
+fn compute_waves(entries: &[ManifestEntry]) -> HashMap<String, u32> {
+    let id_of = |e: &ManifestEntry| if e.id.is_empty() { e.path.clone() } else { e.id.clone() };
+    let known: HashMap<String, usize> = entries.iter().enumerate().map(|(i, e)| (id_of(e), i)).collect();
+    let mut wave: HashMap<String, u32> = HashMap::new();
+    // Iterative relaxation bounded by node count (handles any DAG; cycles stay 0).
+    for _ in 0..entries.len() {
+        let mut changed = false;
+        for e in entries {
+            let id = id_of(e);
+            let w = e
+                .requires
+                .iter()
+                .filter_map(|d| known.get(d).map(|_| wave.get(d).copied().unwrap_or(0) + 1))
+                .max()
+                .unwrap_or(0);
+            if wave.get(&id).copied().unwrap_or(0) != w {
+                wave.insert(id, w);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    for e in entries {
+        wave.entry(id_of(e)).or_insert(0);
+    }
+    wave
 }
 
 /// Shared per-loop context handed to every worker thread.
@@ -103,12 +321,11 @@ struct Ctx {
     template: String,
     checks: Vec<CheckSpec>,
     total: u64,
-    counts: Mutex<Counts>,
-    queue: Mutex<VecDeque<String>>,
+    sched: Mutex<Scheduler>,
+    cond: Condvar,
     commit_lock: Mutex<()>,
     paused: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
-    item_seq: AtomicU64,
     start: Instant,
 }
 
@@ -338,37 +555,42 @@ fn risk_band(loc: u64) -> &'static str {
 /// Always-appended completion protocol so even a custom template carries the
 /// exact tool-call parameters. This is the worker's objective/boundaries/output
 /// contract (per Anthropic's subagent-spec guidance).
-fn protocol_footer(loop_id: &str, file: &str, tests: &str) -> String {
+fn protocol_footer(loop_id: &str, key: &str, target: &str, is_task: bool, tests: &str) -> String {
+    let scope = if is_task {
+        format!("- Complete this task: {target}. Touch whatever files it strictly requires; leave everything else unchanged.")
+    } else {
+        format!("- Work ONLY on this file: `{target}`. Do not modify unrelated files.")
+    };
     format!(
         "\n\n---\nYou are running UNATTENDED as one item of a Locke loop.\n\
-         - Work ONLY on this file: `{file}`. Do not modify unrelated files.\n\
+         {scope}\n\
          - Success criteria: the change is complete AND these checks pass: {tests}.\n\
          - When done and checks pass, call the `loop_item_complete` tool with \
-         loop_id=\"{loop_id}\" and file=\"{file}\".\n\
+         loop_id=\"{loop_id}\" and file=\"{key}\".\n\
          - If you are uncertain, or a human decision is needed, call \
-         `loop_item_needs_review` with loop_id=\"{loop_id}\", file=\"{file}\" and a \
+         `loop_item_needs_review` with loop_id=\"{loop_id}\", file=\"{key}\" and a \
          reason instead — do not guess.\n\
          - You can fetch any pre-written spec with `loop_read_spec`."
     )
 }
 
-fn render_prompt(ctx: &Ctx, file: &str) -> String {
+fn render_prompt(ctx: &Ctx, key: &str, target: &str, is_task: bool) -> String {
     let tests = if ctx.checks.is_empty() {
         "(no checks configured)".to_string()
     } else {
         ctx.checks.iter().map(|c| c.label.clone()).collect::<Vec<_>>().join(", ")
     };
-    let spec = locke_store::read_loop_spec(&ctx.repo, &ctx.loop_id, file).ok().flatten().unwrap_or_default();
+    let spec = locke_store::read_loop_spec(&ctx.repo, &ctx.loop_id, key).ok().flatten().unwrap_or_default();
     let conventions = locke_store::read_loop_plan(&ctx.repo, &ctx.loop_id).ok().flatten().unwrap_or_default();
     let body = ctx
         .template
-        .replace("{{file}}", file)
+        .replace("{{file}}", target)
         .replace("{{loop_id}}", &ctx.loop_id)
         .replace("{{tests}}", &tests)
         .replace("{{base}}", &ctx.base)
         .replace("{{spec}}", &spec)
         .replace("{{conventions}}", &conventions);
-    format!("{body}{}", protocol_footer(&ctx.loop_id, file, &tests))
+    format!("{body}{}", protocol_footer(&ctx.loop_id, key, target, is_task, &tests))
 }
 
 // ---- checks (run in the item worktree, not a fresh one) ----
@@ -424,7 +646,7 @@ fn parse_patch(patch: &str) -> Vec<Value> {
 // ---- progress emission ----
 
 fn emit_progress(ctx: &Ctx) {
-    let c = *ctx.counts.lock().unwrap();
+    let c = ctx.sched.lock().unwrap().counts();
     let mins = ctx.start.elapsed().as_secs_f64() / 60.0;
     let rate = if mins > 0.05 { format!("{:.1} / min", c.done as f64 / mins) } else { "—".into() };
     let elapsed = {
@@ -437,6 +659,7 @@ fn emit_progress(ctx: &Ctx) {
         l.review = c.review;
         l.failed = c.failed;
         l.queued = c.queued;
+        l.blocked = c.blocked;
         l.rate = rate.clone();
         l.elapsed = elapsed.clone();
     });
@@ -450,13 +673,25 @@ fn emit_progress(ctx: &Ctx) {
             review: c.review,
             failed: c.failed,
             queued: c.queued,
+            blocked: c.blocked,
             rate,
             elapsed,
         },
     );
 }
 
-fn emit_item(ctx: &Ctx, item_id: &str, path: &str, status: &str, line: Option<String>, pct: Option<u32>) {
+#[allow(clippy::too_many_arguments)]
+fn emit_item(
+    ctx: &Ctx,
+    item_id: &str,
+    path: &str,
+    status: &str,
+    line: Option<String>,
+    pct: Option<u32>,
+    wave: u32,
+    priority: i64,
+    blocked_by: Vec<String>,
+) {
     let _ = ctx.app.emit(
         "loop:item",
         ItemPayload {
@@ -467,6 +702,9 @@ fn emit_item(ctx: &Ctx, item_id: &str, path: &str, status: &str, line: Option<St
             line,
             pct,
             agent: "CL".into(),
+            wave,
+            priority,
+            blocked_by,
             t: now_clock(),
         },
     );
@@ -489,51 +727,44 @@ enum Outcome {
     Failed(String),
 }
 
-fn process_item(ctx: &Arc<Ctx>, file: &str) {
-    let item_id = format!("it-{}", ctx.item_seq.fetch_add(1, Ordering::Relaxed));
-    // queued -> running
-    {
-        let mut c = ctx.counts.lock().unwrap();
-        c.queued = c.queued.saturating_sub(1);
-        c.running += 1;
-    }
-    emit_item(ctx, &item_id, file, "running", Some("starting…".into()), Some(2));
+fn process_item(ctx: &Arc<Ctx>, p: &Picked) {
+    // `next_ready` already marked the node Running; emit it.
+    emit_item(ctx, &p.id, &p.key, "running", Some("starting…".into()), Some(2), p.wave, p.priority, vec![]);
     emit_progress(ctx);
 
-    let outcome = run_one(ctx, &item_id, file).unwrap_or_else(Outcome::Failed);
+    let outcome = run_one(ctx, p).unwrap_or_else(Outcome::Failed);
 
-    let (status, line, st_glyph) = match &outcome {
-        Outcome::Done => ("done", "migrated · checks pass".to_string(), "done"),
-        Outcome::Review(r) => ("review", r.clone(), "review"),
-        Outcome::Failed(e) => ("failed", e.clone(), "failed"),
+    let (st, line, st_glyph) = match &outcome {
+        Outcome::Done => (St::Done, "migrated · checks pass".to_string(), "done"),
+        Outcome::Review(r) => (St::Review, r.clone(), "review"),
+        Outcome::Failed(e) => (St::Failed, e.clone(), "failed"),
     };
     // Persist the final item record (merging any agent declaration already there).
     let _ = locke_store::merge_loop_item(
         &ctx.repo,
         &ctx.loop_id,
-        file,
-        json!({ "id": item_id, "status": status, "line": line, "agent": "CL" }),
+        &p.key,
+        json!({ "id": p.id, "status": st.as_str(), "line": line, "agent": "CL", "wave": p.wave, "priority": p.priority }),
     );
+    // Record the terminal status in the graph and wake any parked workers — a
+    // `Done` may have unblocked dependents.
     {
-        let mut c = ctx.counts.lock().unwrap();
-        c.running = c.running.saturating_sub(1);
-        match outcome {
-            Outcome::Done => c.done += 1,
-            Outcome::Review(_) => c.review += 1,
-            Outcome::Failed(_) => c.failed += 1,
-        }
+        let mut g = ctx.sched.lock().unwrap();
+        g.mark(p.i, st);
     }
-    emit_item(ctx, &item_id, file, status, Some(line.clone()), Some(100));
-    emit_stream(ctx, st_glyph, file, &line);
+    ctx.cond.notify_all();
+    emit_item(ctx, &p.id, &p.key, st.as_str(), Some(line.clone()), Some(100), p.wave, p.priority, vec![]);
+    emit_stream(ctx, st_glyph, &p.key, &line);
     emit_progress(ctx);
 }
 
 /// The heavy lifting for one item: worktree → agent → checks → commit/route.
-fn run_one(ctx: &Arc<Ctx>, item_id: &str, file: &str) -> R<Outcome> {
+fn run_one(ctx: &Arc<Ctx>, p: &Picked) -> R<Outcome> {
+    let file = &p.key;
     let seed_tip = git_out(&ctx.seed, &["rev-parse", "HEAD"])?;
     let wt = std::env::temp_dir()
         .join(format!("locke-loop-{}", locke_store::sanitize_path(&ctx.loop_id)))
-        .join(format!("item-{}", item_id))
+        .join(format!("item-{}", locke_store::sanitize_path(&p.id)))
         .to_string_lossy()
         .to_string();
     let _ = run_git(&ctx.repo, &["worktree", "remove", "--force", &wt]);
@@ -549,7 +780,7 @@ fn run_one(ctx: &Arc<Ctx>, item_id: &str, file: &str) -> R<Outcome> {
 
     let result = (|| -> R<Outcome> {
         // Run the agent (auto mode, unattended) in the item worktree.
-        run_agent_stream(ctx, item_id, file, &wt)?;
+        run_agent_stream(ctx, &p.id, p, &wt)?;
         if ctx.stopped.load(Ordering::Relaxed) {
             return Ok(Outcome::Failed("loop stopped".into()));
         }
@@ -621,9 +852,9 @@ fn capture_patch(ctx: &Ctx, file: &str, wt: &str) {
 /// classifier handles routine approvals; any escalation that still reaches us is
 /// allowed (the worktree is isolated and the run is explicitly unattended — the
 /// checks + review gates are the safety net). Returns when the process exits.
-fn run_agent_stream(ctx: &Arc<Ctx>, item_id: &str, file: &str, wt: &str) -> R<()> {
+fn run_agent_stream(ctx: &Arc<Ctx>, item_id: &str, p: &Picked, wt: &str) -> R<()> {
     let exe = crate::actions::resolve_agent_path("claude");
-    let prompt = render_prompt(ctx, file);
+    let prompt = render_prompt(ctx, &p.key, &p.target, p.is_task);
     let mut child = Command::new(&exe)
         .args([
             "-p",
@@ -674,7 +905,7 @@ fn run_agent_stream(ctx: &Arc<Ctx>, item_id: &str, file: &str, wt: &str) -> R<()
                             Some("text") => {
                                 let t = b.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
                                 if !t.is_empty() {
-                                    emit_item(ctx, item_id, file, "running", Some(t.chars().take(80).collect()), None);
+                                    emit_item(ctx, item_id, &p.key, "running", Some(t.chars().take(80).collect()), None, p.wave, p.priority, vec![]);
                                 }
                             }
                             Some("tool_use") => {
@@ -682,7 +913,7 @@ fn run_agent_stream(ctx: &Arc<Ctx>, item_id: &str, file: &str, wt: &str) -> R<()
                                 if matches!(name, "Edit" | "Write" | "MultiEdit") {
                                     edits += 1;
                                     let pct = (10 + edits * 18).min(92);
-                                    emit_item(ctx, item_id, file, "running", Some(format!("editing {file}")), Some(pct));
+                                    emit_item(ctx, item_id, &p.key, "running", Some(format!("editing {}", p.target)), Some(pct), p.wave, p.priority, vec![]);
                                 }
                             }
                             _ => {}
@@ -756,8 +987,20 @@ pub fn start_loop(
             .map_err(|e| format!("create {branch} from {base}: {e}"))?;
     }
 
-    let files = if targets.is_empty() { collect_targets(&repo, &pattern) } else { targets };
-    let total = files.len() as u64;
+    // The work graph: prefer the loop's checked-in manifest (its `inc` rows carry
+    // requires/priority/wave); fall back to a flat node-per-file set otherwise.
+    let manifest = locke_store::read_loop_manifest(&repo, &loop_id).unwrap_or_default();
+    let entries: Vec<ManifestEntry> = if manifest.iter().any(|e| e.inc) {
+        manifest.into_iter().filter(|e| e.inc).collect()
+    } else {
+        let files = if targets.is_empty() { collect_targets(&repo, &pattern) } else { targets };
+        files
+            .into_iter()
+            .map(|path| ManifestEntry { id: path.clone(), path, inc: true, kind: "file".into(), ..Default::default() })
+            .collect()
+    };
+    let sched = Scheduler::new(&entries);
+    let total = sched.total();
 
     // Persist the loop record.
     locke_store::upsert_loop(
@@ -791,17 +1034,18 @@ pub fn start_loop(
         template,
         checks,
         total,
-        counts: Mutex::new(Counts { queued: total, ..Default::default() }),
-        queue: Mutex::new(files.into_iter().collect()),
+        sched: Mutex::new(sched),
+        cond: Condvar::new(),
         commit_lock: Mutex::new(()),
         paused,
         stopped,
-        item_seq: AtomicU64::new(1),
         start: Instant::now(),
     });
     emit_progress(&ctx);
 
-    // Fixed worker pool draining the queue.
+    // Fixed worker pool over the scheduler: each worker takes the next *ready*
+    // item (deps satisfied), parking (not exiting) while work is blocked but the
+    // run hasn't settled — so dependents run only after prerequisites commit.
     let n = concurrency.clamp(1, 16) as usize;
     let mut workers = Vec::new();
     for _ in 0..n {
@@ -811,23 +1055,55 @@ pub fn start_loop(
                 break;
             }
             if ctx.paused.load(Ordering::Relaxed) {
-                std::thread::sleep(std::time::Duration::from_millis(250));
+                std::thread::sleep(Duration::from_millis(250));
                 continue;
             }
-            let Some(file) = ctx.queue.lock().unwrap().pop_front() else { break };
-            process_item(&ctx, &file);
+            let picked = {
+                let mut g = ctx.sched.lock().unwrap();
+                loop {
+                    if ctx.stopped.load(Ordering::Relaxed) {
+                        break None;
+                    }
+                    if let Some(p) = g.next_ready() {
+                        break Some(p);
+                    }
+                    if g.settled() {
+                        break None;
+                    }
+                    // No ready work yet, but a running blocker may clear it — park.
+                    let (ng, _) = ctx.cond.wait_timeout(g, Duration::from_millis(500)).unwrap();
+                    g = ng;
+                }
+            };
+            match picked {
+                Some(p) => process_item(&ctx, &p),
+                None => {
+                    // Wake any peers also parked so they re-evaluate `settled`.
+                    ctx.cond.notify_all();
+                    break;
+                }
+            }
         }));
     }
 
-    // Coordinator: join the pool, finalize, tear down the seed worktree.
+    // Coordinator: join the pool, mark unreachable items blocked, finalize.
     std::thread::spawn(move || {
         for w in workers {
             let _ = w.join();
         }
-        let c = *ctx.counts.lock().unwrap();
+        let (c, blocked) = {
+            let mut g = ctx.sched.lock().unwrap();
+            g.finalize_blocked();
+            (g.counts(), g.blocked_emissions())
+        };
+        for (id, key, wave, prio, unmet) in blocked {
+            let line = format!("blocked by {}", unmet.join(", "));
+            emit_item(&ctx, &id, &key, "blocked", Some(line), None, wave, prio, unmet);
+        }
+        emit_progress(&ctx);
         let state = if ctx.stopped.load(Ordering::Relaxed) {
             "stopped"
-        } else if c.review > 0 || c.failed > 0 {
+        } else if c.review > 0 || c.failed > 0 || c.blocked > 0 {
             "review"
         } else {
             "done"
@@ -974,6 +1250,68 @@ mod tests {
         assert_eq!(cmd.iter().map(|t| t.path.as_str()).collect::<Vec<_>>(), vec!["src/big.txt"]);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn node(id: &str, requires: &[&str], priority: i64) -> ManifestEntry {
+        ManifestEntry {
+            id: id.into(),
+            path: id.into(),
+            kind: "file".into(),
+            inc: true,
+            requires: requires.iter().map(|s| s.to_string()).collect(),
+            priority,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn computes_topological_waves() {
+        let es = vec![node("a", &[], 0), node("b", &["a"], 0), node("c", &["b"], 0), node("d", &["a"], 0)];
+        let w = compute_waves(&es);
+        assert_eq!((w["a"], w["b"], w["c"], w["d"]), (0, 1, 2, 1));
+    }
+
+    #[test]
+    fn scheduler_runs_in_dependency_order_with_priority() {
+        // a (foundation) unblocks b & c; d is independent. Higher priority runs first.
+        let es = vec![node("a", &[], 0), node("b", &["a"], 1), node("c", &["a"], 5), node("d", &[], 0)];
+        let mut s = Scheduler::new(&es);
+        let mut order = Vec::new();
+        while let Some(p) = s.next_ready() {
+            order.push(p.id.clone());
+            s.mark(p.i, St::Done);
+        }
+        assert!(s.settled());
+        assert_eq!(order.len(), 4);
+        let pos = |id: &str| order.iter().position(|x| x == id).unwrap();
+        assert!(pos("a") < pos("b") && pos("a") < pos("c"), "foundation before dependents");
+        assert!(pos("c") < pos("b"), "higher priority first among ready");
+    }
+
+    #[test]
+    fn dependents_block_when_prerequisite_fails() {
+        let es = vec![node("a", &[], 0), node("b", &["a"], 0)];
+        let mut s = Scheduler::new(&es);
+        let p = s.next_ready().unwrap();
+        assert_eq!(p.id, "a");
+        s.mark(p.i, St::Failed); // foundation fails → b can never be satisfied
+        assert!(s.next_ready().is_none());
+        assert!(s.settled());
+        s.finalize_blocked();
+        let c = s.counts();
+        assert_eq!((c.failed, c.blocked), (1, 1));
+    }
+
+    #[test]
+    fn cycle_and_unknown_deps() {
+        // A 2-cycle never becomes ready → both blocked.
+        let mut cyc = Scheduler::new(&[node("a", &["b"], 0), node("b", &["a"], 0)]);
+        assert!(cyc.next_ready().is_none() && cyc.settled());
+        cyc.finalize_blocked();
+        assert_eq!(cyc.counts().blocked, 2);
+        // An unknown (out-of-graph) dep is treated as satisfied, not a deadlock.
+        let mut ok = Scheduler::new(&[node("a", &["ghost"], 0)]);
+        assert_eq!(ok.next_ready().unwrap().id, "a");
     }
 
     #[test]

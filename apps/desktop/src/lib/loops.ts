@@ -21,6 +21,7 @@ export const itemStateColor: Record<LoopItemState, string> = {
   failed: color.red,
   queued: color.textGhost,
   excluded: color.textGhost,
+  blocked: color.violetLight,
 };
 
 /** Per-item state → board-column label + accent. */
@@ -31,6 +32,7 @@ export const itemStateMeta: Record<LoopItemState, { label: string; color: string
   done: { label: "Done", color: color.green },
   failed: { label: "Failed", color: color.red },
   excluded: { label: "Excluded", color: color.textGhost },
+  blocked: { label: "Blocked", color: color.violetLight },
 };
 
 /** Target risk band → accent (audit pills, spec headers). */

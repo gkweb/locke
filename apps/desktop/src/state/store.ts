@@ -263,7 +263,7 @@ interface LockeState {
   /** The loop the builder/plan/monitor/review act on. */
   selectedLoop: string | null;
   /** Monitor layout: kanban board / live stream / tile grid. */
-  monitorLayout: "board" | "stream" | "grid";
+  monitorLayout: "board" | "stream" | "grid" | "waves";
   /** Plan-mode tab: scope interview vs per-item specs. */
   planTab: "scope" | "specs";
   /** Selected per-item spec in the plan Item-specs tab. */
@@ -442,7 +442,7 @@ interface LockeState {
   /** Return to the loops list. */
   loopToList: () => void;
   setLoopView: (v: LoopView) => void;
-  setMonitorLayout: (l: "board" | "stream" | "grid") => void;
+  setMonitorLayout: (l: "board" | "stream" | "grid" | "waves") => void;
   setPlanTab: (t: "scope" | "specs") => void;
   selectSpec: (id: string) => void;
   setDraftMode: (m: LoopMode) => void;
@@ -1471,6 +1471,7 @@ export const useStore = create<LockeState>((set, get) => ({
       review: 0,
       failed: 0,
       queued: 0,
+      blocked: 0,
       rate: "—",
       elapsed: "0m 0s",
     };
@@ -1553,6 +1554,9 @@ export const useStore = create<LockeState>((set, get) => ({
         agent: r.agent ?? "CL",
         action: r.line,
         note: r.reason,
+        wave: r.wave,
+        priority: r.priority,
+        blockedBy: r.blockedBy,
       }));
       set((s) => ({
         loopItems: { ...s.loopItems, [loopId]: items },
@@ -1587,6 +1591,9 @@ export const useStore = create<LockeState>((set, get) => ({
         action: e.line,
         pct: e.pct,
         t: e.t,
+        wave: e.wave,
+        priority: e.priority,
+        blockedBy: e.blockedBy,
       };
       if (idx >= 0) items[idx] = { ...items[idx], ...next };
       else items.push(next);
@@ -1596,7 +1603,7 @@ export const useStore = create<LockeState>((set, get) => ({
     set((s) => ({
       loops: s.loops.map((l) =>
         l.id === e.loopId
-          ? { ...l, total: e.total, done: e.done, running: e.running, review: e.review, failed: e.failed, queued: e.queued, rate: e.rate, elapsed: e.elapsed }
+          ? { ...l, total: e.total, done: e.done, running: e.running, review: e.review, failed: e.failed, queued: e.queued, blocked: e.blocked, rate: e.rate, elapsed: e.elapsed }
           : l,
       ),
     })),

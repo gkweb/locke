@@ -198,7 +198,7 @@ export type LoopState = "draft" | "planning" | "building" | "paused" | "done";
 export type LoopMode = "plan" | "build";
 
 /** Per-item lifecycle within a loop (board columns, grid tiles, stream rows). */
-export type LoopItemState = "queued" | "running" | "review" | "done" | "failed" | "excluded";
+export type LoopItemState = "queued" | "running" | "review" | "done" | "failed" | "excluded" | "blocked";
 
 /** Per-target risk band, driving the audit pills. */
 export type LoopRisk = "low" | "med" | "high";
@@ -223,6 +223,8 @@ export interface Loop {
   review: number;
   failed: number;
   queued: number;
+  /** Items whose dependencies can no longer complete (runner-set; 0 if absent). */
+  blocked?: number;
   /** Throughput readout, e.g. "5.8 / min" (or "—" when idle). */
   rate: string;
   /** Elapsed/heading time, e.g. "1h 12m" / "planning". */
@@ -244,6 +246,12 @@ export interface LoopItem {
   pct?: number;
   /** Relative time, e.g. "2m" / "just now" / "—". */
   t?: string;
+  /** Topological tier (drives the Waves view). */
+  wave?: number;
+  /** Scheduling priority within a wave. */
+  priority?: number;
+  /** Unmet dependency ids (blocked items) — drives the "blocked by …" readout. */
+  blockedBy?: string[];
 }
 
 /** A builder audit row — a matched file the user includes/excludes. */
@@ -268,10 +276,21 @@ export type ResolverSpec =
   | { kind: "command"; command: string }
   | { kind: "custom"; id: string; args: string[] };
 
-/** One row of a loop's `manifest.json`: a target plus (once Plan mode runs) its
- *  spec. A superset of `LoopTarget` — the builder reads the target fields, the
- *  plan view reads the spec fields. */
+/** One row of a loop's `manifest.json`: a work-graph node — a target plus its
+ *  dependency edges and (once Plan mode runs) its spec. A superset of `LoopTarget`. */
 export interface ManifestEntry extends LoopTarget {
+  /** Stable node id (file items default to `path`; task items get a slug). */
+  id?: string;
+  /** "file" (edit a path) | "task" (a shared/prerequisite job). */
+  kind?: string;
+  /** Label for task nodes (file nodes use `path`). */
+  title?: string;
+  /** Ids that must reach `done` before this item is eligible (blocked-by edges). */
+  requires?: string[];
+  /** Human-pinned ordering within the ready set (higher first). */
+  priority?: number;
+  /** Topological tier, derived from `requires` (hand-overridable). */
+  wave?: number;
   /** Strategy id once specced, e.g. "script-setup". */
   approach?: string;
   detected?: string[];

@@ -480,6 +480,8 @@ pub struct Loop {
     #[serde(default)]
     pub queued: u64,
     #[serde(default)]
+    pub blocked: u64,
+    #[serde(default)]
     pub rate: String,
     #[serde(default)]
     pub elapsed: String,
@@ -693,6 +695,25 @@ pub fn write_loop_plan(repo: &str, id: &str, content: &str) -> R<()> {
 #[serde(rename_all = "camelCase")]
 pub struct ManifestEntry {
     pub path: String,
+    /// Stable node id for the work graph. File items default to their `path`;
+    /// task items get a slug. Edges (`requires`) reference these.
+    #[serde(default)]
+    pub id: String,
+    /// "file" (edit a path) | "task" (a shared/prerequisite job, no single path).
+    #[serde(default)]
+    pub kind: String,
+    /// Human label for task nodes (file nodes use `path`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Ids that must reach `done` before this item is eligible (blocked-by edges).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<String>,
+    /// Human-pinned ordering within the ready set (higher runs first).
+    #[serde(default)]
+    pub priority: i64,
+    /// Topological level, derived from `requires` (hand-overridable).
+    #[serde(default)]
+    pub wave: u32,
     #[serde(default)]
     pub loc: u64,
     #[serde(default)]
