@@ -271,6 +271,18 @@ pub fn read_loop_manifest(repo: String, loop_id: String) -> Result<Vec<store::Ma
 }
 
 #[tauri::command]
+pub fn save_loop_draft(repo: String, record: store::Loop, draft: Value) -> Result<(), String> {
+    let id = record.id.clone();
+    store::upsert_loop(&repo, record)?;
+    store::write_loop_draft(&repo, &id, &draft)
+}
+
+#[tauri::command]
+pub fn read_loop_draft(repo: String, loop_id: String) -> Result<Option<Value>, String> {
+    store::read_loop_draft(&repo, &loop_id)
+}
+
+#[tauri::command]
 pub fn write_loop_manifest(repo: String, loop_id: String, entries: Vec<store::ManifestEntry>) -> Result<(), String> {
     store::write_loop_manifest(&repo, &loop_id, &entries)
 }

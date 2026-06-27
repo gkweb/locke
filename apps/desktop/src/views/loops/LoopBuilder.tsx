@@ -299,6 +299,7 @@ export function LoopBuilder() {
   const loopToList = useStore((s) => s.loopToList);
   const loadLoopTargets = useStore((s) => s.loadLoopTargets);
   const loadRepoBranches = useStore((s) => s.loadRepoBranches);
+  const saveDraft = useStore((s) => s.saveDraft);
 
   // Until the user edits the seed branch, keep suggesting one from the title.
   const [branchTouched, setBranchTouched] = useState(false);
@@ -314,6 +315,14 @@ export function LoopBuilder() {
     const id = setTimeout(() => void loadLoopTargets(), 300);
     return () => clearTimeout(id);
   }, [draftResolver, loadLoopTargets]);
+
+  // Autosave the draft (debounced) once it has a title, so navigating away never
+  // loses it — it persists and reappears in the list, resumable.
+  useEffect(() => {
+    if (draftTitle.trim() === "") return;
+    const id = setTimeout(() => saveDraft(), 700);
+    return () => clearTimeout(id);
+  }, [draftTitle, draftBranch, draftBase, draftPrompt, draftResolver, draftMode, targetSel, saveDraft]);
 
   const branch = draftBranch.trim();
   const branchValid = isValidBranch(branch);

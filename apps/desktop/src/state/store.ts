@@ -70,6 +70,8 @@ import {
   readLoopItems as readLoopItemsApi,
   resolveTargets as resolveTargetsApi,
   writeLoopManifest as writeLoopManifestApi,
+  saveLoopDraft as saveLoopDraftApi,
+  readLoopDraft as readLoopDraftApi,
   listBranches as listBranchesApi,
   type LoopItemEvent,
   type LoopProgress,
@@ -298,6 +300,8 @@ interface LockeState {
   draftBase: string;
   /** How the draft's targets are resolved (glob / globs / list / command / custom). */
   draftResolver: ResolverSpec;
+  /** Id of the persisted draft loop (set once the draft is first saved), else null. */
+  draftLoopId: string | null;
   draftPrompt: string;
   draftMode: LoopMode;
   /** The open repo's local branches, for the builder's base-branch picker. */
@@ -450,6 +454,8 @@ interface LockeState {
   setDraftBranch: (v: string) => void;
   setDraftBase: (v: string) => void;
   setDraftResolver: (r: ResolverSpec) => void;
+  /** Persist the draft loop (creates it on first save once it has a title). */
+  saveDraft: () => void;
   setDraftPrompt: (v: string) => void;
   /** Load the open repo's branches for the base picker (Tauri; no-op in mock). */
   loadRepoBranches: () => Promise<void>;
@@ -708,6 +714,7 @@ export const useStore = create<LockeState>((set, get) => ({
   draftBranch: MOCK ? MOCK_LOOP_DRAFT.branch : "",
   draftBase: MOCK ? MOCK_LOOP_DRAFT.base : "main",
   draftResolver: { kind: "glob", pattern: MOCK ? MOCK_LOOP_DRAFT.pattern : "" },
+  draftLoopId: null,
   draftPrompt: MOCK ? MOCK_LOOP_DRAFT.prompt : "",
   draftMode: "plan",
   repoBranches: MOCK ? ["main", "develop", "release/2.4"] : [],
@@ -1389,9 +1396,31 @@ export const useStore = create<LockeState>((set, get) => ({
     // scope interview, anything live/done goes straight to the monitor.
     const v: LoopView = loop?.state === "draft" ? "builder" : loop?.state === "planning" ? "plan" : "monitor";
     set({ selectedLoop: id, loopView: v, loopReviewItem: null });
-    // The builder loads its own targets/branches from the draft; only the live
-    // views need a backend item load here.
-    if (!MOCK && v !== "builder") void get().loadLoopItems(id);
+    if (MOCK) return;
+    if (v === "builder") {
+      // Restore the saved draft into the builder, then re-resolve its targets.
+      void (async () => {
+        const { repoPath } = get();
+        if (!repoPath) return;
+        const d = await readLoopDraftApi(repoPath, id).catch(() => null);
+        if (d) {
+          set({
+            draftTitle: d.title ?? "",
+            draftBranch: d.branch ?? "",
+            draftBase: d.base ?? get().base,
+            draftPrompt: d.prompt ?? "",
+            draftMode: d.mode ?? "plan",
+            draftResolver: d.resolver ?? { kind: "glob", pattern: "" },
+            targetSel: d.targetSel ?? {},
+            draftLoopId: id,
+          });
+        }
+        void get().loadLoopTargets();
+        void get().loadRepoBranches();
+      })();
+    } else {
+      void get().loadLoopItems(id);
+    }
   },
   newLoop: () =>
     set({
@@ -1409,6 +1438,7 @@ export const useStore = create<LockeState>((set, get) => ({
             draftBase: get().base,
             draftResolver: { kind: "glob" as const, pattern: "" },
             draftPrompt: "",
+            draftLoopId: null,
             loopTargets: [],
             loopMatched: 0,
             loopAutoIncluded: 0,
@@ -1424,6 +1454,45 @@ export const useStore = create<LockeState>((set, get) => ({
   setDraftBranch: (v) => set({ draftBranch: v }),
   setDraftBase: (v) => set({ draftBase: v }),
   setDraftResolver: (r) => set({ draftResolver: r }),
+  // Autosave the draft loop. Creates it (and a registry row) the moment it has a
+  // title, then keeps it current; the full builder state lives in draft.json so it
+  // reopens exactly. No-op in mock / without a repo / before it's named.
+  saveDraft: () => {
+    const s = get();
+    if (MOCK || !s.repoPath || s.draftTitle.trim() === "") return;
+    const id = s.draftLoopId ?? slugId("loop");
+    if (!s.draftLoopId) set({ draftLoopId: id });
+    const loop: Loop = {
+      id,
+      title: s.draftTitle,
+      branch: s.draftBranch,
+      base: s.draftBase,
+      mode: s.draftMode,
+      state: "draft",
+      pattern: resolverSummary(s.draftResolver),
+      total: 0,
+      done: 0,
+      running: 0,
+      review: 0,
+      failed: 0,
+      queued: 0,
+      blocked: 0,
+      rate: "—",
+      elapsed: "draft",
+    };
+    set((st) => ({
+      loops: st.loops.some((l) => l.id === id) ? st.loops.map((l) => (l.id === id ? loop : l)) : [loop, ...st.loops],
+    }));
+    void saveLoopDraftApi(s.repoPath, loop, {
+      title: s.draftTitle,
+      branch: s.draftBranch,
+      base: s.draftBase,
+      prompt: s.draftPrompt,
+      mode: s.draftMode,
+      resolver: s.draftResolver,
+      targetSel: s.targetSel,
+    });
+  },
   setDraftPrompt: (v) => set({ draftPrompt: v }),
   loadRepoBranches: async () => {
     const { repoPath } = get();
@@ -1441,14 +1510,23 @@ export const useStore = create<LockeState>((set, get) => ({
   startLoop: () => {
     const s = get();
     if (s.draftMode !== "build") {
-      set({ loopView: "plan", selectedLoop: MOCK ? "vue3" : s.selectedLoop, planTab: "scope" });
+      // Plan mode: the spec-generation strategist isn't built yet, so just SAVE the
+      // loop (it persists + lists, resumable) rather than show a placeholder plan.
+      // The mock design preview keeps the scripted plan view.
+      if (MOCK) {
+        set({ loopView: "plan", selectedLoop: "vue3", planTab: "scope" });
+        return;
+      }
+      get().saveDraft();
+      set({ loopView: "list" });
       return;
     }
     if (MOCK || !s.repoPath) {
       set({ loopView: "monitor", selectedLoop: "vue3", loopPaused: false });
       return;
     }
-    const loopId = slugId("loop");
+    // Reuse the saved draft's id so the draft becomes the running loop (no dupe).
+    const loopId = s.draftLoopId ?? slugId("loop");
     // Fold the user's audit (`targetSel` over each row's `inc`) into the resolved
     // entries, persist that as the loop's manifest, and run the included set.
     const entries: ManifestEntry[] = s.loopTargets.map((t) => ({
@@ -1480,6 +1558,7 @@ export const useStore = create<LockeState>((set, get) => ({
       loopView: "monitor",
       selectedLoop: loopId,
       loopPaused: false,
+      draftLoopId: null,
       loopItems: { ...st.loopItems, [loopId]: [] },
       loopStream: { ...st.loopStream, [loopId]: [] },
     }));

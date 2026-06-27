@@ -6,11 +6,23 @@ import type {
   Hunk,
   Loop,
   LoopItemState,
+  LoopMode,
   ManifestEntry,
   ResolverSpec,
   PullRecord,
   Review,
 } from "@locke/core";
+
+/** The builder's serialized draft, persisted so an unfinished loop survives. */
+export interface LoopDraft {
+  title: string;
+  branch: string;
+  base: string;
+  prompt: string;
+  mode: LoopMode;
+  resolver: ResolverSpec;
+  targetSel: Record<string, boolean>;
+}
 
 // Typed wrappers over the Rust git commands. `isTauri` lets the app run under
 // plain Vite (mock mode) without throwing when the bridge is absent.
@@ -439,6 +451,14 @@ export const readLoopManifest = (repo: string, loopId: string): Promise<Manifest
 /** Persist a loop's manifest (the resolved + audited set). No-op in mock mode. */
 export const writeLoopManifest = (repo: string, loopId: string, entries: ManifestEntry[]): Promise<void> =>
   isTauri ? invoke<void>("write_loop_manifest", { repo, loopId, entries }) : Promise.resolve();
+
+/** Persist a loop record + its builder draft (autosave). No-op in mock mode. */
+export const saveLoopDraft = (repo: string, loop: Loop, draft: LoopDraft): Promise<void> =>
+  isTauri ? invoke<void>("save_loop_draft", { repo, record: loop, draft }) : Promise.resolve();
+
+/** Read a saved builder draft (to resume a loop). Null in mock mode / if absent. */
+export const readLoopDraft = (repo: string, loopId: string): Promise<LoopDraft | null> =>
+  isTauri ? invoke<LoopDraft | null>("read_loop_draft", { repo, loopId }) : Promise.resolve(null);
 
 const initials = (name: string): string => {
   const parts = name.trim().split(/[\s/_-]+/).filter(Boolean);

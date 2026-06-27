@@ -748,6 +748,17 @@ fn loop_manifest_path(repo: &str, id: &str) -> PathBuf {
     loop_dir(repo, id).join("manifest.json")
 }
 
+/// The builder's serialized draft (title/branch/base/prompt/mode/resolver/targetSel),
+/// so an unfinished loop survives navigation + app restart and reopens fully.
+pub fn read_loop_draft(repo: &str, id: &str) -> R<Option<Value>> {
+    read_json(&loop_dir(repo, id).join("draft.json"))
+}
+
+pub fn write_loop_draft(repo: &str, id: &str, draft: &Value) -> R<()> {
+    ensure_locke(repo)?;
+    write_json(&loop_dir(repo, id).join("draft.json"), draft)
+}
+
 pub fn read_loop_manifest(repo: &str, id: &str) -> R<Vec<ManifestEntry>> {
     match read_json(&loop_manifest_path(repo, id))? {
         Some(v) => serde_json::from_value(v).map_err(|e| format!("parse manifest: {e}")),
@@ -916,6 +927,21 @@ mod tests {
         assert_eq!(a.loc, 10, "existing fields preserved through merge");
         assert!(m.iter().any(|e| e.path == "src/c.js" && e.inc));
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn loop_draft_round_trips() {
+        let dir = tmp("draft");
+        let repo = dir.to_str().unwrap();
+        assert!(read_loop_draft(repo, "lp1").unwrap().is_none());
+        let draft = json!({ "title": "Migrate", "resolver": { "kind": "glob", "pattern": "src/**/*.ts" }, "targetSel": { "a.ts": false } });
+        write_loop_draft(repo, "lp1", &draft).unwrap();
+        assert!(dir.join(".locke/loops/lp1/draft.json").exists());
+        let back = read_loop_draft(repo, "lp1").unwrap().unwrap();
+        assert_eq!(back["title"], "Migrate");
+        assert_eq!(back["resolver"]["pattern"], "src/**/*.ts");
+        assert_eq!(back["targetSel"]["a.ts"], false);
         let _ = fs::remove_dir_all(&dir);
     }
 
