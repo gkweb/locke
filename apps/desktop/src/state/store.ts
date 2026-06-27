@@ -72,6 +72,7 @@ import {
   writeLoopManifest as writeLoopManifestApi,
   saveLoopDraft as saveLoopDraftApi,
   readLoopDraft as readLoopDraftApi,
+  deleteLoop as deleteLoopApi,
   listBranches as listBranchesApi,
   type LoopItemEvent,
   type LoopProgress,
@@ -456,6 +457,8 @@ interface LockeState {
   setDraftResolver: (r: ResolverSpec) => void;
   /** Persist the draft loop (creates it on first save once it has a title). */
   saveDraft: () => void;
+  /** Delete a loop (registry + .locke tree; git untouched). */
+  deleteLoop: (id: string) => void;
   setDraftPrompt: (v: string) => void;
   /** Load the open repo's branches for the base picker (Tauri; no-op in mock). */
   loadRepoBranches: () => Promise<void>;
@@ -1445,6 +1448,19 @@ export const useStore = create<LockeState>((set, get) => ({
           }),
     }),
   loopToList: () => set({ loopView: "list", loopReviewItem: null }),
+  deleteLoop: (id) => {
+    const s = get();
+    const loop = s.loops.find((l) => l.id === id);
+    set((st) => ({
+      loops: st.loops.filter((l) => l.id !== id),
+      ...(st.selectedLoop === id ? { selectedLoop: null } : {}),
+      ...(st.draftLoopId === id ? { draftLoopId: null } : {}),
+    }));
+    if (MOCK || !s.repoPath) return;
+    // Stop it first if it's live, then remove its persisted state.
+    if (loop && (loop.state === "building" || loop.state === "paused")) void stopLoopApi(id);
+    void deleteLoopApi(s.repoPath, id);
+  },
   setLoopView: (v) => set({ loopView: v }),
   setMonitorLayout: (l) => set({ monitorLayout: l }),
   setPlanTab: (t) => set({ planTab: t }),

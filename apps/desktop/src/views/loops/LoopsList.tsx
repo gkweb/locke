@@ -1,8 +1,9 @@
+import { useState } from "react";
 import type { Loop } from "@locke/core";
 import { useStore } from "../../state/store.js";
 import { color, font, tint } from "../../theme/tokens.js";
 import { loopStateMeta, loopSegments, modeChip } from "../../lib/loops.js";
-import { BranchIcon, ChevronRightIcon, LoopsIcon, PlusIcon } from "../../components/icons.js";
+import { BranchIcon, ChevronRightIcon, LoopsIcon, PlusIcon, TrashIcon } from "../../components/icons.js";
 import { HoverButton, HoverDiv } from "../../components/primitives.js";
 
 // Loops · list — every loop, by lifecycle, with a live progress bar + state pill.
@@ -10,6 +11,8 @@ import { HoverButton, HoverDiv } from "../../components/primitives.js";
 const SEP = "#3a414e";
 
 function LoopCard({ loop, onOpen }: { loop: Loop; onOpen: () => void }) {
+  const deleteLoop = useStore((s) => s.deleteLoop);
+  const [confirming, setConfirming] = useState(false);
   const sm = loopStateMeta[loop.state];
   const mc = modeChip(loop.mode);
   const seg = loopSegments(loop);
@@ -139,6 +142,43 @@ function LoopCard({ loop, onOpen }: { loop: Loop; onOpen: () => void }) {
         />
         {sm.label}
       </span>
+
+      {confirming ? (
+        <span style={{ display: "flex", alignItems: "center", gap: 6, flex: "none" }} onClick={(e) => e.stopPropagation()}>
+          <HoverButton
+            onClick={(e) => {
+              e.stopPropagation();
+              deleteLoop(loop.id);
+            }}
+            style={{ padding: "5px 10px", borderRadius: 7, border: `1px solid ${tint(color.red, "55")}`, background: tint(color.red, "1f"), color: color.red, fontFamily: font.sans, fontSize: 11.5, fontWeight: 600, cursor: "pointer" }}
+            hoverStyle={{ background: tint(color.red, "33") }}
+          >
+            Delete
+          </HoverButton>
+          <HoverButton
+            onClick={(e) => {
+              e.stopPropagation();
+              setConfirming(false);
+            }}
+            style={{ padding: "5px 10px", borderRadius: 7, border: `1px solid ${color.borderChip2}`, background: "transparent", color: color.textFaint, fontFamily: font.sans, fontSize: 11.5, fontWeight: 600, cursor: "pointer" }}
+            hoverStyle={{ borderColor: "var(--lk-borderInput)" }}
+          >
+            Cancel
+          </HoverButton>
+        </span>
+      ) : (
+        <HoverButton
+          onClick={(e) => {
+            e.stopPropagation();
+            setConfirming(true);
+          }}
+          title="Delete loop (removes Locke tracking; git is untouched)"
+          style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 30, height: 30, flex: "none", borderRadius: 8, border: "none", background: "transparent", color: color.textGhost, cursor: "pointer" }}
+          hoverStyle={{ background: tint(color.red, "1a"), color: color.red }}
+        >
+          <TrashIcon size={14} stroke={1.5} />
+        </HoverButton>
+      )}
 
       <ChevronRightIcon size={15} color="var(--lk-lineNo)" stroke={1.5} />
     </HoverDiv>

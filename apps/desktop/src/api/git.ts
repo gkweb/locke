@@ -460,6 +460,10 @@ export const saveLoopDraft = (repo: string, loop: Loop, draft: LoopDraft): Promi
 export const readLoopDraft = (repo: string, loopId: string): Promise<LoopDraft | null> =>
   isTauri ? invoke<LoopDraft | null>("read_loop_draft", { repo, loopId }) : Promise.resolve(null);
 
+/** Delete a loop (registry row + .locke tree; git is untouched). No-op in mock. */
+export const deleteLoop = (repo: string, loopId: string): Promise<void> =>
+  isTauri ? invoke<void>("delete_loop", { repo, loopId }) : Promise.resolve();
+
 const initials = (name: string): string => {
   const parts = name.trim().split(/[\s/_-]+/).filter(Boolean);
   if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();

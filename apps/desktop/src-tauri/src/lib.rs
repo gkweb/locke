@@ -78,6 +78,7 @@ pub fn run() {
             commands::write_loop_manifest,
             commands::save_loop_draft,
             commands::read_loop_draft,
+            commands::delete_loop,
             commands::read_comments,
             commands::write_comments,
             commands::read_check_overrides,

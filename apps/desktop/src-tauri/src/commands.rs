@@ -283,6 +283,11 @@ pub fn read_loop_draft(repo: String, loop_id: String) -> Result<Option<Value>, S
 }
 
 #[tauri::command]
+pub fn delete_loop(repo: String, loop_id: String) -> Result<(), String> {
+    store::delete_loop(&repo, &loop_id)
+}
+
+#[tauri::command]
 pub fn write_loop_manifest(repo: String, loop_id: String, entries: Vec<store::ManifestEntry>) -> Result<(), String> {
     store::write_loop_manifest(&repo, &loop_id, &entries)
 }

@@ -582,6 +582,18 @@ pub fn update_loop<F: FnOnce(&mut Loop)>(repo: &str, id: &str, f: F) -> R<()> {
     Ok(())
 }
 
+/// Remove a loop from the registry and delete its `.locke/loops/<id>/` tree.
+/// Only Locke's tracking is removed — git commits/branches are untouched.
+pub fn delete_loop(repo: &str, id: &str) -> R<()> {
+    let _lock = lock_repo(repo)?;
+    let mut store = LoopStore { loops: read_loops(repo)? };
+    store.loops.retain(|l| l.id != id);
+    let value = serde_json::to_value(&store).map_err(|e| format!("serialize loops: {e}"))?;
+    write_json(&loops_index_path(repo), &value)?;
+    let _ = fs::remove_dir_all(loop_dir(repo, id));
+    Ok(())
+}
+
 // ---- per-item state + result records (.locke/loops/<id>/items/<path>.json) ----
 
 fn loop_item_path(repo: &str, id: &str, file: &str) -> PathBuf {
