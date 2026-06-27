@@ -211,10 +211,15 @@ function PlanSpecs() {
   const excludeSpec = useStore((s) => s.excludeSpec);
   const approveLoopPlan = useStore((s) => s.approveLoopPlan);
   const loopManifest = useStore((s) => s.loopManifest);
+  const selectedLoop = useStore((s) => s.selectedLoop);
+  const liveItems = useStore((s) => (selectedLoop ? s.loopItems[selectedLoop] ?? [] : []));
 
   // Real specs come from the strategist's manifest; plain-vite keeps the mock set.
   const specs = isTauri ? manifestToSpecs(loopManifest) : MOCK_LOOP_SPECS;
   const effStatus = (sp: LoopSpec): SpecStatus => specStatus[sp.id] ?? sp.status;
+  // Live per-item action line ("analysing <path>"), keyed by path, from loop:item.
+  const liveAction = new Map(liveItems.map((it) => [it.path, it.action]));
+  const speccingNow = specs.filter((sp) => effStatus(sp) === "speccing");
   const sel: LoopSpec | undefined = specs.find((x) => x.id === selectedSpec) ?? specs[0];
   const cnt = (st: SpecStatus) => specs.filter((sp) => effStatus(sp) === st).length;
   const total = specs.length;
@@ -272,6 +277,31 @@ function PlanSpecs() {
               {specced.toLocaleString()} of {total.toLocaleString()} items specced
             </div>
           </div>
+          {speccingNow.length > 0 && (
+            <div style={{ flex: "none", padding: "10px 14px", borderBottom: `1px solid ${color.borderRail2}`, background: tint(color.violet, "12") }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                <span style={{ width: 6, height: 6, borderRadius: "50%", background: color.violetLight, animation: "lkpulse 1.2s infinite" }} />
+                <span style={{ ...microLabel, color: color.violetLight }}>
+                  SPECCING {speccingNow.length > 1 ? `· ${speccingNow.length}` : ""}
+                </span>
+              </div>
+              {speccingNow.slice(0, 4).map((sp) => (
+                <button
+                  key={sp.id}
+                  onClick={() => selectSpec(sp.id)}
+                  style={{ display: "block", width: "100%", textAlign: "left", background: "transparent", border: "none", cursor: "pointer", padding: "2px 0", fontFamily: font.mono }}
+                >
+                  <span style={{ fontSize: 11.5, color: color.textCode }}>{baseName(sp.path)}</span>
+                  <span style={{ fontSize: 10.5, color: color.textFainter, display: "block", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {liveAction.get(sp.path) ?? "analysing…"}
+                  </span>
+                </button>
+              ))}
+              {speccingNow.length > 4 && (
+                <span style={{ fontSize: 10.5, color: color.textGhost }}>+{speccingNow.length - 4} more</span>
+              )}
+            </div>
+          )}
           <div style={{ flex: 1, overflowY: "auto", padding: "8px 8px 14px" }}>
             {specs.map((sp) => {
               const st = effStatus(sp);

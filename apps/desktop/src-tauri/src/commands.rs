@@ -248,6 +248,16 @@ pub fn read_loop_plan_meta(repo: String, loop_id: String) -> Result<Option<Value
     store::read_loop_plan_meta(&repo, &loop_id)
 }
 
+/// Flip a loop's mode/state on disk — used to return an approved (build) loop to
+/// Plan mode so its strategist specs can be reviewed/re-run.
+#[tauri::command]
+pub fn set_loop_mode(repo: String, loop_id: String, mode: String, state: String) -> Result<(), String> {
+    store::update_loop(&repo, &loop_id, |l| {
+        l.mode = mode.clone();
+        l.state = state.clone();
+    })
+}
+
 #[tauri::command]
 pub fn pause_loop(
     registry: tauri::State<loops::LoopRegistry>,

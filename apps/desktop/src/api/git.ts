@@ -436,6 +436,11 @@ export const startPlan = (args: {
 export const readLoopPlanMeta = (repo: string, loopId: string): Promise<LoopPlanMeta | null> =>
   isTauri ? invoke<LoopPlanMeta | null>("read_loop_plan_meta", { repo, loopId }) : Promise.resolve(null);
 
+/** Flip a loop's mode/state on disk (e.g. build → plan to re-review the strategist
+ *  specs). No-op in mock mode. */
+export const setLoopMode = (repo: string, loopId: string, mode: LoopMode, state: string): Promise<void> =>
+  isTauri ? invoke<void>("set_loop_mode", { repo, loopId, mode, state }) : Promise.resolve();
+
 export const pauseLoop = (loopId: string, paused: boolean): Promise<void> =>
   isTauri ? invoke<void>("pause_loop", { loopId, paused }) : Promise.resolve();
 

@@ -67,6 +67,7 @@ import {
   startLoop as startLoopApi,
   startPlan as startPlanApi,
   readLoopPlanMeta as readLoopPlanMetaApi,
+  setLoopMode as setLoopModeApi,
   pauseLoop as pauseLoopApi,
   stopLoop as stopLoopApi,
   resolveLoopItem as resolveLoopItemApi,
@@ -478,6 +479,8 @@ interface LockeState {
   startLoop: () => void;
   /** Plan: approve and begin building (→ monitor). */
   approveLoopPlan: () => void;
+  /** Return a loop to Plan mode (halts any run; → plan view) to review/re-run specs. */
+  reopenPlan: (id?: string) => void;
   /** Stop/cancel the loop (→ list). */
   stopLoop: () => void;
   /** Pause/resume the monitored loop. */
@@ -1610,7 +1613,10 @@ export const useStore = create<LockeState>((set, get) => ({
       pattern,
       template: s.draftPrompt,
       targets,
-      concurrency: 6,
+      // DEV: dialed right down while we finesse the flows + stop controls, so a
+      // run burns minimal tokens and is easy to halt. Raise (plan ~4, build ~6)
+      // once the controls are settled.
+      concurrency: plan ? 1 : 2,
       checks: s.checkSpecs,
     };
     void (plan ? startPlanApi(args) : startLoopApi(args));
@@ -1642,9 +1648,34 @@ export const useStore = create<LockeState>((set, get) => ({
       // Empty: the runner reads the loop's persisted template + enriched manifest.
       template: s.draftPrompt,
       targets: [],
-      concurrency: 6,
+      concurrency: 2, // DEV: see startLoop note
       checks: s.checkSpecs,
     });
+  },
+  // Return a (possibly already-approved/building) loop to Plan mode: halt any run,
+  // flip the record back to plan/planning on disk, and reopen the Plan view on the
+  // strategist's existing specs. Lets you re-review or re-run after an accidental
+  // approve — no re-spec happens until you choose to.
+  reopenPlan: (id) => {
+    const s = get();
+    const loopId = id ?? s.selectedLoop;
+    if (!loopId) return;
+    if (MOCK) {
+      set({ loopView: "plan", selectedLoop: loopId, planTab: "scope", loopPaused: false });
+      return;
+    }
+    if (s.repoPath) {
+      void stopLoopApi(loopId);
+      void setLoopModeApi(s.repoPath, loopId, "plan", "planning");
+    }
+    set((st) => ({
+      loops: st.loops.map((l) => (l.id === loopId ? { ...l, mode: "plan", state: "planning" } : l)),
+      selectedLoop: loopId,
+      loopView: "plan",
+      planTab: "scope",
+      loopPaused: false,
+    }));
+    void get().loadLoopPlan(loopId);
   },
   stopLoop: () => {
     const s = get();

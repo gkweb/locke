@@ -1005,6 +1005,24 @@ fn stream_claude<F: FnMut(&str, &str)>(ctx: &Arc<Ctx>, wt: &str, prompt: &str, m
     stdin.flush().ok();
     let stdin = Arc::new(Mutex::new(Some(stdin)));
 
+    // Stop watchdog: the stdout read loop only notices `stopped` when the agent next
+    // emits a line, so a stop mid-think could lag. Poll the flag and SIGKILL the
+    // process the moment it flips, so a stopped run stops burning tokens at once.
+    let pid = child.id();
+    let stopped = ctx.stopped.clone();
+    let watch_done = Arc::new(AtomicBool::new(false));
+    let wd = watch_done.clone();
+    let watcher = std::thread::spawn(move || loop {
+        if wd.load(Ordering::Relaxed) {
+            break;
+        }
+        if stopped.load(Ordering::Relaxed) {
+            let _ = Command::new("kill").arg("-9").arg(pid.to_string()).output();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    });
+
     for line in BufReader::new(stdout).lines() {
         if ctx.stopped.load(Ordering::Relaxed) {
             let _ = child.kill();
@@ -1051,6 +1069,8 @@ fn stream_claude<F: FnMut(&str, &str)>(ctx: &Arc<Ctx>, wt: &str, prompt: &str, m
         }
     }
     let _ = child.wait();
+    watch_done.store(true, Ordering::Relaxed);
+    let _ = watcher.join();
     Ok(())
 }
 

@@ -391,6 +391,7 @@ export function LoopMonitor() {
   const loopToList = useStore((s) => s.loopToList);
   const togglePause = useStore((s) => s.togglePause);
   const stopLoop = useStore((s) => s.stopLoop);
+  const reopenPlan = useStore((s) => s.reopenPlan);
 
   const storeItems = useStore((s) => (selectedLoop ? s.loopItems[selectedLoop] : undefined));
   const storeStream = useStore((s) => (selectedLoop ? s.loopStream[selectedLoop] : undefined));
@@ -449,6 +450,15 @@ export function LoopMonitor() {
             {stateLabel}
           </span>
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 9 }}>
+            <HoverButton
+              onClick={() => reopenPlan()}
+              title="Halt this run and reopen its plan to review or re-run the specs"
+              style={{ display: "flex", alignItems: "center", gap: 7, padding: "8px 13px", background: "transparent", border: `1px solid ${tint(color.violet, "4d")}`, borderRadius: 8, color: color.violetLight, fontFamily: font.sans, fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+              hoverStyle={{ background: tint(color.violet, "16") }}
+            >
+              <ChevronLeftIcon size={11} stroke={1.8} />
+              Re-plan
+            </HoverButton>
             <HoverButton
               onClick={togglePause}
               style={{ display: "flex", alignItems: "center", gap: 7, padding: "8px 13px", background: "transparent", border: `1px solid ${color.borderChip2}`, borderRadius: 8, color: color.textFaint, fontFamily: font.sans, fontSize: 12, fontWeight: 600, cursor: "pointer" }}
