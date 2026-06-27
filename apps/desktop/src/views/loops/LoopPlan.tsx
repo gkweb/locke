@@ -1,7 +1,8 @@
 import type { LoopSpec, SpecStatus } from "@locke/core";
 import { useStore } from "../../state/store.js";
+import { isTauri } from "../../api/git.js";
 import { color, font, tint } from "../../theme/tokens.js";
-import { riskColor, specStatusMeta, baseName } from "../../lib/loops.js";
+import { riskColor, specStatusMeta, baseName, manifestToSpecs } from "../../lib/loops.js";
 import {
   MOCK_LOOP_INTERVIEW,
   MOCK_LOOP_PENDING_Q,
@@ -43,7 +44,17 @@ function avatarStyle(who: "agent" | "you"): React.CSSProperties {
 function PlanScope() {
   const setPlanTab = useStore((s) => s.setPlanTab);
   const approveLoopPlan = useStore((s) => s.approveLoopPlan);
+  const planMeta = useStore((s) => s.loopPlanMeta);
+  const manifest = useStore((s) => s.loopManifest);
   const specCount = useStore((s) => (s.loops.find((l) => l.id === s.selectedLoop)?.total ?? 318));
+
+  // Real plan data comes from the strategist's scope pass; plain-vite keeps the
+  // scripted mock. The interactive interview is a later phase, so in Tauri the
+  // scope column is a read-only transcript of the plan the strategist drafted.
+  const summary = isTauri ? planMeta?.summary ?? [] : MOCK_LOOP_SPEC_SUMMARY;
+  const assumptions = isTauri ? planMeta?.assumptions ?? [] : MOCK_LOOP_ASSUMPTIONS;
+  const planning = isTauri && summary.length === 0 && assumptions.length === 0;
+  const realCount = isTauri ? manifest.length : specCount;
 
   return (
     <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
@@ -53,9 +64,21 @@ function PlanScope() {
           <div style={{ maxWidth: 680, margin: "0 auto", display: "flex", flexDirection: "column", gap: 16 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, ...sectionLabel }}>
               <UnifiedIcon size={13} color={color.textGhost} stroke={1.5} />
-              SCOPE INTERVIEW
+              {isTauri ? "SCOPE" : "SCOPE INTERVIEW"}
             </div>
-            {MOCK_LOOP_INTERVIEW.map((m, i) => (
+            {isTauri ? (
+              <div style={{ display: "flex", gap: 11 }}>
+                <span style={avatarStyle("agent")}>CL</span>
+                <div style={{ flex: 1, minWidth: 0, borderRadius: 12, padding: "12px 14px", background: color.panelBg, border: `1px solid ${color.borderRail}` }}>
+                  <div style={{ fontSize: 13, lineHeight: 1.55, color: color.textSoft }}>
+                    {planning
+                      ? "Reading the codebase and drafting a plan across the set — assumptions and the dry-run spec will appear on the right as I go."
+                      : "I drafted a plan across the set. Review the dry-run spec and assumptions on the right, tune any per-item spec, then approve to start the build."}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              MOCK_LOOP_INTERVIEW.map((m, i) => (
               <div key={i} style={{ display: "flex", gap: 11 }}>
                 <span style={avatarStyle(m.role)}>{m.role === "agent" ? "CL" : "YO"}</span>
                 <div
@@ -71,39 +94,44 @@ function PlanScope() {
                   <div style={{ fontSize: 13, lineHeight: 1.55, color: color.textSoft }}>{m.text}</div>
                 </div>
               </div>
-            ))}
-            {/* pending question */}
-            <div style={{ display: "flex", gap: 11 }}>
-              <span style={avatarStyle("agent")}>CL</span>
-              <div style={{ flex: 1, minWidth: 0, borderRadius: 12, padding: "13px 15px", background: color.panelBg, border: `1px solid ${tint(color.teal, "57")}` }}>
-                <div style={{ fontSize: 13, lineHeight: 1.55, color: color.text, marginBottom: 12 }}>{MOCK_LOOP_PENDING_Q}</div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  {MOCK_LOOP_PENDING_CHIPS.map((c) => (
-                    <span
-                      key={c}
-                      style={{
-                        padding: "6px 13px",
-                        background: tint(color.teal, "1a"),
-                        border: `1px solid ${tint(color.teal, "57")}`,
-                        borderRadius: 20,
-                        color: color.teal,
-                        fontFamily: font.sans,
-                        fontSize: 12,
-                        fontWeight: 500,
-                      }}
-                    >
-                      {c}
-                    </span>
-                  ))}
+            ))
+            )}
+            {/* pending question — mock-only (the interactive interview is a later phase) */}
+            {!isTauri && (
+              <div style={{ display: "flex", gap: 11 }}>
+                <span style={avatarStyle("agent")}>CL</span>
+                <div style={{ flex: 1, minWidth: 0, borderRadius: 12, padding: "13px 15px", background: color.panelBg, border: `1px solid ${tint(color.teal, "57")}` }}>
+                  <div style={{ fontSize: 13, lineHeight: 1.55, color: color.text, marginBottom: 12 }}>{MOCK_LOOP_PENDING_Q}</div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {MOCK_LOOP_PENDING_CHIPS.map((c) => (
+                      <span
+                        key={c}
+                        style={{
+                          padding: "6px 13px",
+                          background: tint(color.teal, "1a"),
+                          border: `1px solid ${tint(color.teal, "57")}`,
+                          borderRadius: 20,
+                          color: color.teal,
+                          fontFamily: font.sans,
+                          fontSize: 12,
+                          fontWeight: 500,
+                        }}
+                      >
+                        {c}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               </div>
-            </div>
+            )}
           </div>
         </div>
-        {/* reply box */}
+        {/* reply box — interactive interview is a later phase; disabled in Tauri */}
         <div style={{ flex: "none", padding: "14px 26px", borderTop: `1px solid ${color.borderSubtle}`, background: color.titlebarBg }}>
-          <div style={{ maxWidth: 680, margin: "0 auto", display: "flex", alignItems: "center", gap: 10, height: 42, padding: "0 6px 0 15px", background: color.popoverBg, border: `1px solid ${color.borderRow}`, borderRadius: 11 }}>
-            <span style={{ flex: 1, fontSize: 12.5, color: color.textGhost }}>Reply, or add a constraint of your own…</span>
+          <div style={{ maxWidth: 680, margin: "0 auto", display: "flex", alignItems: "center", gap: 10, height: 42, padding: "0 6px 0 15px", background: color.popoverBg, border: `1px solid ${color.borderRow}`, borderRadius: 11, opacity: isTauri ? 0.5 : 1 }}>
+            <span style={{ flex: 1, fontSize: 12.5, color: color.textGhost }}>
+              {isTauri ? "Replying to refine the plan is coming soon — tune per-item specs for now." : "Reply, or add a constraint of your own…"}
+            </span>
             <span style={{ width: 30, height: 30, flex: "none", display: "flex", alignItems: "center", justifyContent: "center", background: color.violet, borderRadius: 8, color: "#fff" }}>
               <SendIcon size={14} color="#fff" stroke={1.8} />
             </span>
@@ -122,9 +150,14 @@ function PlanScope() {
             </span>
           </div>
           <p style={{ margin: "0 0 16px", fontSize: 11.5, color: color.textFainter, lineHeight: 1.55 }}>
-            What the loop will do across the set, derived from your answers so far.
+            What the loop will do across the set, as the strategist sees it.
           </p>
-          {MOCK_LOOP_SPEC_SUMMARY.map((sp, i) => (
+          {summary.length === 0 && (
+            <p style={{ margin: "0 0 16px", fontSize: 11.5, color: color.textGhost, lineHeight: 1.55 }}>
+              {planning ? "Drafting the dry-run spec…" : "No dry-run summary was produced."}
+            </p>
+          )}
+          {summary.map((sp, i) => (
             <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 9, padding: "9px 0", borderBottom: `1px solid ${color.borderRowFaint3}` }}>
               <span style={{ width: 6, height: 6, borderRadius: "50%", flex: "none", marginTop: 5, background: sp.pend ? color.amber : color.teal }} />
               <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: color.textSoft, lineHeight: 1.4 }}>{sp.label}</span>
@@ -133,8 +166,8 @@ function PlanScope() {
               </span>
             </div>
           ))}
-          <div style={{ ...microLabel, margin: "20px 0 10px" }}>ASSUMPTIONS</div>
-          {MOCK_LOOP_ASSUMPTIONS.map((a, i) => (
+          {assumptions.length > 0 && <div style={{ ...microLabel, margin: "20px 0 10px" }}>ASSUMPTIONS</div>}
+          {assumptions.map((a, i) => (
             <div key={i} style={{ display: "flex", gap: 8, marginBottom: 9 }}>
               <CheckIcon size={12} color={color.textGhost} stroke={1.6} style={{ flex: "none", marginTop: 2 }} />
               <span style={{ fontSize: 11.5, color: color.textFaint, lineHeight: 1.5 }}>{a}</span>
@@ -155,10 +188,10 @@ function PlanScope() {
             style={{ width: "100%", marginTop: 9, padding: 9, background: "transparent", border: `1px solid ${color.borderChip2}`, borderRadius: 9, color: color.textMuted, fontFamily: font.sans, fontSize: 12, fontWeight: 600, cursor: "pointer" }}
             hoverStyle={{ borderColor: "var(--lk-borderInput)", color: color.textSoft }}
           >
-            Review {specCount.toLocaleString()} per-item specs →
+            Review {realCount.toLocaleString()} per-item specs →
           </HoverButton>
           <p style={{ margin: "9px 0 0", fontSize: 10.5, color: color.textGhost, textAlign: "center" }}>
-            One question still open — you can start anyway and Locke will ask in-loop.
+            {planning ? "Still speccing — you can start anyway and Locke will fill gaps in-loop." : "Review the per-item specs, or approve to start the build."}
           </p>
         </div>
       </div>
@@ -177,13 +210,25 @@ function PlanSpecs() {
   const acceptSpec = useStore((s) => s.acceptSpec);
   const excludeSpec = useStore((s) => s.excludeSpec);
   const approveLoopPlan = useStore((s) => s.approveLoopPlan);
-  const total = useStore((s) => s.loops.find((l) => l.id === s.selectedLoop)?.total ?? 318);
+  const loopManifest = useStore((s) => s.loopManifest);
 
+  // Real specs come from the strategist's manifest; plain-vite keeps the mock set.
+  const specs = isTauri ? manifestToSpecs(loopManifest) : MOCK_LOOP_SPECS;
   const effStatus = (sp: LoopSpec): SpecStatus => specStatus[sp.id] ?? sp.status;
-  const sel: LoopSpec = MOCK_LOOP_SPECS.find((x) => x.id === selectedSpec) ?? MOCK_LOOP_SPECS[0];
+  const sel: LoopSpec | undefined = specs.find((x) => x.id === selectedSpec) ?? specs[0];
+  const cnt = (st: SpecStatus) => specs.filter((sp) => effStatus(sp) === st).length;
+  const total = specs.length;
+  const specced = cnt("specced");
+  const pct = total ? Math.round((specced / total) * 100) : 0;
+
+  if (!sel) {
+    return (
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: color.textGhost, fontSize: 13 }}>
+        The strategist hasn't produced any specs yet.
+      </div>
+    );
+  }
   const approach = specApproach[sel.id] ?? sel.approach;
-  const cnt = (st: SpecStatus) => MOCK_LOOP_SPECS.filter((sp) => effStatus(sp) === st).length;
-  const specced = Math.round(total * 0.66);
 
   const approachBtn = (key: string, title: string, sub: string, accent: string) => {
     const active = approach === key;
@@ -218,17 +263,17 @@ function PlanSpecs() {
           <div style={{ flex: "none", padding: "14px 16px 13px", borderBottom: `1px solid ${color.borderRail2}` }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
               <span style={sectionLabel}>PER-ITEM SPECS</span>
-              <span style={{ fontSize: 10.5, color: color.textFainter, fontFamily: font.mono }}>66%</span>
+              <span style={{ fontSize: 10.5, color: color.textFainter, fontFamily: font.mono }}>{pct}%</span>
             </div>
             <div style={{ height: 5, borderRadius: 4, background: color.borderSubtle, overflow: "hidden", marginBottom: 6 }}>
-              <span style={{ display: "block", height: "100%", width: "66%", background: color.teal }} />
+              <span style={{ display: "block", height: "100%", width: `${pct}%`, background: color.teal }} />
             </div>
             <div style={{ fontSize: 10.5, color: color.textFainter, fontFamily: font.mono }}>
               {specced.toLocaleString()} of {total.toLocaleString()} items specced
             </div>
           </div>
           <div style={{ flex: 1, overflowY: "auto", padding: "8px 8px 14px" }}>
-            {MOCK_LOOP_SPECS.map((sp) => {
+            {specs.map((sp) => {
               const st = effStatus(sp);
               const m = specStatusMeta[st];
               const active = sp.id === selectedSpec;
@@ -416,10 +461,11 @@ export function LoopPlan() {
   const setPlanTab = useStore((s) => s.setPlanTab);
   const loopToList = useStore((s) => s.loopToList);
   const stopLoop = useStore((s) => s.stopLoop);
+  const manifestLen = useStore((s) => s.loopManifest.length);
 
   const loop = loops.find((l) => l.id === selectedLoop) ?? loops[0];
   const title = loop?.title ?? "Loop";
-  const count = loop?.total || 318;
+  const count = isTauri ? loop?.total || manifestLen : loop?.total || 318;
 
   const tabBtn = (key: "scope" | "specs", label: string, badge?: string) => {
     const active = planTab === key;

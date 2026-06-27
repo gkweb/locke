@@ -1,4 +1,4 @@
-import type { Loop, LoopItemState, LoopRisk, LoopState, ResolverSpec, SpecStatus } from "@locke/core";
+import type { Loop, LoopItemState, LoopRisk, LoopSpec, LoopState, ManifestEntry, ResolverSpec, SpecStatus } from "@locke/core";
 import { color } from "../theme/tokens.js";
 
 // Shared Loops meta + math, kept beside lib/fleet.ts so every Loops surface
@@ -66,6 +66,25 @@ export function modeChip(mode: "plan" | "build"): { label: string; color: string
 
 /** Last segment of a path, e.g. "Checkout.vue". */
 export const baseName = (path: string): string => path.split("/").pop() ?? path;
+
+const SPEC_STATUSES: SpecStatus[] = ["specced", "review", "speccing", "queued", "excluded"];
+
+/** Derive the Plan view's per-item spec list from a loop's manifest rows. The
+ *  strategist enriches the manifest (approach/detected/steps/tests/status); this
+ *  maps it to the `LoopSpec` shape the Plan view renders (steps gain stable keys). */
+export function manifestToSpecs(entries: ManifestEntry[]): LoopSpec[] {
+  return entries.map((e) => ({
+    id: e.id || e.path,
+    path: e.path,
+    risk: (["low", "med", "high"].includes(e.risk ?? "") ? e.risk : "low") as LoopRisk,
+    status: (SPEC_STATUSES.includes(e.status as SpecStatus) ? e.status : "queued") as SpecStatus,
+    approach: e.approach ?? "",
+    detected: e.detected ?? [],
+    steps: (e.steps ?? []).map((text, i) => ({ k: String(i), text })),
+    tests: e.tests ?? [],
+    note: e.note ?? "",
+  }));
+}
 
 /** A short, human label for a resolver — shown as the loop's `pattern` and the
  *  builder chip. */

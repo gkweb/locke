@@ -7,6 +7,7 @@ import type {
   Loop,
   LoopItemState,
   LoopMode,
+  LoopPlanMeta,
   ManifestEntry,
   ResolverSpec,
   PullRecord,
@@ -414,6 +415,26 @@ export const startLoop = (args: {
   concurrency: number;
   checks: { label: string; command: string }[];
 }): Promise<void> => (isTauri ? invoke<void>("start_loop", args) : Promise.resolve());
+
+/** Start a Plan-mode (strategist) run: a scope pass writes the loop's plan, then a
+ *  read-only spec agent fans out per item, enriching the manifest. Same args/stream
+ *  as {@link startLoop}; the loop settles to `planning`, awaiting approve→build. */
+export const startPlan = (args: {
+  loopId: string;
+  repo: string;
+  branch: string;
+  base: string;
+  pattern: string;
+  template: string;
+  targets: string[];
+  concurrency: number;
+  checks: { label: string; command: string }[];
+}): Promise<void> => (isTauri ? invoke<void>("start_plan", args) : Promise.resolve());
+
+/** Read a loop's scope metadata (`{ summary, assumptions }`) for the Plan view's
+ *  Scope tab. Null in mock mode / before the scope pass runs. */
+export const readLoopPlanMeta = (repo: string, loopId: string): Promise<LoopPlanMeta | null> =>
+  isTauri ? invoke<LoopPlanMeta | null>("read_loop_plan_meta", { repo, loopId }) : Promise.resolve(null);
 
 export const pauseLoop = (loopId: string, paused: boolean): Promise<void> =>
   isTauri ? invoke<void>("pause_loop", { loopId, paused }) : Promise.resolve();

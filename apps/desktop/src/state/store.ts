@@ -8,6 +8,8 @@ import type {
   Loop,
   LoopItem,
   LoopMode,
+  LoopPlanMeta,
+  LoopState,
   LoopStreamEvent,
   LoopView,
   ManifestEntry,
@@ -63,11 +65,14 @@ import {
   watchLocke,
   readRuns,
   startLoop as startLoopApi,
+  startPlan as startPlanApi,
+  readLoopPlanMeta as readLoopPlanMetaApi,
   pauseLoop as pauseLoopApi,
   stopLoop as stopLoopApi,
   resolveLoopItem as resolveLoopItemApi,
   readLoops as readLoopsApi,
   readLoopItems as readLoopItemsApi,
+  readLoopManifest as readLoopManifestApi,
   resolveTargets as resolveTargetsApi,
   writeLoopManifest as writeLoopManifestApi,
   saveLoopDraft as saveLoopDraftApi,
@@ -287,6 +292,11 @@ interface LockeState {
   specApproach: Record<string, string>;
   specSteps: Record<string, Record<string, boolean>>;
   specStatus: Record<string, SpecStatus>;
+  /** The open plan loop's manifest rows — the strategist's per-item specs (real in
+   *  Tauri; the Plan view derives its spec list from this). */
+  loopManifest: ManifestEntry[];
+  /** The open plan loop's scope metadata (summary + assumptions) for the Scope tab. */
+  loopPlanMeta: LoopPlanMeta | null;
   /** Feedback the user added in the item review this session (re-queue composer). */
   loopFeedback: string[];
   /** Live per-item state, keyed by loopId (driven by `loop:item` events / reads). */
@@ -486,6 +496,8 @@ interface LockeState {
   loadLoops: () => Promise<void>;
   /** Load a loop's per-item records from the backend into `loopItems`. */
   loadLoopItems: (loopId: string) => Promise<void>;
+  /** Load a planning loop's manifest + scope metadata into `loopManifest`/`loopPlanMeta`. */
+  loadLoopPlan: (loopId: string) => Promise<void>;
   /** Match the draft pattern into real audit rows (Tauri mode; no-op in mock). */
   loadLoopTargets: () => Promise<void>;
   /** Backend `loop:*` stream handlers (routed from App.tsx listeners). */
@@ -707,6 +719,8 @@ export const useStore = create<LockeState>((set, get) => ({
   specApproach: {},
   specSteps: {},
   specStatus: {},
+  loopManifest: [],
+  loopPlanMeta: null,
   loopFeedback: [],
   loopItems: {},
   loopStream: {},
@@ -1421,6 +1435,17 @@ export const useStore = create<LockeState>((set, get) => ({
         void get().loadLoopTargets();
         void get().loadRepoBranches();
       })();
+    } else if (v === "plan") {
+      // Resume a planning loop: restore its draft (for the prompt approve→build
+      // needs) and load the strategist's specs + scope metadata.
+      void (async () => {
+        const { repoPath } = get();
+        if (!repoPath) return;
+        const d = await readLoopDraftApi(repoPath, id).catch(() => null);
+        if (d) set({ draftPrompt: d.prompt ?? "", draftBranch: d.branch ?? "", draftBase: d.base ?? get().base });
+      })();
+      set({ planTab: "scope" });
+      void get().loadLoopPlan(id);
     } else {
       void get().loadLoopItems(id);
     }
@@ -1521,24 +1546,17 @@ export const useStore = create<LockeState>((set, get) => ({
   },
   toggleTarget: (path, on) => set((s) => ({ targetSel: { ...s.targetSel, [path]: on } })),
   // Mock: drives the scripted "vue3" loop. Tauri: creates a real loop from the
-  // draft and kicks off the backend runner (Build mode); Plan mode opens the
-  // scope interview (its spec generation is a later phase).
+  // draft and kicks off the backend runner — Build mode → monitor, Plan mode →
+  // the strategist (scope pass + per-item specs) then the Plan view.
   startLoop: () => {
     const s = get();
-    if (s.draftMode !== "build") {
-      // Plan mode: the spec-generation strategist isn't built yet, so just SAVE the
-      // loop (it persists + lists, resumable) rather than show a placeholder plan.
-      // The mock design preview keeps the scripted plan view.
-      if (MOCK) {
-        set({ loopView: "plan", selectedLoop: "vue3", planTab: "scope" });
-        return;
-      }
-      get().saveDraft();
-      set({ loopView: "list" });
-      return;
-    }
+    const plan = s.draftMode !== "build";
     if (MOCK || !s.repoPath) {
-      set({ loopView: "monitor", selectedLoop: "vue3", loopPaused: false });
+      set(
+        plan
+          ? { loopView: "plan", selectedLoop: "vue3", planTab: "scope" }
+          : { loopView: "monitor", selectedLoop: "vue3", loopPaused: false },
+      );
       return;
     }
     // Reuse the saved draft's id so the draft becomes the running loop (no dupe).
@@ -1556,8 +1574,8 @@ export const useStore = create<LockeState>((set, get) => ({
       title: s.draftTitle,
       branch: s.draftBranch,
       base: s.draftBase,
-      mode: "build",
-      state: "building",
+      mode: plan ? "plan" : "build",
+      state: plan ? "planning" : "building",
       pattern,
       total: 0,
       done: 0,
@@ -1567,19 +1585,24 @@ export const useStore = create<LockeState>((set, get) => ({
       queued: 0,
       blocked: 0,
       rate: "—",
-      elapsed: "0m 0s",
+      elapsed: plan ? "planning" : "0m 0s",
     };
     set((st) => ({
       loops: [placeholder, ...st.loops.filter((l) => l.id !== loopId)],
-      loopView: "monitor",
+      loopView: plan ? "plan" : "monitor",
       selectedLoop: loopId,
+      planTab: plan ? "scope" : st.planTab,
       loopPaused: false,
       draftLoopId: null,
+      // Seed the Plan view with the included rows (queued) so items show at once;
+      // the strategist fills in approach/steps/status as it specs each.
+      loopManifest: plan ? entries.filter((t) => t.inc).map((t) => ({ ...t, status: "queued" })) : st.loopManifest,
+      loopPlanMeta: plan ? null : st.loopPlanMeta,
       loopItems: { ...st.loopItems, [loopId]: [] },
       loopStream: { ...st.loopStream, [loopId]: [] },
     }));
     void writeLoopManifestApi(s.repoPath, loopId, entries);
-    void startLoopApi({
+    const args = {
       loopId,
       repo: s.repoPath,
       branch: s.draftBranch,
@@ -1589,9 +1612,40 @@ export const useStore = create<LockeState>((set, get) => ({
       targets,
       concurrency: 6,
       checks: s.checkSpecs,
+    };
+    void (plan ? startPlanApi(args) : startLoopApi(args));
+  },
+  // Approve the strategist's plan and start the build over the same loop. The
+  // (enriched, audited) manifest is already persisted, so start_loop consumes it
+  // unchanged; the loop flips plan → build in place.
+  approveLoopPlan: () => {
+    const s = get();
+    const loopId = s.selectedLoop;
+    const loop = s.loops.find((l) => l.id === loopId);
+    if (MOCK || !s.repoPath || !loopId || !loop) {
+      set({ loopView: "monitor", selectedLoop: MOCK ? "vue3" : loopId, loopPaused: false });
+      return;
+    }
+    set((st) => ({
+      loops: st.loops.map((l) => (l.id === loopId ? { ...l, mode: "build", state: "building", elapsed: "0m 0s" } : l)),
+      loopView: "monitor",
+      loopPaused: false,
+      loopItems: { ...st.loopItems, [loopId]: [] },
+      loopStream: { ...st.loopStream, [loopId]: [] },
+    }));
+    void startLoopApi({
+      loopId,
+      repo: s.repoPath,
+      branch: loop.branch,
+      base: loop.base,
+      pattern: loop.pattern,
+      // Empty: the runner reads the loop's persisted template + enriched manifest.
+      template: s.draftPrompt,
+      targets: [],
+      concurrency: 6,
+      checks: s.checkSpecs,
     });
   },
-  approveLoopPlan: () => set({ loopView: "monitor", selectedLoop: MOCK ? "vue3" : get().selectedLoop, loopPaused: false }),
   stopLoop: () => {
     const s = get();
     if (!MOCK && s.selectedLoop) void stopLoopApi(s.selectedLoop);
@@ -1624,9 +1678,24 @@ export const useStore = create<LockeState>((set, get) => ({
       cur[k] = !eff;
       return { specSteps: { ...s.specSteps, [id]: cur } };
     }),
-  acceptSpec: (id) => set((s) => ({ specStatus: { ...s.specStatus, [id]: "specced" } })),
-  excludeSpec: (id) =>
-    set((s) => ({ specStatus: { ...s.specStatus, [id]: s.specStatus[id] === "excluded" ? "review" : "excluded" } })),
+  // Accept/exclude mutate the persisted manifest (the build's source of truth) so
+  // the creator's calls carry into the build: an excluded item drops out (inc=false).
+  acceptSpec: (id) => {
+    const s = get();
+    const loopManifest = s.loopManifest.map((e) => ((e.id ?? e.path) === id ? { ...e, status: "specced", inc: true } : e));
+    set({ loopManifest, specStatus: { ...s.specStatus, [id]: "specced" } });
+    if (!MOCK && s.repoPath && s.selectedLoop) void writeLoopManifestApi(s.repoPath, s.selectedLoop, loopManifest);
+  },
+  excludeSpec: (id) => {
+    const s = get();
+    const cur = s.loopManifest.find((e) => (e.id ?? e.path) === id);
+    const nowExcluded = cur?.status !== "excluded";
+    const loopManifest = s.loopManifest.map((e) =>
+      (e.id ?? e.path) === id ? { ...e, status: nowExcluded ? "excluded" : "review", inc: !nowExcluded } : e,
+    );
+    set({ loopManifest, specStatus: { ...s.specStatus, [id]: nowExcluded ? "excluded" : "review" } });
+    if (!MOCK && s.repoPath && s.selectedLoop) void writeLoopManifestApi(s.repoPath, s.selectedLoop, loopManifest);
+  },
 
   loadLoops: async () => {
     const { repoPath } = get();
@@ -1661,6 +1730,24 @@ export const useStore = create<LockeState>((set, get) => ({
       // Leave prior items in place on a failed read.
     }
   },
+  loadLoopPlan: async (loopId) => {
+    const { repoPath } = get();
+    if (MOCK || !repoPath) return;
+    try {
+      const [manifest, meta] = await Promise.all([
+        readLoopManifestApi(repoPath, loopId),
+        readLoopPlanMetaApi(repoPath, loopId),
+      ]);
+      const inc = manifest.filter((e) => e.inc);
+      set((s) => ({
+        loopManifest: inc,
+        loopPlanMeta: meta,
+        selectedSpec: inc[0]?.id ?? inc[0]?.path ?? s.selectedSpec,
+      }));
+    } catch {
+      // Leave any prior plan data in place on a failed read.
+    }
+  },
   loadLoopTargets: async () => {
     const { repoPath, draftResolver } = get();
     if (MOCK || !repoPath) return;
@@ -1692,7 +1779,13 @@ export const useStore = create<LockeState>((set, get) => ({
       };
       if (idx >= 0) items[idx] = { ...items[idx], ...next };
       else items.push(next);
-      return { loopItems: { ...s.loopItems, [e.loopId]: items } };
+      // While the Plan view is open on this loop, mirror the item's status onto its
+      // manifest row so spec dots go speccing → specced/review live.
+      const loopManifest =
+        s.loopView === "plan" && s.selectedLoop === e.loopId
+          ? s.loopManifest.map((m) => ((m.id ?? m.path) === e.itemId || m.path === e.path ? { ...m, status: e.status } : m))
+          : s.loopManifest;
+      return { loopItems: { ...s.loopItems, [e.loopId]: items }, loopManifest };
     }),
   onLoopProgress: (e) =>
     set((s) => ({
@@ -1707,12 +1800,16 @@ export const useStore = create<LockeState>((set, get) => ({
       const arr = [{ st: e.st, path: e.path, text: e.text, t: e.t }, ...(s.loopStream[e.loopId] ?? [])].slice(0, 200);
       return { loopStream: { ...s.loopStream, [e.loopId]: arr } };
     }),
-  onLoopDone: (e) =>
-    set((s) => ({
-      loops: s.loops.map((l) =>
-        l.id === e.loopId ? { ...l, state: e.state === "done" ? "done" : e.state === "stopped" ? "paused" : "building" } : l,
-      ),
-    })),
+  onLoopDone: (e) => {
+    const state: LoopState =
+      e.state === "done" ? "done" : e.state === "stopped" ? "paused" : e.state === "planning" ? "planning" : "building";
+    set((s) => ({ loops: s.loops.map((l) => (l.id === e.loopId ? { ...l, state } : l)) }));
+    // A finished planning pass: reload the manifest + scope metadata so the Plan
+    // view shows the strategist's full specs (approach/steps/tests), not just dots.
+    if (e.state === "planning" && get().selectedLoop === e.loopId && get().loopView === "plan") {
+      void get().loadLoopPlan(e.loopId);
+    }
+  },
 
   openFullFile: (path, review) => {
     set({

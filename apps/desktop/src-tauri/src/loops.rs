@@ -25,6 +25,33 @@ use tauri::{AppHandle, Emitter};
 
 type R<T> = Result<T, String>;
 
+/// Which pass a runner is: Build edits files and commits; Plan (the strategist)
+/// analyses each item read-only and writes a spec, committing nothing. The two
+/// share the scheduler, worker pool and agent-streaming machinery and differ only
+/// in the per-item prompt, the success contract, and whether they commit.
+#[derive(Clone, Copy, PartialEq)]
+enum Phase {
+    Build,
+    Plan,
+}
+
+impl Phase {
+    /// The status string emitted while an item is in flight.
+    fn in_flight(self) -> &'static str {
+        match self {
+            Phase::Build => "running",
+            Phase::Plan => "speccing",
+        }
+    }
+    /// Status string + stream glyph for a successful terminal item.
+    fn done_status(self) -> &'static str {
+        match self {
+            Phase::Build => "done",
+            Phase::Plan => "specced",
+        }
+    }
+}
+
 // ---- event payloads (camelCase, keyed by loopId) ----
 
 #[derive(Serialize, Clone)]
@@ -316,6 +343,7 @@ struct Ctx {
     app: AppHandle,
     repo: String,
     loop_id: String,
+    phase: Phase,
     base: String,
     seed: String,
     template: String,
@@ -598,8 +626,28 @@ fn risk_band(loc: u64) -> &'static str {
 
 /// Always-appended completion protocol so even a custom template carries the
 /// exact tool-call parameters. This is the worker's objective/boundaries/output
-/// contract (per Anthropic's subagent-spec guidance).
-fn protocol_footer(loop_id: &str, key: &str, target: &str, is_task: bool, tests: &str) -> String {
+/// contract (per Anthropic's subagent-spec guidance). Build mode asks for the edit
+/// then `loop_item_complete`; Plan mode (strategist) asks for a read-only analysis
+/// then `loop_write_spec`.
+fn protocol_footer(phase: Phase, loop_id: &str, key: &str, target: &str, is_task: bool, tests: &str) -> String {
+    if phase == Phase::Plan {
+        let scope = if is_task {
+            format!("- Plan this task: {target}. Analyse what it would require; do NOT make the change.")
+        } else {
+            format!("- Analyse ONLY this file: `{target}`, read-only. Do NOT edit any file — this is a planning pass.")
+        };
+        return format!(
+            "\n\n---\nYou are the STRATEGIST for one item of a Locke loop, running UNATTENDED.\n\
+             {scope}\n\
+             - Read the file and decide exactly how the later build worker should change it to satisfy the task.\n\
+             - The build worker must make these checks pass: {tests}.\n\
+             - Write your plan by calling `loop_write_spec` with loop_id=\"{loop_id}\", file=\"{key}\", a markdown \
+             `spec` (objective + concrete edits + how to verify), and optional `approach`/`detected`/`steps`/`tests`/`note`.\n\
+             - If a human must decide before this item can be built, call `loop_write_spec` with needs_review=true and a \
+             `note` explaining the decision — do not guess.\n\
+             - Call `loop_write_spec` exactly once; do not edit or commit anything."
+        );
+    }
     let scope = if is_task {
         format!("- Complete this task: {target}. Touch whatever files it strictly requires; leave everything else unchanged.")
     } else {
@@ -634,7 +682,7 @@ fn render_prompt(ctx: &Ctx, key: &str, target: &str, is_task: bool) -> String {
         .replace("{{base}}", &ctx.base)
         .replace("{{spec}}", &spec)
         .replace("{{conventions}}", &conventions);
-    format!("{body}{}", protocol_footer(&ctx.loop_id, key, target, is_task, &tests))
+    format!("{body}{}", protocol_footer(ctx.phase, &ctx.loop_id, key, target, is_task, &tests))
 }
 
 // ---- checks (run in the item worktree, not a fresh one) ----
@@ -772,23 +820,30 @@ enum Outcome {
 }
 
 fn process_item(ctx: &Arc<Ctx>, p: &Picked) {
-    // `next_ready` already marked the node Running; emit it.
-    emit_item(ctx, &p.id, &p.key, "running", Some("starting…".into()), Some(2), p.wave, p.priority, vec![]);
+    // `next_ready` already marked the node Running; emit it. Plan mode shows this as
+    // "speccing" rather than "running".
+    let start_line = if ctx.phase == Phase::Plan { "analysing…" } else { "starting…" };
+    emit_item(ctx, &p.id, &p.key, ctx.phase.in_flight(), Some(start_line.into()), Some(2), p.wave, p.priority, vec![]);
     emit_progress(ctx);
 
     let outcome = run_one(ctx, p).unwrap_or_else(Outcome::Failed);
 
+    // The scheduler marks Done/Review/Failed identically in both phases (a specced
+    // item satisfies a dependent just as a built one does); only the *emitted*
+    // status string differs so the Plan view reads it as a SpecStatus.
+    let done_line = if ctx.phase == Phase::Plan { "specced".to_string() } else { "migrated · checks pass".to_string() };
     let (st, line, st_glyph) = match &outcome {
-        Outcome::Done => (St::Done, "migrated · checks pass".to_string(), "done"),
+        Outcome::Done => (St::Done, done_line, ctx.phase.done_status()),
         Outcome::Review(r) => (St::Review, r.clone(), "review"),
         Outcome::Failed(e) => (St::Failed, e.clone(), "failed"),
     };
+    let emit_status = if st == St::Done { ctx.phase.done_status() } else { st.as_str() };
     // Persist the final item record (merging any agent declaration already there).
     let _ = locke_store::merge_loop_item(
         &ctx.repo,
         &ctx.loop_id,
         &p.key,
-        json!({ "id": p.id, "status": st.as_str(), "line": line, "agent": "CL", "wave": p.wave, "priority": p.priority }),
+        json!({ "id": p.id, "status": emit_status, "line": line, "agent": "CL", "wave": p.wave, "priority": p.priority }),
     );
     // Record the terminal status in the graph and wake any parked workers — a
     // `Done` may have unblocked dependents.
@@ -797,7 +852,7 @@ fn process_item(ctx: &Arc<Ctx>, p: &Picked) {
         g.mark(p.i, st);
     }
     ctx.cond.notify_all();
-    emit_item(ctx, &p.id, &p.key, st.as_str(), Some(line.clone()), Some(100), p.wave, p.priority, vec![]);
+    emit_item(ctx, &p.id, &p.key, emit_status, Some(line.clone()), Some(100), p.wave, p.priority, vec![]);
     emit_stream(ctx, st_glyph, &p.key, &line);
     emit_progress(ctx);
 }
@@ -827,6 +882,26 @@ fn run_one(ctx: &Arc<Ctx>, p: &Picked) -> R<Outcome> {
         run_agent_stream(ctx, &p.id, p, &wt)?;
         if ctx.stopped.load(Ordering::Relaxed) {
             return Ok(Outcome::Failed("loop stopped".into()));
+        }
+
+        // Plan mode: the agent analyses read-only and writes its spec via
+        // `loop_write_spec` (which sets `declared` to specced|review). Nothing is
+        // checked or committed — the worktree is just a sandbox so a stray edit
+        // can't touch the user's tree, and is discarded on teardown.
+        if ctx.phase == Phase::Plan {
+            let rec = locke_store::read_loop_item(&ctx.repo, &ctx.loop_id, file).ok().flatten();
+            let declared = rec.as_ref().and_then(|v| v.get("declared").and_then(|d| d.as_str()));
+            return Ok(match declared {
+                Some("specced") => Outcome::Done,
+                Some("review") => {
+                    let reason = rec
+                        .as_ref()
+                        .and_then(|v| v.get("reason").and_then(|r| r.as_str()).map(String::from))
+                        .unwrap_or_else(|| "strategist flagged for your call".into());
+                    Outcome::Review(reason)
+                }
+                _ => Outcome::Review("strategist ended without writing a spec".into()),
+            });
         }
 
         // Did the agent declare an outcome via the MCP tools?
@@ -892,13 +967,14 @@ fn capture_patch(ctx: &Ctx, file: &str, wt: &str) {
     let _ = locke_store::merge_loop_item(&ctx.repo, &ctx.loop_id, file, json!({ "diff": parse_patch(&patch) }));
 }
 
-/// Spawn the agent in `--permission-mode auto` and stream its events. Auto mode's
-/// classifier handles routine approvals; any escalation that still reaches us is
-/// allowed (the worktree is isolated and the run is explicitly unattended — the
-/// checks + review gates are the safety net). Returns when the process exits.
-fn run_agent_stream(ctx: &Arc<Ctx>, item_id: &str, p: &Picked, wt: &str) -> R<()> {
+/// Spawn the agent in `--permission-mode auto` and stream its events, invoking
+/// `on_block(kind, payload)` for each assistant block — `kind` is "text" (payload =
+/// the text) or "tool" (payload = the tool name). Auto mode's classifier handles
+/// routine approvals; any escalation that still reaches us is allowed (the worktree
+/// is isolated and the run is explicitly unattended — the checks/review/spec gates
+/// are the safety net). Returns when the process exits.
+fn stream_claude<F: FnMut(&str, &str)>(ctx: &Arc<Ctx>, wt: &str, prompt: &str, mut on_block: F) -> R<()> {
     let exe = crate::actions::resolve_agent_path("claude");
-    let prompt = render_prompt(ctx, &p.key, &p.target, p.is_task);
     let mut child = Command::new(&exe)
         .args([
             "-p",
@@ -929,7 +1005,6 @@ fn run_agent_stream(ctx: &Arc<Ctx>, item_id: &str, p: &Picked, wt: &str) -> R<()
     stdin.flush().ok();
     let stdin = Arc::new(Mutex::new(Some(stdin)));
 
-    let mut edits = 0u32;
     for line in BufReader::new(stdout).lines() {
         if ctx.stopped.load(Ordering::Relaxed) {
             let _ = child.kill();
@@ -949,16 +1024,11 @@ fn run_agent_stream(ctx: &Arc<Ctx>, item_id: &str, p: &Picked, wt: &str) -> R<()
                             Some("text") => {
                                 let t = b.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
                                 if !t.is_empty() {
-                                    emit_item(ctx, item_id, &p.key, "running", Some(t.chars().take(80).collect()), None, p.wave, p.priority, vec![]);
+                                    on_block("text", t);
                                 }
                             }
                             Some("tool_use") => {
-                                let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                                if matches!(name, "Edit" | "Write" | "MultiEdit") {
-                                    edits += 1;
-                                    let pct = (10 + edits * 18).min(92);
-                                    emit_item(ctx, item_id, &p.key, "running", Some(format!("editing {}", p.target)), Some(pct), p.wave, p.priority, vec![]);
-                                }
+                                on_block("tool", b.get("name").and_then(|v| v.as_str()).unwrap_or(""));
                             }
                             _ => {}
                         }
@@ -984,6 +1054,64 @@ fn run_agent_stream(ctx: &Arc<Ctx>, item_id: &str, p: &Picked, wt: &str) -> R<()
     Ok(())
 }
 
+/// Run one item's agent (build edit or plan spec), streaming progress to the UI.
+fn run_agent_stream(ctx: &Arc<Ctx>, item_id: &str, p: &Picked, wt: &str) -> R<()> {
+    let prompt = render_prompt(ctx, &p.key, &p.target, p.is_task);
+    let mut steps = 0u32;
+    stream_claude(ctx, wt, &prompt, |kind, payload| match kind {
+        "text" => emit_item(ctx, item_id, &p.key, ctx.phase.in_flight(), Some(payload.chars().take(80).collect()), None, p.wave, p.priority, vec![]),
+        "tool" => {
+            // Build progress tracks edits; plan progress tracks reads/analysis.
+            let verb = match (ctx.phase, payload) {
+                (Phase::Build, "Edit" | "Write" | "MultiEdit") => Some("editing"),
+                (Phase::Plan, "Read" | "Grep" | "Glob") => Some("analysing"),
+                _ => None,
+            };
+            if let Some(verb) = verb {
+                steps += 1;
+                let pct = (10 + steps * 18).min(92);
+                emit_item(ctx, item_id, &p.key, ctx.phase.in_flight(), Some(format!("{verb} {}", p.target)), Some(pct), p.wave, p.priority, vec![]);
+            }
+        }
+        _ => {}
+    })
+}
+
+/// Plan mode's global scope pass: one strategist agent reads the set read-only and
+/// writes the loop's plan.md + scope metadata via `loop_write_plan`. Runs in the
+/// seed worktree before the per-item fan-out. Best-effort — a failed scope pass
+/// still lets per-item speccing proceed (items just lack shared conventions).
+fn run_scope_agent(ctx: &Arc<Ctx>, file_count: u64) {
+    let tests = if ctx.checks.is_empty() {
+        "(no checks configured)".to_string()
+    } else {
+        ctx.checks.iter().map(|c| c.label.clone()).collect::<Vec<_>>().join(", ")
+    };
+    let prompt = format!(
+        "You are the STRATEGIST opening a Locke loop (loop_id=\"{id}\"). The loop applies this task across {n} \
+         items in this repo:\n\n{task}\n\nRead enough of the codebase to understand the shared shape of the work, \
+         then write ONE global plan by calling `loop_write_plan` with:\n\
+         - `plan`: markdown conventions every per-item worker should follow (objective, shared rules, what to leave \
+         untouched). This is injected into every build prompt.\n\
+         - `assumptions`: the assumptions the loop is making (so the human can correct them before approving).\n\
+         - `summary`: a few rows describing what the loop will do across the set; set `pend=true` on any row that \
+         still needs a human decision.\n\
+         The build workers must make these checks pass: {tests}. Do NOT edit any file — analysis only. Call \
+         `loop_write_plan` exactly once.",
+        id = ctx.loop_id,
+        n = file_count,
+        task = ctx.template,
+        tests = tests,
+    );
+    emit_stream(ctx, "running", "plan", "drafting the loop plan…");
+    let _ = stream_claude(ctx, &ctx.seed, &prompt, |kind, payload| {
+        if kind == "text" {
+            emit_stream(ctx, "running", "plan", &payload.chars().take(80).collect::<String>());
+        }
+    });
+    emit_stream(ctx, "done", "plan", "plan ready");
+}
+
 fn allow(stdin: &Arc<Mutex<Option<std::process::ChildStdin>>>, request_id: &str, input: Value) {
     if let Some(s) = stdin.lock().unwrap().as_mut() {
         let resp = json!({
@@ -994,6 +1122,52 @@ fn allow(stdin: &Arc<Mutex<Option<std::process::ChildStdin>>>, request_id: &str,
         let _ = writeln!(s, "{resp}");
         let _ = s.flush();
     }
+}
+
+/// Fixed worker pool over the scheduler: each worker takes the next *ready* item
+/// (deps satisfied), parking (not exiting) while work is blocked but the run hasn't
+/// settled — so dependents run only after prerequisites settle. Shared by both the
+/// Build and Plan runners (`process_item` branches on `ctx.phase`).
+fn spawn_workers(ctx: &Arc<Ctx>, n: usize) -> Vec<std::thread::JoinHandle<()>> {
+    let mut workers = Vec::new();
+    for _ in 0..n {
+        let ctx = ctx.clone();
+        workers.push(std::thread::spawn(move || loop {
+            if ctx.stopped.load(Ordering::Relaxed) {
+                break;
+            }
+            if ctx.paused.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(250));
+                continue;
+            }
+            let picked = {
+                let mut g = ctx.sched.lock().unwrap();
+                loop {
+                    if ctx.stopped.load(Ordering::Relaxed) {
+                        break None;
+                    }
+                    if let Some(p) = g.next_ready() {
+                        break Some(p);
+                    }
+                    if g.settled() {
+                        break None;
+                    }
+                    // No ready work yet, but a running blocker may clear it — park.
+                    let (ng, _) = ctx.cond.wait_timeout(g, Duration::from_millis(500)).unwrap();
+                    g = ng;
+                }
+            };
+            match picked {
+                Some(p) => process_item(&ctx, &p),
+                None => {
+                    // Wake any peers also parked so they re-evaluate `settled`.
+                    ctx.cond.notify_all();
+                    break;
+                }
+            }
+        }));
+    }
+    workers
 }
 
 // ---- public API (Tauri commands call these) ----
@@ -1015,6 +1189,13 @@ pub fn start_loop(
     concurrency: u64,
     checks: Vec<CheckSpec>,
 ) -> R<()> {
+    // Fall back to the loop's persisted template when none is passed — approve→build
+    // reuses the planning loop's record and may not re-send the original prompt.
+    let template = if template.trim().is_empty() {
+        locke_store::read_loop(&repo, &loop_id).ok().flatten().map(|l| l.template).filter(|t| !t.trim().is_empty()).unwrap_or(template)
+    } else {
+        template
+    };
     // Seed worktree on the loop branch (create it from base if new). A branch can
     // only be checked out once, so a brand-new chore branch is expected.
     let seed = std::env::temp_dir()
@@ -1073,6 +1254,7 @@ pub fn start_loop(
         app,
         repo: repo.clone(),
         loop_id: loop_id.clone(),
+        phase: Phase::Build,
         base,
         seed: seed.clone(),
         template,
@@ -1087,48 +1269,7 @@ pub fn start_loop(
     });
     emit_progress(&ctx);
 
-    // Fixed worker pool over the scheduler: each worker takes the next *ready*
-    // item (deps satisfied), parking (not exiting) while work is blocked but the
-    // run hasn't settled — so dependents run only after prerequisites commit.
-    let n = concurrency.clamp(1, 16) as usize;
-    let mut workers = Vec::new();
-    for _ in 0..n {
-        let ctx = ctx.clone();
-        workers.push(std::thread::spawn(move || loop {
-            if ctx.stopped.load(Ordering::Relaxed) {
-                break;
-            }
-            if ctx.paused.load(Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_millis(250));
-                continue;
-            }
-            let picked = {
-                let mut g = ctx.sched.lock().unwrap();
-                loop {
-                    if ctx.stopped.load(Ordering::Relaxed) {
-                        break None;
-                    }
-                    if let Some(p) = g.next_ready() {
-                        break Some(p);
-                    }
-                    if g.settled() {
-                        break None;
-                    }
-                    // No ready work yet, but a running blocker may clear it — park.
-                    let (ng, _) = ctx.cond.wait_timeout(g, Duration::from_millis(500)).unwrap();
-                    g = ng;
-                }
-            };
-            match picked {
-                Some(p) => process_item(&ctx, &p),
-                None => {
-                    // Wake any peers also parked so they re-evaluate `settled`.
-                    ctx.cond.notify_all();
-                    break;
-                }
-            }
-        }));
-    }
+    let workers = spawn_workers(&ctx, concurrency.clamp(1, 16) as usize);
 
     // Coordinator: join the pool, mark unreachable items blocked, finalize.
     std::thread::spawn(move || {
@@ -1157,6 +1298,145 @@ pub fn start_loop(
         let _ = std::fs::remove_dir_all(&ctx.seed);
         let _ = run_git(&ctx.repo, &["worktree", "prune"]);
         let _ = ctx.app.emit("loop:done", DonePayload { loop_id: ctx.loop_id.clone(), state: state.into() });
+    });
+
+    Ok(())
+}
+
+/// Start a Plan-mode (strategist) run. Returns immediately; a coordinator thread
+/// first runs one global scope agent (→ `plan.md` + scope metadata), then fans out
+/// a read-only spec agent per item (→ each enriches its manifest row + writes a
+/// per-item spec via `loop_write_spec`). Nothing is committed; the loop settles to
+/// `planning`, awaiting the creator's approve→build (`start_loop` then consumes the
+/// enriched manifest unchanged).
+#[allow(clippy::too_many_arguments)]
+pub fn start_plan(
+    app: AppHandle,
+    registry: &LoopRegistry,
+    loop_id: String,
+    repo: String,
+    branch: String,
+    base: String,
+    pattern: String,
+    template: String,
+    targets: Vec<String>,
+    concurrency: u64,
+    checks: Vec<CheckSpec>,
+) -> R<()> {
+    // A throwaway read worktree detached at `base` — the strategist analyses files
+    // here and per-item workers cut their sandboxes from its tip. No branch, no
+    // commits: a planning pass never touches the user's tree.
+    let seed = std::env::temp_dir()
+        .join(format!("locke-loop-{}", locke_store::sanitize_path(&loop_id)))
+        .join("seed")
+        .to_string_lossy()
+        .to_string();
+    let _ = run_git(&repo, &["worktree", "remove", "--force", &seed]);
+    let _ = std::fs::remove_dir_all(&seed);
+    run_git(&repo, &["worktree", "add", "--detach", &seed, &base])
+        .map_err(|e| format!("plan worktree at {base}: {e}"))?;
+
+    // The set to spec: prefer the checked-in manifest's `inc` rows (carrying any
+    // requires/priority/wave), else the resolved/globbed file set. Mark each queued
+    // and persist the manifest now so the Plan view can list items immediately and
+    // approve→build has its source of truth.
+    let manifest = locke_store::read_loop_manifest(&repo, &loop_id).unwrap_or_default();
+    let mut entries: Vec<ManifestEntry> = if manifest.iter().any(|e| e.inc) {
+        manifest.into_iter().filter(|e| e.inc).collect()
+    } else {
+        let files = if targets.is_empty() { collect_targets(&repo, &pattern) } else { targets };
+        files
+            .into_iter()
+            .map(|path| ManifestEntry { id: path.clone(), path, inc: true, kind: "file".into(), ..Default::default() })
+            .collect()
+    };
+    for e in &mut entries {
+        if e.id.is_empty() {
+            e.id = e.path.clone();
+        }
+        if e.kind.is_empty() {
+            e.kind = "file".into();
+        }
+        e.status = "queued".into();
+    }
+    let _ = locke_store::write_loop_manifest(&repo, &loop_id, &entries);
+    let sched = Scheduler::new(&entries);
+    let total = sched.total();
+
+    locke_store::upsert_loop(
+        &repo,
+        locke_store::Loop {
+            id: loop_id.clone(),
+            title: pattern.clone(),
+            branch: branch.clone(),
+            base: base.clone(),
+            mode: "plan".into(),
+            state: "planning".into(),
+            pattern: pattern.clone(),
+            total,
+            queued: total,
+            template: template.clone(),
+            concurrency,
+            ..Default::default()
+        },
+    )?;
+
+    let paused = Arc::new(AtomicBool::new(false));
+    let stopped = Arc::new(AtomicBool::new(false));
+    registry.0.lock().unwrap().insert(loop_id.clone(), LoopHandle { paused: paused.clone(), stopped: stopped.clone() });
+
+    let ctx = Arc::new(Ctx {
+        app,
+        repo: repo.clone(),
+        loop_id: loop_id.clone(),
+        phase: Phase::Plan,
+        base,
+        seed: seed.clone(),
+        template,
+        checks,
+        total,
+        sched: Mutex::new(sched),
+        cond: Condvar::new(),
+        commit_lock: Mutex::new(()),
+        paused,
+        stopped,
+        start: Instant::now(),
+    });
+    emit_progress(&ctx);
+
+    let n = concurrency.clamp(1, 16) as usize;
+    // Coordinator: scope pass → per-item spec fan-out → finalize to `planning`.
+    std::thread::spawn(move || {
+        if !ctx.stopped.load(Ordering::Relaxed) {
+            run_scope_agent(&ctx, total);
+        }
+        let workers = spawn_workers(&ctx, n);
+        for w in workers {
+            let _ = w.join();
+        }
+        let (c, blocked) = {
+            let mut g = ctx.sched.lock().unwrap();
+            g.finalize_blocked();
+            (g.counts(), g.blocked_emissions())
+        };
+        for (id, key, wave, prio, unmet) in blocked {
+            let line = format!("blocked by {}", unmet.join(", "));
+            emit_item(&ctx, &id, &key, "blocked", Some(line), None, wave, prio, unmet);
+        }
+        emit_progress(&ctx);
+        // A planning pass always settles to `planning` (awaiting approve→build),
+        // unless the human stopped it (→ back to draft-like `paused`).
+        let stopped = ctx.stopped.load(Ordering::Relaxed);
+        let done_state = if stopped { "stopped" } else { "planning" };
+        let _ = locke_store::update_loop(&ctx.repo, &ctx.loop_id, |l| {
+            l.state = if stopped { "paused".into() } else { "planning".into() };
+            l.review = c.review;
+            l.done = c.done; // specced count
+        });
+        let _ = run_git(&ctx.repo, &["worktree", "remove", "--force", &ctx.seed]);
+        let _ = std::fs::remove_dir_all(&ctx.seed);
+        let _ = run_git(&ctx.repo, &["worktree", "prune"]);
+        let _ = ctx.app.emit("loop:done", DonePayload { loop_id: ctx.loop_id.clone(), state: done_state.into() });
     });
 
     Ok(())

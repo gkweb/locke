@@ -239,6 +239,39 @@ fn tools_list() -> Value {
                 },
                 "required": ["loop_id", "file"]
             }
+        },
+        {
+            "name": "loop_write_spec",
+            "description": "Plan mode (strategist): write the per-item spec for THIS loop item. Call this exactly once, after analysing the file, with how the build worker should change it. Persists the spec (so the later build reads it) and marks the item specced. If a human decision is needed before the build can proceed, set needs_review=true with a reason instead of guessing — the item is shown for the creator's call.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "loop_id": { "type": "string", "description": "The loop id (given in your task prompt)." },
+                    "file": { "type": "string", "description": "The repo-relative file this spec is for (given in your task prompt)." },
+                    "spec": { "type": "string", "description": "The full per-item spec as markdown — objective, the concrete edits, and how to verify. This is handed verbatim to the build worker." },
+                    "approach": { "type": "string", "description": "Optional short id for the chosen strategy (e.g. \"script-setup\")." },
+                    "detected": { "type": "array", "items": { "type": "string" }, "description": "Optional short tags for what you found in the file (e.g. \"Options API\", \"Vuex getter\")." },
+                    "steps": { "type": "array", "items": { "type": "string" }, "description": "Optional ordered list of the concrete edits the build will make." },
+                    "tests": { "type": "array", "items": { "type": "string" }, "description": "Optional tests/checks that must pass for this item." },
+                    "note": { "type": "string", "description": "Optional caveat/decision for the reviewer or build worker." },
+                    "needs_review": { "type": "boolean", "description": "Set true when a human must decide before this item can be built; pair with `note` as the reason." }
+                },
+                "required": ["loop_id", "file", "spec"]
+            }
+        },
+        {
+            "name": "loop_write_plan",
+            "description": "Plan mode (strategist): write the loop's GLOBAL plan once, before/while speccing items. `plan` is markdown conventions handed to every build worker (objective, shared rules). `assumptions` and `summary` populate the Plan view's Scope tab. Call this once for the whole loop, not per item.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "loop_id": { "type": "string", "description": "The loop id (given in your task prompt)." },
+                    "plan": { "type": "string", "description": "Global plan / conventions as markdown — injected into every build worker's prompt." },
+                    "assumptions": { "type": "array", "items": { "type": "string" }, "description": "Assumptions the loop is making, shown to the creator before they approve." },
+                    "summary": { "type": "array", "items": { "type": "object", "properties": { "label": { "type": "string" }, "detail": { "type": "string" }, "pend": { "type": "boolean" } }, "required": ["label", "detail"] }, "description": "Optional dry-run summary rows (what the loop will do across the set). `pend=true` flags a row still awaiting a decision." }
+                },
+                "required": ["loop_id", "plan"]
+            }
         }
     ]})
 }
@@ -265,6 +298,8 @@ fn handle_tools_call(msg: &Value, id: Option<Value>, repo: Option<&str>, agent: 
         "loop_item_needs_review" => tool_loop_item_needs_review(repo, &args),
         "loop_write_note" => tool_loop_write_note(repo, &args),
         "loop_read_spec" => tool_loop_read_spec(repo, &args),
+        "loop_write_spec" => tool_loop_write_spec(repo, &args),
+        "loop_write_plan" => tool_loop_write_plan(repo, &args),
         other => Err(format!("unknown tool: {other}")),
     };
 
@@ -448,6 +483,64 @@ fn tool_loop_read_spec(repo: &str, args: &Value) -> Result<Value, String> {
         Some(spec) => Ok(json!({ "file": file, "spec": spec })),
         None => Ok(json!({ "file": file, "spec": null, "note": "No spec was written for this item; use the task prompt." })),
     }
+}
+
+/// Optional `string[]` argument → owned `Vec<String>` (missing/wrong-typed → empty).
+fn arg_str_vec(args: &Value, key: &str) -> Vec<String> {
+    args.get(key)
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default()
+}
+
+fn tool_loop_write_spec(repo: &str, args: &Value) -> Result<Value, String> {
+    let loop_id = arg_str(args, "loop_id")?;
+    let file = arg_str(args, "file")?;
+    let spec = arg_str(args, "spec")?;
+    let approach = args.get("approach").and_then(|v| v.as_str()).map(String::from);
+    let detected = arg_str_vec(args, "detected");
+    let steps = arg_str_vec(args, "steps");
+    let tests = arg_str_vec(args, "tests");
+    let note = args.get("note").and_then(|v| v.as_str()).map(String::from);
+    let needs_review = args.get("needs_review").and_then(|v| v.as_bool()).unwrap_or(false);
+    let status = if needs_review { "review" } else { "specced" };
+
+    // Persist the markdown spec the build worker reads, then enrich the manifest row
+    // (the build's source of truth) without clobbering a concurrent worker's row.
+    locke_store::write_loop_spec(repo, loop_id, file, spec)?;
+    let spec_ref = format!("spec/{}.md", locke_store::sanitize_path(file));
+    let approach_c = approach.clone();
+    let note_c = note.clone();
+    locke_store::merge_loop_manifest_entry(repo, loop_id, file, |e| {
+        e.approach = approach_c;
+        e.detected = detected;
+        e.steps = steps;
+        e.tests = tests;
+        e.note = note_c;
+        e.spec = Some(spec_ref);
+        e.status = status.to_string();
+    })?;
+    // Record the per-item declaration the strategist runner gates on (mirrors the
+    // build worker's complete/needs_review contract).
+    locke_store::merge_loop_item(
+        repo,
+        loop_id,
+        file,
+        json!({ "declared": if needs_review { "review" } else { "specced" }, "reason": note }),
+    )?;
+    Ok(json!({ "ok": true, "status": status, "loopId": loop_id, "file": file }))
+}
+
+fn tool_loop_write_plan(repo: &str, args: &Value) -> Result<Value, String> {
+    let loop_id = arg_str(args, "loop_id")?;
+    let plan = arg_str(args, "plan")?;
+    let assumptions = arg_str_vec(args, "assumptions");
+    let summary = args.get("summary").cloned().unwrap_or_else(|| json!([]));
+    // Human-readable conventions (injected into every build worker via `{{conventions}}`)
+    // plus the structured scope metadata the Plan view's Scope tab renders.
+    locke_store::write_loop_plan(repo, loop_id, plan)?;
+    locke_store::write_loop_plan_meta(repo, loop_id, &json!({ "summary": summary, "assumptions": assumptions }))?;
+    Ok(json!({ "ok": true, "loopId": loop_id }))
 }
 
 /// Up-to-two-letter uppercase initials for the comment badge, mirroring the UI's

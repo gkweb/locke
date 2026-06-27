@@ -226,6 +226,29 @@ pub fn start_loop(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn start_plan(
+    app: tauri::AppHandle,
+    registry: tauri::State<loops::LoopRegistry>,
+    loop_id: String,
+    repo: String,
+    branch: String,
+    base: String,
+    pattern: String,
+    template: String,
+    targets: Vec<String>,
+    concurrency: u64,
+    checks: Vec<actions::CheckSpec>,
+) -> Result<(), String> {
+    loops::start_plan(app.clone(), &registry, loop_id, repo, branch, base, pattern, template, targets, concurrency, checks)
+}
+
+#[tauri::command]
+pub fn read_loop_plan_meta(repo: String, loop_id: String) -> Result<Option<Value>, String> {
+    store::read_loop_plan_meta(&repo, &loop_id)
+}
+
+#[tauri::command]
 pub fn pause_loop(
     registry: tauri::State<loops::LoopRegistry>,
     loop_id: String,

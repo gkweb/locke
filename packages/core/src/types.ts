@@ -338,6 +338,13 @@ export interface SpecSummary {
   pend?: boolean;
 }
 
+/** A loop's scope metadata, written by the strategist's scope pass (`plan.json`)
+ *  and rendered on the Plan view's Scope tab. */
+export interface LoopPlanMeta {
+  summary: SpecSummary[];
+  assumptions: string[];
+}
+
 /** A live stream event in the monitor's Stream layout. */
 export interface LoopStreamEvent {
   st: LoopItemState;

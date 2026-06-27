@@ -697,6 +697,18 @@ pub fn write_loop_plan(repo: &str, id: &str, content: &str) -> R<()> {
     fs::write(dir.join("plan.md"), content).map_err(|e| format!("write plan: {e}"))
 }
 
+/// Structured scope metadata for the Plan view's Scope tab — `{ summary, assumptions }`,
+/// shaped to the front-end `LoopPlanMeta` (a `SpecSummary[]` + a string list). The
+/// strategist's scope pass writes this beside the human-readable `plan.md`.
+pub fn read_loop_plan_meta(repo: &str, id: &str) -> R<Option<Value>> {
+    read_json(&loop_dir(repo, id).join("plan.json"))
+}
+
+pub fn write_loop_plan_meta(repo: &str, id: &str, meta: &Value) -> R<()> {
+    ensure_locke(repo)?;
+    write_json(&loop_dir(repo, id).join("plan.json"), meta)
+}
+
 // ---- target+spec manifest (.locke/loops/<id>/manifest.json) ----
 
 /// One row of a loop's manifest: a target file plus (once Plan mode runs) its
