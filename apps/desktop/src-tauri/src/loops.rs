@@ -828,7 +828,8 @@ enum Outcome {
     Done,
     Review(String),
     Failed(String),
-    /// The user cancelled just this item (the rest of the run continues).
+    /// The user stopped speccing just this item (the rest of the run continues; the
+    /// item stays in scope, left unspecced).
     Cancelled,
 }
 
@@ -846,28 +847,22 @@ fn process_item(ctx: &Arc<Ctx>, p: &Picked) {
     // status string differs so the Plan view reads it as a SpecStatus.
     let done_line = if ctx.phase == Phase::Plan { "specced".to_string() } else { "migrated · checks pass".to_string() };
     // `st` is the work-graph status (Cancelled is terminal like Review so it doesn't
-    // re-run); `st_glyph` is the stream-feed glyph.
+    // re-run this session); `st_glyph` is the stream-feed glyph.
     let (st, line, st_glyph) = match &outcome {
         Outcome::Done => (St::Done, done_line, ctx.phase.done_status()),
         Outcome::Review(r) => (St::Review, r.clone(), "review"),
         Outcome::Failed(e) => (St::Failed, e.clone(), "failed"),
-        // Individually cancelled → drop it from the run (excluded), don't re-run.
-        Outcome::Cancelled => (St::Review, "cancelled".to_string(), "excluded"),
+        // Individually cancelled → just stop speccing it; it stays in scope, queued
+        // (unspecced), so it can be re-planned later or built without a spec.
+        Outcome::Cancelled => (St::Review, "speccing stopped".to_string(), "queued"),
     };
     // Status string emitted to the UI (a SpecStatus in Plan mode): Done → specced/
-    // done, a cancel → excluded, otherwise the graph status verbatim.
+    // done, a cancel → back to queued (unspecced), otherwise the graph status.
     let emit_status = match &outcome {
-        Outcome::Cancelled => "excluded",
+        Outcome::Cancelled => "queued",
         _ if st == St::Done => ctx.phase.done_status(),
         _ => st.as_str(),
     };
-    if matches!(outcome, Outcome::Cancelled) {
-        // Persist the exclusion so it carries into the build (inc=false).
-        let _ = locke_store::merge_loop_manifest_entry(&ctx.repo, &ctx.loop_id, &p.key, |e| {
-            e.status = "excluded".into();
-            e.inc = false;
-        });
-    }
     // Persist the final item record (merging any agent declaration already there).
     let _ = locke_store::merge_loop_item(
         &ctx.repo,
@@ -1526,8 +1521,9 @@ pub fn stop_loop(registry: &LoopRegistry, loop_id: &str) -> R<()> {
     Ok(())
 }
 
-/// Cancel a single item (by its key/path) without stopping the rest of the run: the
-/// agent for that item is SIGKILLed and it's dropped from the run (excluded).
+/// Stop speccing a single item (by its key/path) without stopping the rest of the
+/// run: the agent for that item is SIGKILLed and the item is left queued (unspecced,
+/// still in scope) — not excluded.
 pub fn stop_loop_item(registry: &LoopRegistry, loop_id: &str, key: &str) -> R<()> {
     let guard = registry.0.lock().unwrap();
     let h = guard.get(loop_id).ok_or("loop not found")?;

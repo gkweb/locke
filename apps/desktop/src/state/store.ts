@@ -1688,9 +1688,10 @@ export const useStore = create<LockeState>((set, get) => ({
   stopLoopItem: (path) => {
     const s = get();
     if (!MOCK && s.selectedLoop) void stopLoopItemApi(s.selectedLoop, path);
-    // Optimistically drop it from the Plan view (the runner confirms via loop:item).
+    // Stop speccing it, but keep it in scope (queued/unspecced) — the runner confirms
+    // via loop:item. Not excluded: it can be re-planned or built without a spec.
     set((st) => ({
-      loopManifest: st.loopManifest.map((e) => (e.path === path ? { ...e, status: "excluded", inc: false } : e)),
+      loopManifest: st.loopManifest.map((e) => (e.path === path ? { ...e, status: "queued" } : e)),
     }));
   },
   togglePause: () => {

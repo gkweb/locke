@@ -300,7 +300,7 @@ function PlanSpecs() {
                   {isTauri && (
                     <HoverButton
                       onClick={() => stopLoopItem(sp.path)}
-                      title="Cancel just this item (the run continues)"
+                      title="Stop speccing this item (stays in scope, unspecced; the run continues)"
                       style={{ flex: "none", display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, background: "transparent", border: `1px solid ${tint(color.red, "3a")}`, color: color.red, cursor: "pointer" }}
                       hoverStyle={{ background: tint(color.red, "1a") }}
                     >
