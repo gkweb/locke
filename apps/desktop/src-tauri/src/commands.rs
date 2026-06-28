@@ -273,6 +273,11 @@ pub fn stop_loop(registry: tauri::State<loops::LoopRegistry>, loop_id: String) -
 }
 
 #[tauri::command]
+pub fn stop_loop_item(registry: tauri::State<loops::LoopRegistry>, loop_id: String, key: String) -> Result<(), String> {
+    loops::stop_loop_item(&registry, &loop_id, &key)
+}
+
+#[tauri::command]
 pub fn resolve_loop_item(
     repo: String,
     loop_id: String,

@@ -14,7 +14,7 @@
 use crate::actions::CheckSpec;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -116,6 +116,8 @@ pub struct LoopRegistry(pub Mutex<HashMap<String, LoopHandle>>);
 pub struct LoopHandle {
     paused: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
+    /// Item keys the user cancelled individually (kill just that agent, run continues).
+    cancelled: Arc<Mutex<HashSet<String>>>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -354,7 +356,16 @@ struct Ctx {
     commit_lock: Mutex<()>,
     paused: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
+    /// Shared with this loop's `LoopHandle` — keys the user cancelled individually.
+    cancelled: Arc<Mutex<HashSet<String>>>,
     start: Instant,
+}
+
+impl Ctx {
+    /// Whether this item was individually cancelled by the user.
+    fn is_cancelled(&self, key: &str) -> bool {
+        self.cancelled.lock().unwrap().contains(key)
+    }
 }
 
 // ---- git helpers (local, like run.rs/actions.rs each keep their own) ----
@@ -817,6 +828,8 @@ enum Outcome {
     Done,
     Review(String),
     Failed(String),
+    /// The user cancelled just this item (the rest of the run continues).
+    Cancelled,
 }
 
 fn process_item(ctx: &Arc<Ctx>, p: &Picked) {
@@ -832,12 +845,29 @@ fn process_item(ctx: &Arc<Ctx>, p: &Picked) {
     // item satisfies a dependent just as a built one does); only the *emitted*
     // status string differs so the Plan view reads it as a SpecStatus.
     let done_line = if ctx.phase == Phase::Plan { "specced".to_string() } else { "migrated · checks pass".to_string() };
+    // `st` is the work-graph status (Cancelled is terminal like Review so it doesn't
+    // re-run); `st_glyph` is the stream-feed glyph.
     let (st, line, st_glyph) = match &outcome {
         Outcome::Done => (St::Done, done_line, ctx.phase.done_status()),
         Outcome::Review(r) => (St::Review, r.clone(), "review"),
         Outcome::Failed(e) => (St::Failed, e.clone(), "failed"),
+        // Individually cancelled → drop it from the run (excluded), don't re-run.
+        Outcome::Cancelled => (St::Review, "cancelled".to_string(), "excluded"),
     };
-    let emit_status = if st == St::Done { ctx.phase.done_status() } else { st.as_str() };
+    // Status string emitted to the UI (a SpecStatus in Plan mode): Done → specced/
+    // done, a cancel → excluded, otherwise the graph status verbatim.
+    let emit_status = match &outcome {
+        Outcome::Cancelled => "excluded",
+        _ if st == St::Done => ctx.phase.done_status(),
+        _ => st.as_str(),
+    };
+    if matches!(outcome, Outcome::Cancelled) {
+        // Persist the exclusion so it carries into the build (inc=false).
+        let _ = locke_store::merge_loop_manifest_entry(&ctx.repo, &ctx.loop_id, &p.key, |e| {
+            e.status = "excluded".into();
+            e.inc = false;
+        });
+    }
     // Persist the final item record (merging any agent declaration already there).
     let _ = locke_store::merge_loop_item(
         &ctx.repo,
@@ -880,6 +910,10 @@ fn run_one(ctx: &Arc<Ctx>, p: &Picked) -> R<Outcome> {
     let result = (|| -> R<Outcome> {
         // Run the agent (auto mode, unattended) in the item worktree.
         run_agent_stream(ctx, &p.id, p, &wt)?;
+        // An individual cancel takes precedence over a whole-loop stop in the message.
+        if ctx.is_cancelled(file) {
+            return Ok(Outcome::Cancelled);
+        }
         if ctx.stopped.load(Ordering::Relaxed) {
             return Ok(Outcome::Failed("loop stopped".into()));
         }
@@ -973,7 +1007,7 @@ fn capture_patch(ctx: &Ctx, file: &str, wt: &str) {
 /// routine approvals; any escalation that still reaches us is allowed (the worktree
 /// is isolated and the run is explicitly unattended — the checks/review/spec gates
 /// are the safety net). Returns when the process exits.
-fn stream_claude<F: FnMut(&str, &str)>(ctx: &Arc<Ctx>, wt: &str, prompt: &str, mut on_block: F) -> R<()> {
+fn stream_claude<F: FnMut(&str, &str)>(ctx: &Arc<Ctx>, wt: &str, prompt: &str, cancel_key: &str, mut on_block: F) -> R<()> {
     let exe = crate::actions::resolve_agent_path("claude");
     let mut child = Command::new(&exe)
         .args([
@@ -1005,18 +1039,22 @@ fn stream_claude<F: FnMut(&str, &str)>(ctx: &Arc<Ctx>, wt: &str, prompt: &str, m
     stdin.flush().ok();
     let stdin = Arc::new(Mutex::new(Some(stdin)));
 
-    // Stop watchdog: the stdout read loop only notices `stopped` when the agent next
-    // emits a line, so a stop mid-think could lag. Poll the flag and SIGKILL the
-    // process the moment it flips, so a stopped run stops burning tokens at once.
+    // Stop watchdog: the stdout read loop only notices a stop when the agent next
+    // emits a line, so a stop mid-think could lag. Poll the loop-level `stopped` flag
+    // AND this item's individual-cancel flag, and SIGKILL the process the moment
+    // either flips — so a halted/cancelled agent stops burning tokens at once.
     let pid = child.id();
     let stopped = ctx.stopped.clone();
+    let cancelled = ctx.cancelled.clone();
+    let key = cancel_key.to_string();
     let watch_done = Arc::new(AtomicBool::new(false));
     let wd = watch_done.clone();
     let watcher = std::thread::spawn(move || loop {
         if wd.load(Ordering::Relaxed) {
             break;
         }
-        if stopped.load(Ordering::Relaxed) {
+        let item_cancelled = !key.is_empty() && cancelled.lock().unwrap().contains(&key);
+        if stopped.load(Ordering::Relaxed) || item_cancelled {
             let _ = Command::new("kill").arg("-9").arg(pid.to_string()).output();
             break;
         }
@@ -1024,7 +1062,7 @@ fn stream_claude<F: FnMut(&str, &str)>(ctx: &Arc<Ctx>, wt: &str, prompt: &str, m
     });
 
     for line in BufReader::new(stdout).lines() {
-        if ctx.stopped.load(Ordering::Relaxed) {
+        if ctx.stopped.load(Ordering::Relaxed) || (!cancel_key.is_empty() && ctx.is_cancelled(cancel_key)) {
             let _ = child.kill();
             break;
         }
@@ -1078,7 +1116,7 @@ fn stream_claude<F: FnMut(&str, &str)>(ctx: &Arc<Ctx>, wt: &str, prompt: &str, m
 fn run_agent_stream(ctx: &Arc<Ctx>, item_id: &str, p: &Picked, wt: &str) -> R<()> {
     let prompt = render_prompt(ctx, &p.key, &p.target, p.is_task);
     let mut steps = 0u32;
-    stream_claude(ctx, wt, &prompt, |kind, payload| match kind {
+    stream_claude(ctx, wt, &prompt, &p.key, |kind, payload| match kind {
         "text" => emit_item(ctx, item_id, &p.key, ctx.phase.in_flight(), Some(payload.chars().take(80).collect()), None, p.wave, p.priority, vec![]),
         "tool" => {
             // Build progress tracks edits; plan progress tracks reads/analysis.
@@ -1124,7 +1162,7 @@ fn run_scope_agent(ctx: &Arc<Ctx>, file_count: u64) {
         tests = tests,
     );
     emit_stream(ctx, "running", "plan", "drafting the loop plan…");
-    let _ = stream_claude(ctx, &ctx.seed, &prompt, |kind, payload| {
+    let _ = stream_claude(ctx, &ctx.seed, &prompt, "", |kind, payload| {
         if kind == "text" {
             emit_stream(ctx, "running", "plan", &payload.chars().take(80).collect::<String>());
         }
@@ -1268,7 +1306,12 @@ pub fn start_loop(
 
     let paused = Arc::new(AtomicBool::new(false));
     let stopped = Arc::new(AtomicBool::new(false));
-    registry.0.lock().unwrap().insert(loop_id.clone(), LoopHandle { paused: paused.clone(), stopped: stopped.clone() });
+    let cancelled = Arc::new(Mutex::new(HashSet::new()));
+    registry
+        .0
+        .lock()
+        .unwrap()
+        .insert(loop_id.clone(), LoopHandle { paused: paused.clone(), stopped: stopped.clone(), cancelled: cancelled.clone() });
 
     let ctx = Arc::new(Ctx {
         app,
@@ -1285,6 +1328,7 @@ pub fn start_loop(
         commit_lock: Mutex::new(()),
         paused,
         stopped,
+        cancelled,
         start: Instant::now(),
     });
     emit_progress(&ctx);
@@ -1403,7 +1447,12 @@ pub fn start_plan(
 
     let paused = Arc::new(AtomicBool::new(false));
     let stopped = Arc::new(AtomicBool::new(false));
-    registry.0.lock().unwrap().insert(loop_id.clone(), LoopHandle { paused: paused.clone(), stopped: stopped.clone() });
+    let cancelled = Arc::new(Mutex::new(HashSet::new()));
+    registry
+        .0
+        .lock()
+        .unwrap()
+        .insert(loop_id.clone(), LoopHandle { paused: paused.clone(), stopped: stopped.clone(), cancelled: cancelled.clone() });
 
     let ctx = Arc::new(Ctx {
         app,
@@ -1420,6 +1469,7 @@ pub fn start_plan(
         commit_lock: Mutex::new(()),
         paused,
         stopped,
+        cancelled,
         start: Instant::now(),
     });
     emit_progress(&ctx);
@@ -1473,6 +1523,15 @@ pub fn stop_loop(registry: &LoopRegistry, loop_id: &str) -> R<()> {
     let guard = registry.0.lock().unwrap();
     let h = guard.get(loop_id).ok_or("loop not found")?;
     h.stopped.store(true, Ordering::Relaxed);
+    Ok(())
+}
+
+/// Cancel a single item (by its key/path) without stopping the rest of the run: the
+/// agent for that item is SIGKILLed and it's dropped from the run (excluded).
+pub fn stop_loop_item(registry: &LoopRegistry, loop_id: &str, key: &str) -> R<()> {
+    let guard = registry.0.lock().unwrap();
+    let h = guard.get(loop_id).ok_or("loop not found")?;
+    h.cancelled.lock().unwrap().insert(key.to_string());
     Ok(())
 }
 

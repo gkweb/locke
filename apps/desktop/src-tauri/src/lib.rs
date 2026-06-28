@@ -73,6 +73,7 @@ pub fn run() {
             commands::set_loop_mode,
             commands::pause_loop,
             commands::stop_loop,
+            commands::stop_loop_item,
             commands::resolve_loop_item,
             commands::read_loops,
             commands::read_loop_items,

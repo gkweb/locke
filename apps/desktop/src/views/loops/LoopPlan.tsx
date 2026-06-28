@@ -11,7 +11,7 @@ import {
   MOCK_LOOP_ASSUMPTIONS,
   MOCK_LOOP_SPECS,
 } from "../../lib/mockFleet.js";
-import { BranchIcon, ChevronLeftIcon, CheckIcon, SendIcon, StopIcon, UnifiedIcon, InfoIcon, PlusIcon } from "../../components/icons.js";
+import { BranchIcon, ChevronLeftIcon, CheckIcon, SendIcon, StopIcon, UnifiedIcon, InfoIcon, PlusIcon, XIcon } from "../../components/icons.js";
 import { HoverButton } from "../../components/primitives.js";
 
 // Loops · plan — Plan-mode before a build. A scope interview (left) drives a
@@ -213,6 +213,7 @@ function PlanSpecs() {
   const loopManifest = useStore((s) => s.loopManifest);
   const selectedLoop = useStore((s) => s.selectedLoop);
   const liveItems = useStore((s) => (selectedLoop ? s.loopItems[selectedLoop] ?? [] : []));
+  const stopLoopItem = useStore((s) => s.stopLoopItem);
 
   // Real specs come from the strategist's manifest; plain-vite keeps the mock set.
   const specs = isTauri ? manifestToSpecs(loopManifest) : MOCK_LOOP_SPECS;
@@ -286,16 +287,27 @@ function PlanSpecs() {
                 </span>
               </div>
               {speccingNow.slice(0, 4).map((sp) => (
-                <button
-                  key={sp.id}
-                  onClick={() => selectSpec(sp.id)}
-                  style={{ display: "block", width: "100%", textAlign: "left", background: "transparent", border: "none", cursor: "pointer", padding: "2px 0", fontFamily: font.mono }}
-                >
-                  <span style={{ fontSize: 11.5, color: color.textCode }}>{baseName(sp.path)}</span>
-                  <span style={{ fontSize: 10.5, color: color.textFainter, display: "block", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    {liveAction.get(sp.path) ?? "analysing…"}
-                  </span>
-                </button>
+                <div key={sp.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 0" }}>
+                  <button
+                    onClick={() => selectSpec(sp.id)}
+                    style={{ flex: 1, minWidth: 0, textAlign: "left", background: "transparent", border: "none", cursor: "pointer", padding: 0, fontFamily: font.mono }}
+                  >
+                    <span style={{ fontSize: 11.5, color: color.textCode }}>{baseName(sp.path)}</span>
+                    <span style={{ fontSize: 10.5, color: color.textFainter, display: "block", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {liveAction.get(sp.path) ?? "analysing…"}
+                    </span>
+                  </button>
+                  {isTauri && (
+                    <HoverButton
+                      onClick={() => stopLoopItem(sp.path)}
+                      title="Cancel just this item (the run continues)"
+                      style={{ flex: "none", display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, background: "transparent", border: `1px solid ${tint(color.red, "3a")}`, color: color.red, cursor: "pointer" }}
+                      hoverStyle={{ background: tint(color.red, "1a") }}
+                    >
+                      <XIcon size={11} stroke={1.9} />
+                    </HoverButton>
+                  )}
+                </div>
               ))}
               {speccingNow.length > 4 && (
                 <span style={{ fontSize: 10.5, color: color.textGhost }}>+{speccingNow.length - 4} more</span>

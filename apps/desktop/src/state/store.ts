@@ -70,6 +70,7 @@ import {
   setLoopMode as setLoopModeApi,
   pauseLoop as pauseLoopApi,
   stopLoop as stopLoopApi,
+  stopLoopItem as stopLoopItemApi,
   resolveLoopItem as resolveLoopItemApi,
   readLoops as readLoopsApi,
   readLoopItems as readLoopItemsApi,
@@ -483,6 +484,8 @@ interface LockeState {
   reopenPlan: (id?: string) => void;
   /** Stop/cancel the loop (→ list). */
   stopLoop: () => void;
+  /** Cancel a single in-flight item by path (kills its agent; run continues). */
+  stopLoopItem: (path: string) => void;
   /** Pause/resume the monitored loop. */
   togglePause: () => void;
   /** Open one item's review. */
@@ -1681,6 +1684,14 @@ export const useStore = create<LockeState>((set, get) => ({
     const s = get();
     if (!MOCK && s.selectedLoop) void stopLoopApi(s.selectedLoop);
     set({ loopView: "list", loopReviewItem: null });
+  },
+  stopLoopItem: (path) => {
+    const s = get();
+    if (!MOCK && s.selectedLoop) void stopLoopItemApi(s.selectedLoop, path);
+    // Optimistically drop it from the Plan view (the runner confirms via loop:item).
+    set((st) => ({
+      loopManifest: st.loopManifest.map((e) => (e.path === path ? { ...e, status: "excluded", inc: false } : e)),
+    }));
   },
   togglePause: () => {
     const next = !get().loopPaused;

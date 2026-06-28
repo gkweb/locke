@@ -447,6 +447,11 @@ export const pauseLoop = (loopId: string, paused: boolean): Promise<void> =>
 export const stopLoop = (loopId: string): Promise<void> =>
   isTauri ? invoke<void>("stop_loop", { loopId }) : Promise.resolve();
 
+/** Cancel a single item by key/path — kills just that agent, the run continues.
+ *  The item is dropped from the run (excluded). No-op in mock mode. */
+export const stopLoopItem = (loopId: string, key: string): Promise<void> =>
+  isTauri ? invoke<void>("stop_loop_item", { loopId, key }) : Promise.resolve();
+
 /** Resolve a review item: `"approve"` commits its diff onto the loop branch;
  *  anything else re-queues it with `feedback` folded in as a note. */
 export const resolveLoopItem = (
