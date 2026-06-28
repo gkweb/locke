@@ -212,14 +212,16 @@ function PlanSpecs() {
   const approveLoopPlan = useStore((s) => s.approveLoopPlan);
   const loopManifest = useStore((s) => s.loopManifest);
   const selectedLoop = useStore((s) => s.selectedLoop);
-  const liveItems = useStore((s) => (selectedLoop ? s.loopItems[selectedLoop] ?? [] : []));
+  // Select an existing ref or undefined — NEVER a fresh `[]` inside the selector, or
+  // zustand v5 re-renders forever (and crashes the view). Default outside.
+  const liveItems = useStore((s) => (selectedLoop ? s.loopItems[selectedLoop] : undefined));
   const stopLoopItem = useStore((s) => s.stopLoopItem);
 
   // Real specs come from the strategist's manifest; plain-vite keeps the mock set.
   const specs = isTauri ? manifestToSpecs(loopManifest) : MOCK_LOOP_SPECS;
   const effStatus = (sp: LoopSpec): SpecStatus => specStatus[sp.id] ?? sp.status;
   // Live per-item action line ("analysing <path>"), keyed by path, from loop:item.
-  const liveAction = new Map(liveItems.map((it) => [it.path, it.action]));
+  const liveAction = new Map((liveItems ?? []).map((it) => [it.path, it.action]));
   const speccingNow = specs.filter((sp) => effStatus(sp) === "speccing");
   const sel: LoopSpec | undefined = specs.find((x) => x.id === selectedSpec) ?? specs[0];
   const cnt = (st: SpecStatus) => specs.filter((sp) => effStatus(sp) === st).length;
