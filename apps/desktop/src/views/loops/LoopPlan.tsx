@@ -11,7 +11,7 @@ import {
   MOCK_LOOP_ASSUMPTIONS,
   MOCK_LOOP_SPECS,
 } from "../../lib/mockFleet.js";
-import { BranchIcon, ChevronLeftIcon, CheckIcon, SendIcon, StopIcon, UnifiedIcon, InfoIcon, PlusIcon, XIcon } from "../../components/icons.js";
+import { BranchIcon, ChevronLeftIcon, CheckIcon, PlayIcon, SendIcon, StopIcon, UnifiedIcon, InfoIcon, PlusIcon, XIcon } from "../../components/icons.js";
 import { HoverButton } from "../../components/primitives.js";
 
 // Loops · plan — Plan-mode before a build. A scope interview (left) drives a
@@ -44,8 +44,11 @@ function avatarStyle(who: "agent" | "you"): React.CSSProperties {
 function PlanScope() {
   const setPlanTab = useStore((s) => s.setPlanTab);
   const approveLoopPlan = useStore((s) => s.approveLoopPlan);
+  const resumePlan = useStore((s) => s.resumePlan);
   const planMeta = useStore((s) => s.loopPlanMeta);
   const manifest = useStore((s) => s.loopManifest);
+  const selectedLoop = useStore((s) => s.selectedLoop);
+  const active = useStore((s) => (selectedLoop ? !!s.activeLoops[selectedLoop] : false));
   const specCount = useStore((s) => (s.loops.find((l) => l.id === s.selectedLoop)?.total ?? 318));
 
   // Real plan data comes from the strategist's scope pass; plain-vite keeps the
@@ -53,8 +56,15 @@ function PlanScope() {
   // scope column is a read-only transcript of the plan the strategist drafted.
   const summary = isTauri ? planMeta?.summary ?? [] : MOCK_LOOP_SPEC_SUMMARY;
   const assumptions = isTauri ? planMeta?.assumptions ?? [] : MOCK_LOOP_ASSUMPTIONS;
-  const planning = isTauri && summary.length === 0 && assumptions.length === 0;
   const realCount = isTauri ? manifest.length : specCount;
+  // "Live" only when a runner is attached this session; otherwise the indicators
+  // mustn't claim it's working. Unfinished = not specced/excluded yet.
+  const unfinished = manifest.filter((e) => e.status !== "specced" && e.status !== "review" && e.status !== "excluded").length;
+  const live = !isTauri || active;
+  const planning = live && (!isTauri || (summary.length === 0 && assumptions.length === 0));
+  // Stalled: a planning loop with no runner and work still to do (e.g. after a
+  // restart) — offer to resume rather than spin a fake "updating".
+  const stalled = isTauri && !active && unfinished > 0;
 
   return (
     <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
@@ -144,11 +154,34 @@ function PlanScope() {
         <div style={{ flex: 1, overflowY: "auto", padding: "18px 17px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
             <span style={sectionLabel}>DRY-RUN SPEC</span>
-            <span style={{ fontSize: 10, color: color.teal, display: "inline-flex", alignItems: "center", gap: 4 }}>
-              <span style={{ width: 5, height: 5, borderRadius: "50%", background: color.teal, animation: "lkpulse 1.6s infinite" }} />
-              updating
-            </span>
+            {live && (
+              <span style={{ fontSize: 10, color: color.teal, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                <span style={{ width: 5, height: 5, borderRadius: "50%", background: color.teal, animation: "lkpulse 1.6s infinite" }} />
+                updating
+              </span>
+            )}
+            {stalled && (
+              <span style={{ fontSize: 10, color: color.amber, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                <span style={{ width: 5, height: 5, borderRadius: "50%", background: color.amber }} />
+                stopped
+              </span>
+            )}
           </div>
+          {stalled && (
+            <div style={{ marginBottom: 16, padding: "11px 13px", borderRadius: 10, background: tint(color.amber, "12"), border: `1px solid ${tint(color.amber, "3a")}` }}>
+              <div style={{ fontSize: 11.5, color: "#caa46a", lineHeight: 1.5, marginBottom: 9 }}>
+                Planning isn't running (Locke was closed). {unfinished} item{unfinished === 1 ? "" : "s"} still need speccing — resume to finish, or approve what's specced.
+              </div>
+              <HoverButton
+                onClick={() => resumePlan()}
+                style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "7px 13px", background: color.violet, border: `1px solid ${color.violet}`, borderRadius: 8, color: "#fff", fontFamily: font.sans, fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+                hoverStyle={{ background: color.violetHover }}
+              >
+                <PlayIcon size={12} color="#fff" stroke={1.8} />
+                Resume planning
+              </HoverButton>
+            </div>
+          )}
           <p style={{ margin: "0 0 16px", fontSize: 11.5, color: color.textFainter, lineHeight: 1.55 }}>
             What the loop will do across the set, as the strategist sees it.
           </p>

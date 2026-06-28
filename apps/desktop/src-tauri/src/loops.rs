@@ -1382,6 +1382,13 @@ pub fn start_plan(
     concurrency: u64,
     checks: Vec<CheckSpec>,
 ) -> R<()> {
+    // Fall back to the loop's persisted template — a resume reuses the loop record
+    // and may not re-send the original prompt.
+    let template = if template.trim().is_empty() {
+        locke_store::read_loop(&repo, &loop_id).ok().flatten().map(|l| l.template).filter(|t| !t.trim().is_empty()).unwrap_or(template)
+    } else {
+        template
+    };
     // A throwaway read worktree detached at `base` — the strategist analyses files
     // here and per-item workers cut their sandboxes from its tip. No branch, no
     // commits: a planning pass never touches the user's tree.
@@ -1416,11 +1423,20 @@ pub fn start_plan(
         if e.kind.is_empty() {
             e.kind = "file".into();
         }
-        e.status = "queued".into();
+        // Resume-safe: keep already-finished specs (specced / flagged-for-review);
+        // (re-)queue everything else. So a resumed plan only re-specs what's left.
+        if e.status != "specced" && e.status != "review" {
+            e.status = "queued".into();
+        }
     }
     let _ = locke_store::write_loop_manifest(&repo, &loop_id, &entries);
-    let sched = Scheduler::new(&entries);
+    // Only spec the unfinished items — a fresh run has them all queued; a resume
+    // skips what's already specced so it doesn't re-burn tokens.
+    let to_spec: Vec<ManifestEntry> = entries.iter().filter(|e| e.status == "queued").cloned().collect();
+    let sched = Scheduler::new(&to_spec);
     let total = sched.total();
+    // Skip the scope pass on a resume — the plan was already drafted.
+    let has_plan = locke_store::read_loop_plan(&repo, &loop_id).ok().flatten().is_some_and(|s| !s.trim().is_empty());
 
     locke_store::upsert_loop(
         &repo,
@@ -1472,7 +1488,7 @@ pub fn start_plan(
     let n = concurrency.clamp(1, 16) as usize;
     // Coordinator: scope pass → per-item spec fan-out → finalize to `planning`.
     std::thread::spawn(move || {
-        if !ctx.stopped.load(Ordering::Relaxed) {
+        if !ctx.stopped.load(Ordering::Relaxed) && !has_plan {
             run_scope_agent(&ctx, total);
         }
         let workers = spawn_workers(&ctx, n);

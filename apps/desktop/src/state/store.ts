@@ -299,6 +299,9 @@ interface LockeState {
   loopManifest: ManifestEntry[];
   /** The open plan loop's scope metadata (summary + assumptions) for the Scope tab. */
   loopPlanMeta: LoopPlanMeta | null;
+  /** Loops with a live runner THIS session (set on start/resume, cleared on done).
+   *  A planning loop that isn't here is stalled (e.g. Locke was restarted). */
+  activeLoops: Record<string, boolean>;
   /** Feedback the user added in the item review this session (re-queue composer). */
   loopFeedback: string[];
   /** Live per-item state, keyed by loopId (driven by `loop:item` events / reads). */
@@ -482,6 +485,9 @@ interface LockeState {
   approveLoopPlan: () => void;
   /** Return a loop to Plan mode (halts any run; → plan view) to review/re-run specs. */
   reopenPlan: (id?: string) => void;
+  /** Resume a stalled planning loop (e.g. after a restart): re-spec the unfinished
+   *  items. No-op in mock. */
+  resumePlan: () => void;
   /** Stop/cancel the loop (→ list). */
   stopLoop: () => void;
   /** Cancel a single in-flight item by path (kills its agent; run continues). */
@@ -727,6 +733,7 @@ export const useStore = create<LockeState>((set, get) => ({
   specStatus: {},
   loopManifest: [],
   loopPlanMeta: null,
+  activeLoops: {},
   loopFeedback: [],
   loopItems: {},
   loopStream: {},
@@ -1604,6 +1611,7 @@ export const useStore = create<LockeState>((set, get) => ({
       // the strategist fills in approach/steps/status as it specs each.
       loopManifest: plan ? entries.filter((t) => t.inc).map((t) => ({ ...t, status: "queued" })) : st.loopManifest,
       loopPlanMeta: plan ? null : st.loopPlanMeta,
+      activeLoops: { ...st.activeLoops, [loopId]: true },
       loopItems: { ...st.loopItems, [loopId]: [] },
       loopStream: { ...st.loopStream, [loopId]: [] },
     }));
@@ -1639,6 +1647,7 @@ export const useStore = create<LockeState>((set, get) => ({
       loops: st.loops.map((l) => (l.id === loopId ? { ...l, mode: "build", state: "building", elapsed: "0m 0s" } : l)),
       loopView: "monitor",
       loopPaused: false,
+      activeLoops: { ...st.activeLoops, [loopId]: true },
       loopItems: { ...st.loopItems, [loopId]: [] },
       loopStream: { ...st.loopStream, [loopId]: [] },
     }));
@@ -1679,6 +1688,29 @@ export const useStore = create<LockeState>((set, get) => ({
       loopPaused: false,
     }));
     void get().loadLoopPlan(loopId);
+  },
+  resumePlan: () => {
+    const s = get();
+    const loopId = s.selectedLoop;
+    const loop = s.loops.find((l) => l.id === loopId);
+    if (MOCK || !s.repoPath || !loopId || !loop) return;
+    set((st) => ({
+      loops: st.loops.map((l) => (l.id === loopId ? { ...l, state: "planning" } : l)),
+      activeLoops: { ...st.activeLoops, [loopId]: true },
+      loopPaused: false,
+    }));
+    // Backend re-specs only the unfinished (queued) items; finished specs are kept.
+    void startPlanApi({
+      loopId,
+      repo: s.repoPath,
+      branch: loop.branch,
+      base: loop.base,
+      pattern: loop.pattern,
+      template: s.draftPrompt, // empty falls back to the loop's persisted template
+      targets: [],
+      concurrency: 1, // DEV: see startLoop note
+      checks: s.checkSpecs,
+    });
   },
   stopLoop: () => {
     const s = get();
@@ -1846,7 +1878,11 @@ export const useStore = create<LockeState>((set, get) => ({
   onLoopDone: (e) => {
     const state: LoopState =
       e.state === "done" ? "done" : e.state === "stopped" ? "paused" : e.state === "planning" ? "planning" : "building";
-    set((s) => ({ loops: s.loops.map((l) => (l.id === e.loopId ? { ...l, state } : l)) }));
+    set((s) => {
+      const activeLoops = { ...s.activeLoops };
+      delete activeLoops[e.loopId];
+      return { loops: s.loops.map((l) => (l.id === e.loopId ? { ...l, state } : l)), activeLoops };
+    });
     // A finished planning pass: reload the manifest + scope metadata so the Plan
     // view shows the strategist's full specs (approach/steps/tests), not just dots.
     if (e.state === "planning" && get().selectedLoop === e.loopId && get().loopView === "plan") {
