@@ -1,4 +1,15 @@
-import type { Loop, LoopItemState, LoopRisk, LoopSpec, LoopState, ManifestEntry, ResolverSpec, SpecStatus } from "@locke/core";
+import type {
+  Loop,
+  LoopItemState,
+  LoopRisk,
+  LoopSpec,
+  LoopState,
+  ManifestEntry,
+  NodeOrigin,
+  ResolverSpec,
+  SpecStatus,
+  WorkGraphNode,
+} from "@locke/core";
 import { color } from "../theme/tokens.js";
 
 // Shared Loops meta + math, kept beside lib/fleet.ts so every Loops surface
@@ -84,6 +95,68 @@ export function manifestToSpecs(entries: ManifestEntry[]): LoopSpec[] {
     tests: e.tests ?? [],
     note: e.note ?? "",
   }));
+}
+
+/** Node provenance → short badge label + accent (Work-graph editor). */
+export const originMeta: Record<NodeOrigin, { label: string; color: string }> = {
+  resolver: { label: "From targets", color: color.textGhost },
+  model: { label: "Model", color: color.violetLight },
+  human: { label: "You", color: color.teal },
+};
+
+/** Normalize a manifest row's `origin` (legacy empty → "resolver"). */
+export function nodeOrigin(e: ManifestEntry): NodeOrigin {
+  return e.origin === "model" || e.origin === "human" ? e.origin : "resolver";
+}
+
+/** Topological wave levels for the manifest: 0 for nodes with no in-graph deps,
+ *  else 1 + max(dep waves). Mirrors the Rust `compute_waves` so the editor can
+ *  recompute live as the human edits edges (a pinned `wave > 0` is respected).
+ *  Cycles resolve to 0 (the runner still gates on `requires`, so a cyclic edge
+ *  just never satisfies → blocked). */
+export function computeWaves(entries: ManifestEntry[]): Map<string, number> {
+  const idOf = (e: ManifestEntry) => e.id || e.path;
+  const known = new Set(entries.map(idOf));
+  const wave = new Map<string, number>();
+  for (let pass = 0; pass < entries.length; pass++) {
+    let changed = false;
+    for (const e of entries) {
+      const id = idOf(e);
+      const w = (e.requires ?? [])
+        .filter((d) => known.has(d))
+        .reduce((mx, d) => Math.max(mx, (wave.get(d) ?? 0) + 1), 0);
+      if ((wave.get(id) ?? 0) !== w) {
+        wave.set(id, w);
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  for (const e of entries) if (!wave.has(idOf(e))) wave.set(idOf(e), 0);
+  return wave;
+}
+
+/** Derive the Plan-view work-graph nodes from a loop's manifest rows: drops
+ *  excluded nodes, normalizes origin, and assigns each its (pinned or derived)
+ *  wave. Returned sorted by wave then descending priority — the run order. */
+export function manifestToGraph(entries: ManifestEntry[]): WorkGraphNode[] {
+  const live = entries.filter((e) => e.status !== "excluded");
+  const waves = computeWaves(live);
+  const nodes: WorkGraphNode[] = live.map((e) => {
+    const id = e.id || e.path;
+    const isTask = e.kind === "task";
+    return {
+      id,
+      kind: isTask ? "task" : "file",
+      label: isTask ? e.title || id : e.path,
+      requires: e.requires ?? [],
+      priority: e.priority ?? 0,
+      wave: e.wave && e.wave > 0 ? e.wave : (waves.get(id) ?? 0),
+      origin: nodeOrigin(e),
+      status: e.status ?? "",
+    };
+  });
+  return nodes.sort((a, b) => a.wave - b.wave || b.priority - a.priority || a.label.localeCompare(b.label));
 }
 
 /** A short, human label for a resolver — shown as the loop's `pattern` and the

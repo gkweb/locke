@@ -483,6 +483,41 @@ export const readLoopManifest = (repo: string, loopId: string): Promise<Manifest
 export const writeLoopManifest = (repo: string, loopId: string, entries: ManifestEntry[]): Promise<void> =>
   isTauri ? invoke<void>("write_loop_manifest", { repo, loopId, entries }) : Promise.resolve();
 
+/** Add a human-authored task node to the loop's work graph. No-op in mock mode. */
+export const addLoopTask = (
+  repo: string,
+  loopId: string,
+  task: { id: string; title: string; spec?: string; requires?: string[]; priority?: number },
+): Promise<void> =>
+  isTauri
+    ? invoke<void>("add_loop_task", {
+        repo,
+        loopId,
+        id: task.id,
+        title: task.title,
+        spec: task.spec ?? "",
+        requires: task.requires ?? [],
+        priority: task.priority ?? 0,
+      })
+    : Promise.resolve();
+
+/** Remove a work-graph node (file or task) by id-or-path. No-op in mock mode. */
+export const removeLoopNode = (repo: string, loopId: string, node: string): Promise<void> =>
+  isTauri ? invoke<void>("remove_loop_node", { repo, loopId, node }) : Promise.resolve();
+
+/** Set a node's dependency edges / ordering (id-or-path). No-op in mock mode. */
+export const setLoopDeps = (
+  repo: string,
+  loopId: string,
+  node: string,
+  requires: string[],
+  priority?: number,
+  wave?: number,
+): Promise<void> =>
+  isTauri
+    ? invoke<void>("set_loop_deps", { repo, loopId, node, requires, priority: priority ?? null, wave: wave ?? null })
+    : Promise.resolve();
+
 /** Persist a loop record + its builder draft (autosave). No-op in mock mode. */
 export const saveLoopDraft = (repo: string, loop: Loop, draft: LoopDraft): Promise<void> =>
   isTauri ? invoke<void>("save_loop_draft", { repo, record: loop, draft }) : Promise.resolve();

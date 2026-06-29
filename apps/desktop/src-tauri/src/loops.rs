@@ -569,7 +569,14 @@ pub fn resolve_targets(repo: &str, spec: &ResolverSpec) -> Vec<ManifestEntry> {
 /// Build a default (unspecced, included) manifest row for a path.
 fn entry_for(repo: &str, rel: String) -> ManifestEntry {
     let loc = count_loc(repo, &rel);
-    ManifestEntry { path: rel, loc, risk: risk_band(loc).to_string(), inc: true, ..Default::default() }
+    ManifestEntry {
+        path: rel,
+        loc,
+        risk: risk_band(loc).to_string(),
+        inc: true,
+        origin: "resolver".into(),
+        ..Default::default()
+    }
 }
 
 /// Keep only inputs that are real, in-repo files — normalized, de-duped, sorted.
@@ -1148,9 +1155,16 @@ fn run_scope_agent(ctx: &Arc<Ctx>, file_count: u64) {
          untouched). This is injected into every build prompt.\n\
          - `assumptions`: the assumptions the loop is making (so the human can correct them before approving).\n\
          - `summary`: a few rows describing what the loop will do across the set; set `pend=true` on any row that \
-         still needs a human decision.\n\
+         still needs a human decision.\n\n\
+         If the work needs PREREQUISITE or CUSTOM tasks that aren't one of the {n} files — e.g. create a shared \
+         module/composable, add a dependency, write a codemod, set up fixtures — call `loop_add_task` for each one \
+         (give it a slug `id`, a `title`, a `spec`, and use `blocks` with a glob or path list to make the files that \
+         depend on it wait until it's done; use `requires` to order tasks among themselves). Decide the run order \
+         yourself — you own the orchestration; the human will review the work graph before the build runs, so propose \
+         the structure you think is right rather than asking.\n\n\
          The build workers must make these checks pass: {tests}. Do NOT edit any file — analysis only. Call \
-         `loop_write_plan` exactly once.",
+         `loop_write_plan` exactly once; call `loop_add_task` once per task (or not at all if no extra tasks are \
+         needed).",
         id = ctx.loop_id,
         n = file_count,
         task = ctx.template,
@@ -1490,6 +1504,21 @@ pub fn start_plan(
     std::thread::spawn(move || {
         if !ctx.stopped.load(Ordering::Relaxed) && !has_plan {
             run_scope_agent(&ctx, total);
+            // The scope agent may have added prerequisite/custom task nodes (via
+            // `loop_add_task`) and fanned `requires` edges across files. Rebuild the
+            // scheduler from the now-current manifest so any still-queued items it
+            // introduced get specced and the planning counts include them. Tasks the
+            // agent specced inline are already `specced` (not re-queued), so they're
+            // skipped here and picked up by the build scheduler after approval.
+            if let Ok(entries) = locke_store::read_loop_manifest(&ctx.repo, &ctx.loop_id) {
+                let in_scope = entries.iter().filter(|e| e.inc && e.status != "excluded").count() as u64;
+                let to_spec: Vec<ManifestEntry> =
+                    entries.into_iter().filter(|e| e.status == "queued").collect();
+                let fresh = Scheduler::new(&to_spec);
+                *ctx.sched.lock().unwrap() = fresh;
+                let _ = locke_store::update_loop(&ctx.repo, &ctx.loop_id, |l| l.total = in_scope.max(l.total));
+                emit_progress(&ctx);
+            }
         }
         let workers = spawn_workers(&ctx, n);
         for w in workers {
@@ -1737,6 +1766,44 @@ mod tests {
         // An unknown (out-of-graph) dep is treated as satisfied, not a deadlock.
         let mut ok = Scheduler::new(&[node("a", &["ghost"], 0)]);
         assert_eq!(ok.next_ready().unwrap().id, "a");
+    }
+
+    #[test]
+    fn task_node_gates_its_dependent_files() {
+        // A model-authored prerequisite task (kind:"task", keyed by id, addressed by
+        // its title) must run wave 0; the files that `require` it sit at wave 1 and
+        // only become ready once the task is Done.
+        let task = ManifestEntry {
+            id: "add-use-cart".into(),
+            kind: "task".into(),
+            title: Some("Create the shared useCart composable".into()),
+            inc: true,
+            origin: "model".into(),
+            status: "specced".into(),
+            ..Default::default()
+        };
+        let mut file = node("src/Cart.vue", &["add-use-cart"], 0);
+        file.path = "src/Cart.vue".into();
+        file.id = "src/Cart.vue".into();
+        let es = vec![task, file];
+
+        let w = compute_waves(&es);
+        assert_eq!((w["add-use-cart"], w["src/Cart.vue"]), (0, 1));
+
+        let mut s = Scheduler::new(&es);
+        let first = s.next_ready().unwrap();
+        // The task is picked first, addressed as a task by its title (not a path).
+        assert_eq!(first.id, "add-use-cart");
+        assert!(first.is_task);
+        assert_eq!(first.key, "add-use-cart");
+        assert_eq!(first.target, "Create the shared useCart composable");
+        // The dependent file is blocked until the task completes.
+        assert!(s.next_ready().is_none());
+        s.mark(first.i, St::Done);
+        let second = s.next_ready().unwrap();
+        assert_eq!(second.id, "src/Cart.vue");
+        assert!(!second.is_task);
+        assert_eq!(second.target, "src/Cart.vue");
     }
 
     #[test]

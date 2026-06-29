@@ -77,6 +77,9 @@ import {
   readLoopManifest as readLoopManifestApi,
   resolveTargets as resolveTargetsApi,
   writeLoopManifest as writeLoopManifestApi,
+  addLoopTask as addLoopTaskApi,
+  removeLoopNode as removeLoopNodeApi,
+  setLoopDeps as setLoopDepsApi,
   saveLoopDraft as saveLoopDraftApi,
   readLoopDraft as readLoopDraftApi,
   deleteLoop as deleteLoopApi,
@@ -277,7 +280,7 @@ interface LockeState {
   /** Monitor layout: kanban board / live stream / tile grid. */
   monitorLayout: "board" | "stream" | "grid" | "waves";
   /** Plan-mode tab: scope interview vs per-item specs. */
-  planTab: "scope" | "specs";
+  planTab: "scope" | "specs" | "graph";
   /** Selected per-item spec in the plan Item-specs tab. */
   selectedSpec: string;
   /** The item open in the loop-item review, or null. */
@@ -466,7 +469,7 @@ interface LockeState {
   loopToList: () => void;
   setLoopView: (v: LoopView) => void;
   setMonitorLayout: (l: "board" | "stream" | "grid" | "waves") => void;
-  setPlanTab: (t: "scope" | "specs") => void;
+  setPlanTab: (t: "scope" | "specs" | "graph") => void;
   selectSpec: (id: string) => void;
   setDraftMode: (m: LoopMode) => void;
   setDraftTitle: (v: string) => void;
@@ -507,6 +510,12 @@ interface LockeState {
   toggleSpecStep: (id: string, k: string) => void;
   acceptSpec: (id: string) => void;
   excludeSpec: (id: string) => void;
+  /** Add a human-authored task node to the plan's work graph, then reload it. */
+  addLoopTask: (task: { id: string; title: string; spec?: string; requires?: string[]; priority?: number }) => Promise<void>;
+  /** Remove a work-graph node (file or task) by id-or-path, then reload. */
+  removeLoopNode: (node: string) => Promise<void>;
+  /** Set a node's dependency edges / ordering, then reload. */
+  setLoopDeps: (node: string, requires: string[], priority?: number) => Promise<void>;
   /** Load real loops from the backend (Tauri mode; no-op in mock). */
   loadLoops: () => Promise<void>;
   /** Load a loop's per-item records from the backend into `loopItems`. */
@@ -1775,6 +1784,28 @@ export const useStore = create<LockeState>((set, get) => ({
     );
     set({ loopManifest, specStatus: { ...s.specStatus, [id]: nowExcluded ? "excluded" : "review" } });
     if (!MOCK && s.repoPath && s.selectedLoop) void writeLoopManifestApi(s.repoPath, s.selectedLoop, loopManifest);
+  },
+
+  // Work-graph edits (the human's lightweight editor in the Plan view). Each writes
+  // through the backend's `update_loop_manifest` primitive, then reloads the manifest
+  // so derived waves/ordering stay authoritative.
+  addLoopTask: async (task) => {
+    const s = get();
+    if (MOCK || !s.repoPath || !s.selectedLoop) return;
+    await addLoopTaskApi(s.repoPath, s.selectedLoop, task);
+    await get().loadLoopPlan(s.selectedLoop);
+  },
+  removeLoopNode: async (node) => {
+    const s = get();
+    if (MOCK || !s.repoPath || !s.selectedLoop) return;
+    await removeLoopNodeApi(s.repoPath, s.selectedLoop, node);
+    await get().loadLoopPlan(s.selectedLoop);
+  },
+  setLoopDeps: async (node, requires, priority) => {
+    const s = get();
+    if (MOCK || !s.repoPath || !s.selectedLoop) return;
+    await setLoopDepsApi(s.repoPath, s.selectedLoop, node, requires, priority);
+    await get().loadLoopPlan(s.selectedLoop);
   },
 
   loadLoops: async () => {

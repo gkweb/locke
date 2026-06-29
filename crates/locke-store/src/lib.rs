@@ -747,6 +747,11 @@ pub struct ManifestEntry {
     /// Whether this file is in scope (the builder audit toggle).
     #[serde(default)]
     pub inc: bool,
+    /// Provenance: who authored this node — "resolver" (matched by the glob/list),
+    /// "model" (strategist-suggested task), or "human" (user-added). Empty on
+    /// pre-existing rows (treated as "resolver").
+    #[serde(default)]
+    pub origin: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     // ---- spec enrichment (written by Plan mode) ----
@@ -816,6 +821,100 @@ pub fn merge_loop_manifest_entry<F: FnOnce(&mut ManifestEntry)>(repo: &str, id: 
     }
     let value = serde_json::to_value(&entries).map_err(|e| format!("serialize manifest: {e}"))?;
     write_json(&loop_manifest_path(repo, id), &value)
+}
+
+/// Read-modify-write the WHOLE manifest under the repo lock. The general primitive
+/// for graph edits that span rows (adding a task node, fanning a `requires` edge
+/// across many file rows, reordering) — `merge_loop_manifest_entry` only reaches one
+/// row keyed by `path`, which can't address task nodes (keyed by `id`).
+pub fn update_loop_manifest<F: FnOnce(&mut Vec<ManifestEntry>)>(repo: &str, id: &str, f: F) -> R<()> {
+    ensure_locke(repo)?;
+    let _lock = lock_repo(repo)?;
+    let mut entries: Vec<ManifestEntry> = match read_json(&loop_manifest_path(repo, id))? {
+        Some(v) => serde_json::from_value(v).map_err(|e| format!("parse manifest: {e}"))?,
+        None => Vec::new(),
+    };
+    f(&mut entries);
+    let value = serde_json::to_value(&entries).map_err(|e| format!("serialize manifest: {e}"))?;
+    write_json(&loop_manifest_path(repo, id), &value)
+}
+
+// ---- glob matching (no deps; mirrors the desktop runner's matcher) ----
+
+/// Match a repo-relative path against a glob with `**` (any depth), `*` (within a
+/// segment), and `{a,b}` brace alternation, e.g. `packages/**/*.{vue,ts}`. Shared so
+/// the MCP server can resolve a task's `blocks` glob to the file rows it gates.
+pub fn glob_match(pat: &str, path: &str) -> bool {
+    glob_expand_braces(pat).iter().any(|p| glob_match_one(p, path))
+}
+
+fn glob_match_one(pat: &str, path: &str) -> bool {
+    let p: Vec<&str> = pat.split('/').filter(|s| !s.is_empty()).collect();
+    let s: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    glob_seg_match(&p, &s)
+}
+
+fn glob_expand_braces(pat: &str) -> Vec<String> {
+    let Some(open) = pat.find('{') else { return vec![pat.to_string()] };
+    let mut depth = 0;
+    let mut close = None;
+    for (i, c) in pat.char_indices().skip_while(|(i, _)| *i < open) {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(close) = close else { return vec![pat.to_string()] };
+    let (pre, post) = (&pat[..open], &pat[close + 1..]);
+    let inner = &pat[open + 1..close];
+    let mut parts = Vec::new();
+    let (mut d, mut start) = (0, 0);
+    for (i, c) in inner.char_indices() {
+        match c {
+            '{' => d += 1,
+            '}' => d -= 1,
+            ',' if d == 0 => {
+                parts.push(&inner[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&inner[start..]);
+    parts.into_iter().flat_map(|part| glob_expand_braces(&format!("{pre}{part}{post}"))).collect()
+}
+
+fn glob_seg_match(p: &[&str], s: &[&str]) -> bool {
+    if p.is_empty() {
+        return s.is_empty();
+    }
+    if p[0] == "**" {
+        (0..=s.len()).any(|i| glob_seg_match(&p[1..], &s[i..]))
+    } else if s.is_empty() {
+        false
+    } else if glob_wild(&p[0].chars().collect::<Vec<_>>(), &s[0].chars().collect::<Vec<_>>()) {
+        glob_seg_match(&p[1..], &s[1..])
+    } else {
+        false
+    }
+}
+
+fn glob_wild(p: &[char], t: &[char]) -> bool {
+    if p.is_empty() {
+        return t.is_empty();
+    }
+    if p[0] == '*' {
+        (0..=t.len()).any(|i| glob_wild(&p[1..], &t[i..]))
+    } else {
+        !t.is_empty() && p[0] == t[0] && glob_wild(&p[1..], &t[1..])
+    }
 }
 
 // ---- durable progress log (.locke/loops/<id>/progress.jsonl) ----
@@ -950,6 +1049,64 @@ mod tests {
         assert_eq!(a.approach.as_deref(), Some("refactor"));
         assert_eq!(a.loc, 10, "existing fields preserved through merge");
         assert!(m.iter().any(|e| e.path == "src/c.js" && e.inc));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn glob_match_double_star_and_braces() {
+        assert!(glob_match("src/**/*.vue", "src/a/b/C.vue"));
+        assert!(!glob_match("src/**/*.vue", "lib/C.vue"));
+        assert!(glob_match("packages/**/*.{vue,ts}", "packages/ui/x.ts"));
+        assert!(!glob_match("packages/**/*.{vue,ts}", "packages/ui/x.js"));
+    }
+
+    #[test]
+    fn update_manifest_adds_task_and_fans_blocks_edge() {
+        let dir = tmp("graph");
+        let repo = dir.to_str().unwrap();
+
+        write_loop_manifest(
+            repo,
+            "lp1",
+            &[
+                ManifestEntry { path: "src/Cart.vue".into(), id: "src/Cart.vue".into(), origin: "resolver".into(), inc: true, ..Default::default() },
+                ManifestEntry { path: "src/Nav.vue".into(), id: "src/Nav.vue".into(), origin: "resolver".into(), inc: true, ..Default::default() },
+                ManifestEntry { path: "src/util.ts".into(), id: "src/util.ts".into(), origin: "resolver".into(), inc: true, ..Default::default() },
+            ],
+        )
+        .unwrap();
+
+        // Mirror `loop_add_task`: insert a model task node + fan a `requires` edge to
+        // every file matching the `blocks` glob.
+        let blocks = "src/**/*.vue";
+        let mut linked = 0usize;
+        update_loop_manifest(repo, "lp1", |entries| {
+            entries.push(ManifestEntry {
+                id: "add-use-cart".into(),
+                kind: "task".into(),
+                title: Some("Create useCart".into()),
+                status: "specced".into(),
+                origin: "model".into(),
+                inc: true,
+                ..Default::default()
+            });
+            for e in entries.iter_mut() {
+                if e.kind != "task" && glob_match(blocks, &e.path) && !e.requires.iter().any(|r| r == "add-use-cart") {
+                    e.requires.push("add-use-cart".into());
+                    linked += 1;
+                }
+            }
+        })
+        .unwrap();
+
+        assert_eq!(linked, 2, "only the two .vue files gain the edge");
+        let m = read_loop_manifest(repo, "lp1").unwrap();
+        let task = m.iter().find(|e| e.id == "add-use-cart").unwrap();
+        assert_eq!((task.kind.as_str(), task.origin.as_str()), ("task", "model"));
+        assert!(m.iter().find(|e| e.path == "src/Cart.vue").unwrap().requires.iter().any(|r| r == "add-use-cart"));
+        assert!(m.iter().find(|e| e.path == "src/Nav.vue").unwrap().requires.iter().any(|r| r == "add-use-cart"));
+        assert!(m.iter().find(|e| e.path == "src/util.ts").unwrap().requires.is_empty(), ".ts file untouched");
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -1,8 +1,9 @@
+import { useState } from "react";
 import type { LoopSpec, SpecStatus } from "@locke/core";
 import { useStore } from "../../state/store.js";
 import { isTauri } from "../../api/git.js";
 import { color, font, tint } from "../../theme/tokens.js";
-import { riskColor, specStatusMeta, baseName, manifestToSpecs } from "../../lib/loops.js";
+import { riskColor, specStatusMeta, baseName, manifestToSpecs, manifestToGraph, originMeta } from "../../lib/loops.js";
 import {
   MOCK_LOOP_INTERVIEW,
   MOCK_LOOP_PENDING_Q,
@@ -558,6 +559,189 @@ function PlanSpecs() {
   );
 }
 
+// Loops · plan · Work graph — the human's lightweight editor over the model's
+// proposed orchestration. Nodes are grouped by topological wave (run order);
+// tasks are distinct from files and badged by provenance (model / you / targets).
+// Edits write through the backend's manifest primitive and reload.
+function PlanGraph() {
+  const manifest = useStore((s) => s.loopManifest);
+  const addLoopTask = useStore((s) => s.addLoopTask);
+  const removeLoopNode = useStore((s) => s.removeLoopNode);
+  const setLoopDeps = useStore((s) => s.setLoopDeps);
+
+  const [adding, setAdding] = useState(false);
+  const [title, setTitle] = useState("");
+  const [spec, setSpec] = useState("");
+  const [modelOnly, setModelOnly] = useState(false);
+
+  const graph = manifestToGraph(manifest);
+  const shown = modelOnly ? graph.filter((n) => n.origin === "model") : graph;
+  const waves = [...new Set(shown.map((n) => n.wave))].sort((a, b) => a - b);
+  const idLabel = new Map(graph.map((n) => [n.id, n.kind === "task" ? n.label : baseName(n.label)]));
+
+  const slug = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "task";
+
+  const submitTask = async () => {
+    const t = title.trim();
+    if (!t) return;
+    await addLoopTask({ id: slug(t), title: t, spec: spec.trim() });
+    setTitle("");
+    setSpec("");
+    setAdding(false);
+  };
+
+  const chip = (accent: string): React.CSSProperties => ({
+    fontSize: 10,
+    fontWeight: 700,
+    letterSpacing: ".4px",
+    color: accent,
+    background: tint(accent, "1c"),
+    border: `1px solid ${tint(accent, "44")}`,
+    borderRadius: 5,
+    padding: "1px 6px",
+    flex: "none",
+  });
+
+  return (
+    <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
+      <div style={{ maxWidth: 880, margin: "0 auto", padding: "22px 26px", display: "flex", flexDirection: "column", gap: 14 }}>
+        {/* toolbar */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, ...sectionLabel }}>
+            <UnifiedIcon size={13} color={color.textGhost} stroke={1.5} />
+            WORK GRAPH · {graph.length} node{graph.length === 1 ? "" : "s"}
+          </div>
+          <button
+            onClick={() => setModelOnly((v) => !v)}
+            style={{
+              marginLeft: "auto",
+              fontSize: 11,
+              fontWeight: 600,
+              cursor: "pointer",
+              borderRadius: 6,
+              padding: "4px 10px",
+              fontFamily: font.sans,
+              background: modelOnly ? tint(color.violet, "24") : "transparent",
+              border: `1px solid ${modelOnly ? tint(color.violet, "57") : color.borderRow}`,
+              color: modelOnly ? color.violetLight : color.textFaint,
+            }}
+          >
+            Model-suggested
+          </button>
+          <HoverButton
+            onClick={() => setAdding((v) => !v)}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 11px", background: "transparent", border: `1px solid ${tint(color.teal, "4d")}`, borderRadius: 7, color: color.teal, fontFamily: font.sans, fontSize: 11.5, fontWeight: 600, cursor: "pointer" }}
+            hoverStyle={{ background: tint(color.teal, "16") }}
+          >
+            <PlusIcon size={11} stroke={1.8} />
+            Add task
+          </HoverButton>
+        </div>
+
+        {/* add-task form */}
+        {adding && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: 12, borderRadius: 10, background: color.panelBg, border: `1px solid ${color.borderRail}` }}>
+            <input
+              autoFocus
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Task title — e.g. Create the shared useCart composable"
+              style={{ background: FIELD, border: `1px solid ${color.borderRow}`, borderRadius: 7, padding: "8px 10px", color: color.text, fontFamily: font.sans, fontSize: 12.5, outline: "none" }}
+            />
+            <textarea
+              value={spec}
+              onChange={(e) => setSpec(e.target.value)}
+              placeholder="Optional spec — what this task must do and how to verify it. Leave blank to let the build agent work it out from the title."
+              rows={3}
+              style={{ background: FIELD, border: `1px solid ${color.borderRow}`, borderRadius: 7, padding: "8px 10px", color: color.text, fontFamily: font.sans, fontSize: 12, lineHeight: 1.5, resize: "vertical", outline: "none" }}
+            />
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={() => setAdding(false)} style={{ fontSize: 11.5, fontWeight: 600, cursor: "pointer", borderRadius: 6, padding: "5px 12px", background: "transparent", border: `1px solid ${color.borderRow}`, color: color.textFaint, fontFamily: font.sans }}>
+                Cancel
+              </button>
+              <button onClick={submitTask} disabled={!title.trim()} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 600, cursor: title.trim() ? "pointer" : "default", borderRadius: 6, padding: "5px 12px", background: tint(color.teal, "24"), border: `1px solid ${tint(color.teal, "57")}`, color: color.teal, opacity: title.trim() ? 1 : 0.5, fontFamily: font.sans }}>
+                <CheckIcon size={11} stroke={1.8} /> Add task
+              </button>
+            </div>
+          </div>
+        )}
+
+        {shown.length === 0 && (
+          <div style={{ fontSize: 12.5, color: color.textFainter, padding: "8px 2px" }}>
+            {modelOnly ? "No model-suggested tasks yet." : "No nodes yet — the strategist will populate the graph during the scope pass."}
+          </div>
+        )}
+
+        {/* nodes grouped by wave (run order) */}
+        {waves.map((w) => (
+          <div key={w} style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+            <div style={{ ...microLabel, marginTop: 4 }}>WAVE {w}{w === 0 ? " · runs first" : ""}</div>
+            {shown.filter((n) => n.wave === w).map((n) => {
+              const om = originMeta[n.origin];
+              const candidates = graph.filter((c) => c.id !== n.id && !n.requires.includes(c.id) && c.wave <= n.wave);
+              return (
+                <div key={n.id} style={{ display: "flex", flexDirection: "column", gap: 7, padding: "10px 12px", borderRadius: 9, background: color.panelBg, border: `1px solid ${n.kind === "task" ? tint(color.violet, "3a") : color.borderRail}` }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={chip(n.kind === "task" ? color.violetLight : color.textGhost)}>{n.kind === "task" ? "TASK" : "FILE"}</span>
+                    <span style={{ fontSize: 12.5, fontWeight: 600, color: color.text, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {n.kind === "task" ? n.label : baseName(n.label)}
+                    </span>
+                    <span style={chip(om.color)}>{om.label}</span>
+                    <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, flex: "none" }}>
+                      {n.priority !== 0 && <span style={{ fontSize: 10.5, color: color.textFainter }}>prio {n.priority}</span>}
+                      {n.origin !== "resolver" && (
+                        <HoverButton
+                          onClick={() => void removeLoopNode(n.id)}
+                          style={{ display: "flex", alignItems: "center", background: "transparent", border: "none", cursor: "pointer", color: color.textFaint, padding: 2 }}
+                          hoverStyle={{ color: color.red }}
+                        >
+                          <XIcon size={12} stroke={1.8} />
+                        </HoverButton>
+                      )}
+                    </div>
+                  </div>
+                  {/* dependency edges */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: ".5px", color: color.textGhost }}>REQUIRES</span>
+                    {n.requires.length === 0 && <span style={{ fontSize: 11.5, color: color.textFainter }}>nothing</span>}
+                    {n.requires.map((dep) => (
+                      <span key={dep} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: color.textSoft, background: color.chipBg, border: `1px solid ${color.borderChip}`, borderRadius: 5, padding: "2px 4px 2px 7px" }}>
+                        {idLabel.get(dep) ?? dep}
+                        <button
+                          onClick={() => void setLoopDeps(n.id, n.requires.filter((r) => r !== dep), n.priority)}
+                          style={{ display: "flex", background: "transparent", border: "none", cursor: "pointer", color: color.textFaint, padding: 0 }}
+                        >
+                          <XIcon size={10} stroke={1.8} />
+                        </button>
+                      </span>
+                    ))}
+                    {candidates.length > 0 && (
+                      <select
+                        value=""
+                        onChange={(e) => {
+                          if (e.target.value) void setLoopDeps(n.id, [...n.requires, e.target.value], n.priority);
+                        }}
+                        style={{ fontSize: 11, color: color.textFaint, background: "transparent", border: `1px dashed ${color.borderRow}`, borderRadius: 5, padding: "2px 6px", cursor: "pointer", fontFamily: font.sans, outline: "none" }}
+                      >
+                        <option value="">+ requires…</option>
+                        {candidates.map((c) => (
+                          <option key={c.id} value={c.id} style={{ background: FIELD, color: color.text }}>
+                            {c.kind === "task" ? c.label : baseName(c.label)}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function LoopPlan() {
   const loops = useStore((s) => s.loops);
   const selectedLoop = useStore((s) => s.selectedLoop);
@@ -571,7 +755,7 @@ export function LoopPlan() {
   const title = loop?.title ?? "Loop";
   const count = isTauri ? loop?.total || manifestLen : loop?.total || 318;
 
-  const tabBtn = (key: "scope" | "specs", label: string, badge?: string) => {
+  const tabBtn = (key: "scope" | "specs" | "graph", label: string, badge?: string) => {
     const active = planTab === key;
     return (
       <button
@@ -621,6 +805,7 @@ export function LoopPlan() {
           <div style={{ display: "flex", gap: 2, padding: 3, background: color.navPillBg, border: `1px solid ${color.borderRow}`, borderRadius: 9 }}>
             {tabBtn("scope", "Scope")}
             {tabBtn("specs", "Item specs", count.toLocaleString())}
+            {tabBtn("graph", "Work graph")}
           </div>
           <HoverButton
             onClick={stopLoop}
@@ -633,7 +818,7 @@ export function LoopPlan() {
         </div>
       </div>
 
-      {planTab === "scope" ? <PlanScope /> : <PlanSpecs />}
+      {planTab === "scope" ? <PlanScope /> : planTab === "graph" ? <PlanGraph /> : <PlanSpecs />}
     </div>
   );
 }

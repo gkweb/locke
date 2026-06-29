@@ -301,6 +301,29 @@ export interface ManifestEntry extends LoopTarget {
   spec?: string;
   /** Spec lifecycle: "" | speccing | specced | review | excluded. */
   status?: string;
+  /** Provenance: "resolver" (matched by the glob/list) | "model" (strategist-
+   *  suggested task) | "human" (user-added). Empty on legacy rows (= "resolver"). */
+  origin?: string;
+}
+
+/** Who authored a work-graph node — the normalized `ManifestEntry.origin`. */
+export type NodeOrigin = "resolver" | "model" | "human";
+
+/** A work-graph node as the Plan-view graph editor renders it — derived from a
+ *  `ManifestEntry` by `manifestToGraph()`. */
+export interface WorkGraphNode {
+  /** Stable id (file path or task slug) — the key edges reference. */
+  id: string;
+  kind: "file" | "task";
+  /** Display label (task title, or the file path). */
+  label: string;
+  /** Ids this node depends on (must finish first). */
+  requires: string[];
+  priority: number;
+  /** Topological tier (0 = no in-graph deps). */
+  wave: number;
+  origin: NodeOrigin;
+  status: string;
 }
 
 /** One planned edit step within a per-item spec. */

@@ -254,9 +254,29 @@ fn tools_list() -> Value {
                     "steps": { "type": "array", "items": { "type": "string" }, "description": "Optional ordered list of the concrete edits the build will make." },
                     "tests": { "type": "array", "items": { "type": "string" }, "description": "Optional tests/checks that must pass for this item." },
                     "note": { "type": "string", "description": "Optional caveat/decision for the reviewer or build worker." },
-                    "needs_review": { "type": "boolean", "description": "Set true when a human must decide before this item can be built; pair with `note` as the reason." }
+                    "needs_review": { "type": "boolean", "description": "Set true when a human must decide before this item can be built; pair with `note` as the reason." },
+                    "requires": { "type": "array", "items": { "type": "string" }, "description": "Optional ids of work-graph nodes (file paths or task ids) that must finish before this item runs. Use to pin a prerequisite for this specific file." },
+                    "priority": { "type": "integer", "description": "Optional ordering within the ready set (higher runs first). Default 0." }
                 },
                 "required": ["loop_id", "file", "spec"]
+            }
+        },
+        {
+            "name": "loop_add_task",
+            "description": "Plan mode (strategist): add a prerequisite or custom TASK to the loop's work graph — a unit of work that isn't one of the resolver's files (e.g. \"create the shared composable\", \"add the dependency\", \"write the codemod\"). The task runs as its own agent job in dependency order. Use `blocks` to make the resolver files that depend on it wait until it's done. The human reviews the graph before the build runs.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "loop_id": { "type": "string", "description": "The loop id (given in your task prompt)." },
+                    "id": { "type": "string", "description": "Stable slug id for this task node (e.g. \"add-use-cart\"). Other nodes reference it in `requires`." },
+                    "title": { "type": "string", "description": "Short human-readable title for the task." },
+                    "spec": { "type": "string", "description": "The task spec as markdown — objective, the concrete work, and how to verify. Handed verbatim to the agent that runs the task." },
+                    "requires": { "type": "array", "items": { "type": "string" }, "description": "Optional ids of other tasks that must finish before this one runs." },
+                    "blocks": { "description": "Optional: the file items that depend on this task — a glob (e.g. \"src/components/**/*.vue\") or an array of repo-relative paths. Each matching in-scope file gains a `requires` edge to this task.", "anyOf": [ { "type": "string" }, { "type": "array", "items": { "type": "string" } } ] },
+                    "priority": { "type": "integer", "description": "Optional ordering within the ready set (higher runs first). Default 0." },
+                    "note": { "type": "string", "description": "Optional caveat/decision for the reviewer." }
+                },
+                "required": ["loop_id", "id", "title", "spec"]
             }
         },
         {
@@ -300,6 +320,7 @@ fn handle_tools_call(msg: &Value, id: Option<Value>, repo: Option<&str>, agent: 
         "loop_read_spec" => tool_loop_read_spec(repo, &args),
         "loop_write_spec" => tool_loop_write_spec(repo, &args),
         "loop_write_plan" => tool_loop_write_plan(repo, &args),
+        "loop_add_task" => tool_loop_add_task(repo, &args),
         other => Err(format!("unknown tool: {other}")),
     };
 
@@ -504,6 +525,9 @@ fn tool_loop_write_spec(repo: &str, args: &Value) -> Result<Value, String> {
     let note = args.get("note").and_then(|v| v.as_str()).map(String::from);
     let needs_review = args.get("needs_review").and_then(|v| v.as_bool()).unwrap_or(false);
     let status = if needs_review { "review" } else { "specced" };
+    // Optional dependency/order the strategist pins on this file item in the same call.
+    let requires = arg_str_vec(args, "requires");
+    let priority = args.get("priority").and_then(|v| v.as_i64());
 
     // Persist the markdown spec the build worker reads, then enrich the manifest row
     // (the build's source of truth) without clobbering a concurrent worker's row.
@@ -519,6 +543,12 @@ fn tool_loop_write_spec(repo: &str, args: &Value) -> Result<Value, String> {
         e.note = note_c;
         e.spec = Some(spec_ref);
         e.status = status.to_string();
+        if !requires.is_empty() {
+            e.requires = requires;
+        }
+        if let Some(p) = priority {
+            e.priority = p;
+        }
     })?;
     // Record the per-item declaration the strategist runner gates on (mirrors the
     // build worker's complete/needs_review contract).
@@ -541,6 +571,76 @@ fn tool_loop_write_plan(repo: &str, args: &Value) -> Result<Value, String> {
     locke_store::write_loop_plan(repo, loop_id, plan)?;
     locke_store::write_loop_plan_meta(repo, loop_id, &json!({ "summary": summary, "assumptions": assumptions }))?;
     Ok(json!({ "ok": true, "loopId": loop_id }))
+}
+
+fn tool_loop_add_task(repo: &str, args: &Value) -> Result<Value, String> {
+    let loop_id = arg_str(args, "loop_id")?;
+    let id = arg_str(args, "id")?;
+    let title = arg_str(args, "title")?;
+    let spec = arg_str(args, "spec")?;
+    let requires = arg_str_vec(args, "requires");
+    let priority = args.get("priority").and_then(|v| v.as_i64()).unwrap_or(0);
+    let note = args.get("note").and_then(|v| v.as_str()).map(String::from);
+    // `blocks` is a glob OR a list of repo-relative paths: the file items that should
+    // depend on this task. One call fans the edge across the whole matching set.
+    let blocks: Vec<String> = match args.get("blocks") {
+        Some(Value::String(s)) => vec![s.clone()],
+        Some(Value::Array(_)) => arg_str_vec(args, "blocks"),
+        _ => Vec::new(),
+    };
+
+    // The task carries its own spec (born `specced`), so the build worker's
+    // `loop_read_spec` finds it and the planning pass needn't re-spec it.
+    let spec_ref = format!("spec/{}.md", locke_store::sanitize_path(id));
+    locke_store::write_loop_spec(repo, loop_id, id, spec)?;
+
+    let id_for_node = id.to_string();
+    let title_c = title.to_string();
+    let note_c = note.clone();
+    let mut linked = 0usize;
+    locke_store::update_loop_manifest(repo, loop_id, |entries| {
+        // Upsert the task node (keyed by id).
+        if let Some(e) = entries.iter_mut().find(|e| !e.id.is_empty() && e.id == id_for_node) {
+            e.kind = "task".into();
+            e.title = Some(title_c);
+            e.requires = requires;
+            e.priority = priority;
+            e.note = note_c;
+            e.spec = Some(spec_ref);
+            e.status = "specced".into();
+            e.inc = true;
+            if e.origin.is_empty() {
+                e.origin = "model".into();
+            }
+        } else {
+            entries.push(locke_store::ManifestEntry {
+                id: id_for_node.clone(),
+                kind: "task".into(),
+                title: Some(title_c),
+                requires,
+                priority,
+                note: note_c,
+                spec: Some(spec_ref),
+                status: "specced".into(),
+                inc: true,
+                origin: "model".into(),
+                ..Default::default()
+            });
+        }
+        // Fan the `requires` edge across every in-scope file row the task blocks.
+        for e in entries.iter_mut() {
+            if e.kind == "task" {
+                continue;
+            }
+            let matches = blocks.iter().any(|b| b == &e.path || locke_store::glob_match(b, &e.path));
+            if matches && !e.requires.iter().any(|r| r == &id_for_node) {
+                e.requires.push(id_for_node.clone());
+                linked += 1;
+            }
+        }
+    })?;
+
+    Ok(json!({ "ok": true, "loopId": loop_id, "id": id, "title": title, "linked": linked }))
 }
 
 /// Up-to-two-letter uppercase initials for the comment badge, mirroring the UI's

@@ -330,6 +330,89 @@ pub fn write_loop_manifest(repo: String, loop_id: String, entries: Vec<store::Ma
     store::write_loop_manifest(&repo, &loop_id, &entries)
 }
 
+/// Add a human-authored task node to the loop's work graph (the UI mirror of the
+/// model's `loop_add_task`). Stamped `origin:"human"`. A spec is optional — when
+/// given the task is born `specced`; otherwise the build agent works from the title.
+#[tauri::command]
+pub fn add_loop_task(
+    repo: String,
+    loop_id: String,
+    id: String,
+    title: String,
+    spec: String,
+    requires: Vec<String>,
+    priority: i64,
+) -> Result<(), String> {
+    let has_spec = !spec.trim().is_empty();
+    let spec_ref = if has_spec {
+        store::write_loop_spec(&repo, &loop_id, &id, &spec)?;
+        Some(format!("spec/{}.md", store::sanitize_path(&id)))
+    } else {
+        None
+    };
+    store::update_loop_manifest(&repo, &loop_id, |entries| {
+        if let Some(e) = entries.iter_mut().find(|e| !e.id.is_empty() && e.id == id) {
+            e.kind = "task".into();
+            e.title = Some(title);
+            e.requires = requires;
+            e.priority = priority;
+            e.spec = spec_ref;
+            e.status = if has_spec { "specced".into() } else { "queued".into() };
+            e.inc = true;
+            e.origin = "human".into();
+        } else {
+            entries.push(store::ManifestEntry {
+                id,
+                kind: "task".into(),
+                title: Some(title),
+                requires,
+                priority,
+                spec: spec_ref,
+                status: if has_spec { "specced".into() } else { "queued".into() },
+                inc: true,
+                origin: "human".into(),
+                ..Default::default()
+            });
+        }
+    })
+}
+
+/// Remove a node (file or task) from the work graph by id-or-path, and drop any
+/// `requires` edges pointing at it so nothing is left blocked on a gone node.
+#[tauri::command]
+pub fn remove_loop_node(repo: String, loop_id: String, node: String) -> Result<(), String> {
+    store::update_loop_manifest(&repo, &loop_id, |entries| {
+        entries.retain(|e| e.id != node && e.path != node);
+        for e in entries.iter_mut() {
+            e.requires.retain(|r| r != &node);
+        }
+    })
+}
+
+/// Set a node's dependency edges / ordering (the UI mirror of the model's edits).
+/// `node` is a file path or a task id.
+#[tauri::command]
+pub fn set_loop_deps(
+    repo: String,
+    loop_id: String,
+    node: String,
+    requires: Vec<String>,
+    priority: Option<i64>,
+    wave: Option<u32>,
+) -> Result<(), String> {
+    store::update_loop_manifest(&repo, &loop_id, |entries| {
+        if let Some(e) = entries.iter_mut().find(|e| e.id == node || e.path == node) {
+            e.requires = requires;
+            if let Some(p) = priority {
+                e.priority = p;
+            }
+            if let Some(w) = wave {
+                e.wave = w;
+            }
+        }
+    })
+}
+
 // ---- per-PR comments (.locke/comments/<id>.json) ----
 
 #[tauri::command]
