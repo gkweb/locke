@@ -5,6 +5,7 @@ import type {
   DiffMode,
   FileNode,
   HistoryEntry,
+  InterviewMsg,
   Loop,
   LoopItem,
   LoopMode,
@@ -80,6 +81,9 @@ import {
   addLoopTask as addLoopTaskApi,
   removeLoopNode as removeLoopNodeApi,
   setLoopDeps as setLoopDepsApi,
+  answerLoopQuestion as answerLoopQuestionApi,
+  readLoopInterview as readLoopInterviewApi,
+  mergeLoopSpecEdit as mergeLoopSpecEditApi,
   saveLoopDraft as saveLoopDraftApi,
   readLoopDraft as readLoopDraftApi,
   deleteLoop as deleteLoopApi,
@@ -88,6 +92,7 @@ import {
   type LoopProgress,
   type LoopEventPayload,
   type LoopDonePayload,
+  type LoopInterviewEvent,
   type LoopItemRecord,
   isTauri,
   type CheckSpec,
@@ -138,6 +143,13 @@ const EMPTY_DETAIL: ReviewDetail = { prompt: "", summary: "", bullets: [], note:
  * run's event stream, pending plan, and lifecycle survive navigating away — and
  * several reviews can have runs in flight at once, each checked on independently.
  */
+/** One item's (or the scope's) live plan-interview: the running transcript plus the
+ *  open question, if the strategist is currently blocked awaiting an answer. */
+interface LoopInterviewThread {
+  transcript: InterviewMsg[];
+  pending?: { question: string; choices?: string[]; file?: string };
+}
+
 interface RunSurface {
   /** Streamed run events, oldest first. */
   events: RunEvent[];
@@ -304,6 +316,10 @@ interface LockeState {
   loopManifest: ManifestEntry[];
   /** The open plan loop's scope metadata (summary + assumptions) for the Scope tab. */
   loopPlanMeta: LoopPlanMeta | null;
+  /** Live plan interview, keyed by loopId then by raw item key (`__scope__` for the
+   *  Scope tab). Each entry is the running transcript plus the open question, if any —
+   *  so concurrent per-item interviews and the scope chat coexist. */
+  loopInterview: Record<string, Record<string, LoopInterviewThread>>;
   /** Loops with a live runner THIS session (set on start/resume, cleared on done).
    *  A planning loop that isn't here is stalled (e.g. Locke was restarted). */
   activeLoops: Record<string, boolean>;
@@ -508,14 +524,28 @@ interface LockeState {
   resolveLoopReview: (decision: "approve" | "request") => void;
   setSpecApproach: (id: string, approach: string) => void;
   toggleSpecStep: (id: string, k: string) => void;
+  /** Add a planned-edit step to one item's spec (rendered now, persisted on accept). */
+  addSpecStep: (id: string, text: string) => void;
+  /** Append a free-text instruction to one item's spec (persisted to its note + md). */
+  addSpecInstruction: (id: string, text: string) => void;
   acceptSpec: (id: string) => void;
   excludeSpec: (id: string) => void;
   /** Add a human-authored task node to the plan's work graph, then reload it. */
   addLoopTask: (task: { id: string; title: string; spec?: string; requires?: string[]; priority?: number }) => Promise<void>;
+  /** Spin off a prerequisite task from a blocked/review item: create the task and add
+   *  a `requires` edge from this item to it (the human's quick-add of what the model asked). */
+  addPrereqTask: (itemId: string, task: { id: string; title: string; spec?: string }) => Promise<void>;
   /** Remove a work-graph node (file or task) by id-or-path, then reload. */
   removeLoopNode: (node: string) => Promise<void>;
   /** Set a node's dependency edges / ordering, then reload. */
   setLoopDeps: (node: string, requires: string[], priority?: number) => Promise<void>;
+  /** Fold a live `loop:interview` question into the interview slice (+ Plan view). */
+  onLoopInterview: (e: LoopInterviewEvent) => void;
+  /** Answer an open interview question for `key` (raw item key or `__scope__`). */
+  answerLoopQuestion: (key: string, text: string) => Promise<void>;
+  /** Navigate to a loop's plan and the item/scope an interview question is about (the
+   *  Approvals-tray "Answer →" deep-link). */
+  openLoopQuestion: (loopId: string, key: string) => void;
   /** Load real loops from the backend (Tauri mode; no-op in mock). */
   loadLoops: () => Promise<void>;
   /** Load a loop's per-item records from the backend into `loopItems`. */
@@ -746,6 +776,7 @@ export const useStore = create<LockeState>((set, get) => ({
   specStatus: {},
   loopManifest: [],
   loopPlanMeta: null,
+  loopInterview: {},
   activeLoops: {},
   loopFeedback: [],
   loopItems: {},
@@ -1758,6 +1789,8 @@ export const useStore = create<LockeState>((set, get) => ({
     }
     set({ loopView: "monitor", loopReviewItem: null, loopFeedback: [] });
   },
+  // approach + step toggles tune the spec in-session (instant, restore-able); they're
+  // committed to the manifest when the creator accepts the spec (below).
   setSpecApproach: (id, approach) => set((s) => ({ specApproach: { ...s.specApproach, [id]: approach } })),
   toggleSpecStep: (id, k) =>
     set((s) => {
@@ -1767,11 +1800,37 @@ export const useStore = create<LockeState>((set, get) => ({
       cur[k] = !eff;
       return { specSteps: { ...s.specSteps, [id]: cur } };
     }),
+  // "Add a step" appends to the rendered spec now; it persists with the rest on accept.
+  addSpecStep: (id, text) =>
+    set((s) => ({
+      loopManifest: s.loopManifest.map((e) =>
+        (e.id ?? e.path) === id ? { ...e, steps: [...(e.steps ?? []), text] } : e,
+      ),
+    })),
+  // The per-item instruction changes what the build worker reads, so it persists
+  // immediately — appended to the row's note AND the per-item spec markdown.
+  addSpecInstruction: (id, text) => {
+    const body = text.trim();
+    if (!body) return;
+    const s = get();
+    const loopManifest = s.loopManifest.map((e) =>
+      (e.id ?? e.path) === id ? { ...e, note: e.note ? `${e.note}\n${body}` : body } : e,
+    );
+    set({ loopManifest });
+    if (!MOCK && s.repoPath && s.selectedLoop) void mergeLoopSpecEditApi(s.repoPath, s.selectedLoop, id, { instruction: body });
+  },
   // Accept/exclude mutate the persisted manifest (the build's source of truth) so
   // the creator's calls carry into the build: an excluded item drops out (inc=false).
+  // Accept also folds in the in-session approach override + pruned step toggles.
   acceptSpec: (id) => {
     const s = get();
-    const loopManifest = s.loopManifest.map((e) => ((e.id ?? e.path) === id ? { ...e, status: "specced", inc: true } : e));
+    const approachOverride = s.specApproach[id];
+    const toggles = s.specSteps[id];
+    const loopManifest = s.loopManifest.map((e) => {
+      if ((e.id ?? e.path) !== id) return e;
+      const steps = toggles ? (e.steps ?? []).filter((_, i) => toggles[String(i)] !== false) : e.steps;
+      return { ...e, status: "specced", inc: true, ...(approachOverride ? { approach: approachOverride } : {}), steps };
+    });
     set({ loopManifest, specStatus: { ...s.specStatus, [id]: "specced" } });
     if (!MOCK && s.repoPath && s.selectedLoop) void writeLoopManifestApi(s.repoPath, s.selectedLoop, loopManifest);
   },
@@ -1806,6 +1865,60 @@ export const useStore = create<LockeState>((set, get) => ({
     if (MOCK || !s.repoPath || !s.selectedLoop) return;
     await setLoopDepsApi(s.repoPath, s.selectedLoop, node, requires, priority);
     await get().loadLoopPlan(s.selectedLoop);
+  },
+  // Quick-add the prerequisite the model asked about: create the task, then gate this
+  // item on it (a `requires` edge), then reload so waves/ordering stay authoritative.
+  addPrereqTask: async (itemId, task) => {
+    const s = get();
+    if (MOCK || !s.repoPath || !s.selectedLoop) return;
+    await addLoopTaskApi(s.repoPath, s.selectedLoop, task);
+    const cur = s.loopManifest.find((e) => (e.id ?? e.path) === itemId);
+    const requires = [...(cur?.requires ?? []), task.id];
+    await setLoopDepsApi(s.repoPath, s.selectedLoop, itemId, requires, cur?.priority);
+    await get().loadLoopPlan(s.selectedLoop);
+  },
+
+  // A live `loop:interview` question: append the agent turn and open the question on
+  // its thread (keyed by raw item key; `__scope__` for the Scope tab).
+  onLoopInterview: (e) =>
+    set((s) => {
+      const loop = { ...(s.loopInterview[e.loopId] ?? {}) };
+      const thread = loop[e.key] ?? { transcript: [] };
+      // Don't double-append if the same question replays (live event + a reload).
+      const last = thread.transcript[thread.transcript.length - 1];
+      const transcript =
+        last && last.role === "agent" && last.text === e.question
+          ? thread.transcript
+          : [...thread.transcript, { role: "agent" as const, text: e.question }];
+      loop[e.key] = { transcript, pending: { question: e.question, choices: e.choices, file: e.file } };
+      return { loopInterview: { ...s.loopInterview, [e.loopId]: loop } };
+    }),
+  // Answer an open question: optimistically append the human turn and clear the
+  // pending question, then write the answer (the blocked strategist picks it up).
+  answerLoopQuestion: async (key, text) => {
+    const body = text.trim();
+    const s = get();
+    const loopId = s.selectedLoop;
+    if (!body || !loopId) return;
+    set((st) => {
+      const loop = { ...(st.loopInterview[loopId] ?? {}) };
+      const thread = loop[key] ?? { transcript: [] };
+      loop[key] = { transcript: [...thread.transcript, { role: "you", text: body }], pending: undefined };
+      return { loopInterview: { ...st.loopInterview, [loopId]: loop } };
+    });
+    if (!MOCK && s.repoPath) await answerLoopQuestionApi(s.repoPath, loopId, key, body);
+  },
+  openLoopQuestion: (loopId, key) => {
+    const isScope = key === "__scope__";
+    set({
+      view: "loops",
+      selectedLoop: loopId,
+      loopView: "plan",
+      planTab: isScope ? "scope" : "specs",
+      ...(isScope ? {} : { selectedSpec: key }),
+      approvalsOpen: false,
+    });
+    if (!MOCK) void get().loadLoopPlan(loopId);
   },
 
   loadLoops: async () => {
@@ -1845,14 +1958,25 @@ export const useStore = create<LockeState>((set, get) => ({
     const { repoPath } = get();
     if (MOCK || !repoPath) return;
     try {
-      const [manifest, meta] = await Promise.all([
+      const [manifest, meta, interview] = await Promise.all([
         readLoopManifestApi(repoPath, loopId),
         readLoopPlanMetaApi(repoPath, loopId),
+        readLoopInterviewApi(repoPath, loopId),
       ]);
       const inc = manifest.filter((e) => e.inc);
+      // Rebuild the interview slice from the durable transcript + pending questions so
+      // a reopened or stalled plan shows the open questions (keyed by raw item key).
+      const threads: Record<string, LoopInterviewThread> = {};
+      for (const m of interview.transcript) {
+        (threads[m.key] ??= { transcript: [] }).transcript.push({ role: m.role, text: m.text });
+      }
+      for (const [key, q] of Object.entries(interview.pending)) {
+        (threads[key] ??= { transcript: [] }).pending = { question: q.question, choices: q.choices, file: q.file };
+      }
       set((s) => ({
         loopManifest: inc,
         loopPlanMeta: meta,
+        loopInterview: { ...s.loopInterview, [loopId]: threads },
         selectedSpec: inc[0]?.id ?? inc[0]?.path ?? s.selectedSpec,
       }));
     } catch {

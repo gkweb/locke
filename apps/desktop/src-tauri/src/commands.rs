@@ -413,6 +413,66 @@ pub fn set_loop_deps(
     })
 }
 
+// ---- plan interview (.locke/loops/<id>/interview/) ----
+
+/// Record the human's answer to a live plan-interview question. `key` is the raw item
+/// key (file path or task id) the question was about, or `__scope__` for a scope-level
+/// one. The blocked MCP `loop_ask` (polling the filesystem) picks the answer up by its
+/// nonce and returns it to the strategist, which then continues speccing.
+#[tauri::command]
+pub fn answer_loop_question(repo: String, loop_id: String, key: String, text: String) -> Result<(), String> {
+    store::write_loop_answer(&repo, &loop_id, &key, &text)
+}
+
+/// The interview transcript + any still-pending questions for a loop, so a reopened or
+/// stalled plan shows the open questions across all items and the Scope tab.
+#[tauri::command]
+pub fn read_loop_interview(repo: String, loop_id: String) -> Result<Value, String> {
+    store::read_interview(&repo, &loop_id)
+}
+
+/// Merge per-spec edits the creator makes in the Plan view into a manifest row (the
+/// UI mirror of the strategist's `loop_write_spec` fields): the chosen `approach`, the
+/// edited `steps`, and a per-item `instruction` appended to the row's `note`. When an
+/// instruction is given it is also appended to the per-item `spec/<key>.md` so the
+/// later build worker (which reads the spec via `loop_read_spec`) sees it. `file` is
+/// the item key (file path or task id).
+#[tauri::command]
+pub fn merge_loop_spec_edit(
+    repo: String,
+    loop_id: String,
+    file: String,
+    approach: Option<String>,
+    steps: Option<Vec<String>>,
+    instruction: Option<String>,
+) -> Result<(), String> {
+    let instr = instruction.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    // Match by id-or-path so task specs work too; only edit an existing row.
+    store::update_loop_manifest(&repo, &loop_id, |entries| {
+        if let Some(e) = entries.iter_mut().find(|e| e.id == file || e.path == file) {
+            if let Some(a) = approach {
+                e.approach = Some(a);
+            }
+            if let Some(s) = steps {
+                e.steps = s;
+            }
+            if let Some(instr) = instr {
+                e.note = Some(match e.note.take() {
+                    Some(n) if !n.trim().is_empty() => format!("{n}\n{instr}"),
+                    _ => instr.to_string(),
+                });
+            }
+        }
+    })?;
+    // Surface the instruction to the build worker by appending it to the spec md.
+    if let Some(instr) = instr {
+        let prior = store::read_loop_spec(&repo, &loop_id, &file)?.unwrap_or_default();
+        let next = format!("{prior}\n\n## Creator instruction\n\n{instr}\n");
+        store::write_loop_spec(&repo, &loop_id, &file, &next)?;
+    }
+    Ok(())
+}
+
 // ---- per-PR comments (.locke/comments/<id>.json) ----
 
 #[tauri::command]

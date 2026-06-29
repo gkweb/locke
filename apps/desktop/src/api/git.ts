@@ -384,6 +384,25 @@ export interface LoopDonePayload {
   state: string;
 }
 
+/** A live plan-interview question the strategist raised via `loop_ask` (`loop:interview`).
+ *  The agent is blocked awaiting the answer. `key` is the raw item key (file path or
+ *  task id), or `__scope__` for a scope-level question. */
+export interface LoopInterviewEvent {
+  loopId: string;
+  key: string;
+  file?: string;
+  question: string;
+  choices?: string[];
+  t: string;
+}
+
+/** The persisted interview for a loop (transcript + still-pending questions), read on
+ *  (re)load so a reopened/stalled plan shows its open questions. */
+export interface LoopInterviewState {
+  transcript: { key: string; role: "agent" | "you"; text: string; file?: string; ts?: string }[];
+  pending: Record<string, { question: string; choices?: string[]; file?: string; nonce?: string; ts?: string }>;
+}
+
 /** A persisted per-item record (`.locke/loops/<id>/items/<path>.json`). */
 export interface LoopItemRecord {
   id?: string;
@@ -504,6 +523,37 @@ export const addLoopTask = (
 /** Remove a work-graph node (file or task) by id-or-path. No-op in mock mode. */
 export const removeLoopNode = (repo: string, loopId: string, node: string): Promise<void> =>
   isTauri ? invoke<void>("remove_loop_node", { repo, loopId, node }) : Promise.resolve();
+
+/** Answer a live plan-interview question. `key` is the raw item key (file path / task
+ *  id) the question was about, or `__scope__` for a scope-level one. The blocked
+ *  strategist picks the answer up and continues. No-op in mock mode. */
+export const answerLoopQuestion = (repo: string, loopId: string, key: string, text: string): Promise<void> =>
+  isTauri ? invoke<void>("answer_loop_question", { repo, loopId, key, text }) : Promise.resolve();
+
+/** Read a loop's interview (transcript + pending questions). Empty in mock mode. */
+export const readLoopInterview = (repo: string, loopId: string): Promise<LoopInterviewState> =>
+  isTauri
+    ? invoke<LoopInterviewState>("read_loop_interview", { repo, loopId })
+    : Promise.resolve({ transcript: [], pending: {} });
+
+/** Persist the creator's per-spec edits (approach / steps / a per-item instruction) into
+ *  a manifest row; an instruction is also appended to the per-item spec md. No-op in mock. */
+export const mergeLoopSpecEdit = (
+  repo: string,
+  loopId: string,
+  file: string,
+  edit: { approach?: string; steps?: string[]; instruction?: string },
+): Promise<void> =>
+  isTauri
+    ? invoke<void>("merge_loop_spec_edit", {
+        repo,
+        loopId,
+        file,
+        approach: edit.approach ?? null,
+        steps: edit.steps ?? null,
+        instruction: edit.instruction ?? null,
+      })
+    : Promise.resolve();
 
 /** Set a node's dependency edges / ordering (id-or-path). No-op in mock mode. */
 export const setLoopDeps = (

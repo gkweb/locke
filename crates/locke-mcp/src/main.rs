@@ -292,6 +292,20 @@ fn tools_list() -> Value {
                 },
                 "required": ["loop_id", "plan"]
             }
+        },
+        {
+            "name": "loop_ask",
+            "description": "Plan mode (strategist): ask the human ONE clarifying question and BLOCK until they answer, then continue. Use this whenever a decision would materially change the plan or a spec — prefer asking over guessing. Ask one focused question at a time; after each answer you may ask the next. For a question about a specific item, pass `file` (the item key from your task prompt) so it surfaces on that item; omit `file` for a scope-level question. Returns the human's answer as text. If no answer arrives in time it returns a note telling you to proceed with best judgment — only then fall back to loop_write_spec(needs_review=true). You may also call loop_add_task mid-conversation to spin off a prerequisite the human confirms.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "loop_id": { "type": "string", "description": "The loop id (given in your task prompt)." },
+                    "question": { "type": "string", "description": "The single, focused question for the human. Be concrete; reference the file/decision at stake." },
+                    "choices": { "type": "array", "items": { "type": "string" }, "description": "Optional suggested answers, shown as one-click chips. The human may still type their own." },
+                    "file": { "type": "string", "description": "Optional: the item key (repo-relative file path or task id from your task prompt) this question is about. Omit for a scope-level question." }
+                },
+                "required": ["loop_id", "question"]
+            }
         }
     ]})
 }
@@ -321,6 +335,7 @@ fn handle_tools_call(msg: &Value, id: Option<Value>, repo: Option<&str>, agent: 
         "loop_write_spec" => tool_loop_write_spec(repo, &args),
         "loop_write_plan" => tool_loop_write_plan(repo, &args),
         "loop_add_task" => tool_loop_add_task(repo, &args),
+        "loop_ask" => tool_loop_ask(repo, &args),
         other => Err(format!("unknown tool: {other}")),
     };
 
@@ -641,6 +656,68 @@ fn tool_loop_add_task(repo: &str, args: &Value) -> Result<Value, String> {
     })?;
 
     Ok(json!({ "ok": true, "loopId": loop_id, "id": id, "title": title, "linked": linked }))
+}
+
+/// Max strategist questions per loop before the interview is capped — a blocked
+/// plan pass can't loop forever. Past this, `loop_ask` returns the proceed note.
+const INTERVIEW_TURN_CAP: usize = 6;
+/// Backstop wait for a human answer. No idle timeout kills the agent (the runner's
+/// watchdog only SIGKILLs on loop-stop/item-cancel), so this bounds a never-answered
+/// question instead of blocking the agent forever.
+const INTERVIEW_TIMEOUT_SECS: u64 = 20 * 60;
+const INTERVIEW_POLL_MS: u64 = 500;
+
+/// Plan mode: ask the human one question and BLOCK (polling the filesystem) until
+/// they answer, then return the answer text. The agent is naturally alive the whole
+/// time (mid-tool-call), so this needs no kept-open stdin or process plumbing — it
+/// works identically for the one-shot scope agent and every per-item spec agent.
+fn tool_loop_ask(repo: &str, args: &Value) -> Result<Value, String> {
+    let loop_id = arg_str(args, "loop_id")?;
+    let question = arg_str(args, "question")?;
+    let choices = arg_str_vec(args, "choices");
+    let file = args.get("file").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+    let key = locke_store::interview_key(file);
+
+    // Cap the interview so a plan pass can't ask forever — past the cap, tell the
+    // agent to proceed (it will spec with its best judgment / needs_review).
+    if locke_store::interview_agent_turns(repo, loop_id)? >= INTERVIEW_TURN_CAP {
+        return Ok(json!({
+            "answer": format!(
+                "Interview turn cap reached ({INTERVIEW_TURN_CAP} questions). Proceed with your best judgment; \
+                 if a decision is still genuinely unresolved, call loop_write_spec with needs_review=true and a note."
+            ),
+            "capped": true,
+        }));
+    }
+
+    // Post the question (durable record + transcript), then poll for the answer.
+    let nonce = locke_store::write_loop_question(repo, loop_id, &key, question, &choices, file)?;
+    locke_store::append_interview_msg(repo, loop_id, &key, "agent", question, file)?;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(INTERVIEW_TIMEOUT_SECS);
+    loop {
+        if let Some(a) = locke_store::read_loop_answer(repo, loop_id, &key)? {
+            // Only accept an answer to THIS question (guards against a stale answer
+            // under a since-replaced key).
+            if a.get("nonce").and_then(|v| v.as_str()) == Some(nonce.as_str()) {
+                let text = a.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                locke_store::append_interview_msg(repo, loop_id, &key, "you", &text, None)?;
+                locke_store::clear_loop_question(repo, loop_id, &key)?;
+                return Ok(json!({ "answer": text }));
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            // Never answered — unblock the agent with a fallback note and clear the
+            // pending question so it doesn't linger in the Plan view.
+            locke_store::clear_loop_question(repo, loop_id, &key)?;
+            return Ok(json!({
+                "answer": "No answer received in time. Proceed with your best judgment; if a decision is still \
+                           genuinely unresolved, call loop_write_spec with needs_review=true and a note.",
+                "timedOut": true,
+            }));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(INTERVIEW_POLL_MS));
+    }
 }
 
 /// Up-to-two-letter uppercase initials for the comment badge, mirroring the UI's

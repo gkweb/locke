@@ -42,6 +42,107 @@ function avatarStyle(who: "agent" | "you"): React.CSSProperties {
   };
 }
 
+/** One chat bubble in an interview thread. */
+function Bubble({ role, text }: { role: "agent" | "you"; text: string }) {
+  return (
+    <div style={{ display: "flex", gap: 11 }}>
+      <span style={avatarStyle(role)}>{role === "agent" ? "CL" : "YO"}</span>
+      <div
+        style={{
+          flex: 1,
+          minWidth: 0,
+          borderRadius: 12,
+          padding: "12px 14px",
+          background: role === "agent" ? color.panelBg : "#12101c",
+          border: `1px solid ${role === "agent" ? color.borderRail : "#241f33"}`,
+        }}
+      >
+        <div style={{ fontSize: 13, lineHeight: 1.55, color: color.textSoft }}>{text}</div>
+      </div>
+    </div>
+  );
+}
+
+interface IThread {
+  transcript: { role: "agent" | "you"; text: string }[];
+  pending?: { question: string; choices?: string[]; file?: string };
+}
+
+/** A live interview: the transcript, the open question (with clickable choice chips),
+ *  and a reply box. Used for both the scope-level and per-item conversations. `onAnswer`
+ *  posts the human's reply (the blocked strategist picks it up and continues). */
+function InterviewThread({ thread, onAnswer }: { thread?: IThread; onAnswer: (text: string) => void }) {
+  const [draft, setDraft] = useState("");
+  const pending = thread?.pending;
+  const send = (text: string) => {
+    const t = text.trim();
+    if (!t) return;
+    onAnswer(t);
+    setDraft("");
+  };
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {(thread?.transcript ?? []).map((m, i) => (
+        <Bubble key={i} role={m.role} text={m.text} />
+      ))}
+      {pending && (
+        <div style={{ display: "flex", gap: 11 }}>
+          <span style={avatarStyle("agent")}>CL</span>
+          <div style={{ flex: 1, minWidth: 0, borderRadius: 12, padding: "13px 15px", background: color.panelBg, border: `1px solid ${tint(color.teal, "57")}` }}>
+            <div style={{ fontSize: 13, lineHeight: 1.55, color: color.text, marginBottom: pending.choices?.length ? 12 : 0 }}>{pending.question}</div>
+            {!!pending.choices?.length && (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {pending.choices.map((c) => (
+                  <button
+                    key={c}
+                    onClick={() => send(c)}
+                    style={{
+                      padding: "6px 13px",
+                      background: tint(color.teal, "1a"),
+                      border: `1px solid ${tint(color.teal, "57")}`,
+                      borderRadius: 20,
+                      color: color.teal,
+                      fontFamily: font.sans,
+                      fontSize: 12,
+                      fontWeight: 500,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {c}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+      {/* reply box — shown only while a question is open (a reply with nothing pending
+          has no consumer: the blocked strategist is what picks the answer up). */}
+      {pending && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, height: 42, padding: "0 6px 0 15px", background: color.popoverBg, border: `1px solid ${tint(color.teal, "57")}`, borderRadius: 11 }}>
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") send(draft);
+            }}
+            placeholder="Answer, or type your own…"
+            autoFocus
+            style={{ flex: 1, background: "transparent", border: "none", outline: "none", color: color.text, fontFamily: font.sans, fontSize: 12.5 }}
+          />
+          <button
+            onClick={() => send(draft)}
+            disabled={!draft.trim()}
+            style={{ width: 30, height: 30, flex: "none", display: "flex", alignItems: "center", justifyContent: "center", background: color.violet, borderRadius: 8, color: "#fff", border: "none", cursor: draft.trim() ? "pointer" : "default", opacity: draft.trim() ? 1 : 0.5 }}
+          >
+            <SendIcon size={14} color="#fff" stroke={1.8} />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PlanScope() {
   const setPlanTab = useStore((s) => s.setPlanTab);
   const approveLoopPlan = useStore((s) => s.approveLoopPlan);
@@ -49,6 +150,8 @@ function PlanScope() {
   const planMeta = useStore((s) => s.loopPlanMeta);
   const manifest = useStore((s) => s.loopManifest);
   const selectedLoop = useStore((s) => s.selectedLoop);
+  const scopeThread = useStore((s) => (selectedLoop ? s.loopInterview[selectedLoop]?.__scope__ : undefined));
+  const answerLoopQuestion = useStore((s) => s.answerLoopQuestion);
   const active = useStore((s) => (selectedLoop ? !!s.activeLoops[selectedLoop] : false));
   const specCount = useStore((s) => (s.loops.find((l) => l.id === s.selectedLoop)?.total ?? 318));
   const railWidth = useStore((s) => s.planRailWidth);
@@ -94,74 +197,26 @@ function PlanScope() {
               {isTauri ? "SCOPE" : "SCOPE INTERVIEW"}
             </div>
             {isTauri ? (
-              <div style={{ display: "flex", gap: 11 }}>
-                <span style={avatarStyle("agent")}>CL</span>
-                <div style={{ flex: 1, minWidth: 0, borderRadius: 12, padding: "12px 14px", background: color.panelBg, border: `1px solid ${color.borderRail}` }}>
-                  <div style={{ fontSize: 13, lineHeight: 1.55, color: color.textSoft }}>
-                    {planning
-                      ? "Reading the codebase and drafting a plan across the set — assumptions and the dry-run spec will appear on the right as I go."
-                      : "I drafted a plan across the set. Review the dry-run spec and assumptions on the right, tune any per-item spec, then approve to start the build."}
-                  </div>
-                </div>
-              </div>
+              <>
+                {/* The strategist's opener; the live Q&A (if any) follows. */}
+                <Bubble
+                  role="agent"
+                  text={
+                    planning
+                      ? "Reading the codebase and drafting a plan across the set — assumptions and the dry-run spec will appear on the right as I go. I'll ask here if I need a decision."
+                      : "I drafted a plan across the set. Review the dry-run spec and assumptions on the right, tune any per-item spec, then approve to start the build."
+                  }
+                />
+                <InterviewThread thread={scopeThread} onAnswer={(t) => answerLoopQuestion("__scope__", t)} />
+              </>
             ) : (
-              MOCK_LOOP_INTERVIEW.map((m, i) => (
-              <div key={i} style={{ display: "flex", gap: 11 }}>
-                <span style={avatarStyle(m.role)}>{m.role === "agent" ? "CL" : "YO"}</span>
-                <div
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    borderRadius: 12,
-                    padding: "12px 14px",
-                    background: m.role === "agent" ? color.panelBg : "#12101c",
-                    border: `1px solid ${m.role === "agent" ? color.borderRail : "#241f33"}`,
-                  }}
-                >
-                  <div style={{ fontSize: 13, lineHeight: 1.55, color: color.textSoft }}>{m.text}</div>
-                </div>
-              </div>
-            ))
+              <>
+                {MOCK_LOOP_INTERVIEW.map((m, i) => (
+                  <Bubble key={i} role={m.role} text={m.text} />
+                ))}
+                <InterviewThread thread={{ transcript: [], pending: { question: MOCK_LOOP_PENDING_Q, choices: MOCK_LOOP_PENDING_CHIPS } }} onAnswer={() => {}} />
+              </>
             )}
-            {/* pending question — mock-only (the interactive interview is a later phase) */}
-            {!isTauri && (
-              <div style={{ display: "flex", gap: 11 }}>
-                <span style={avatarStyle("agent")}>CL</span>
-                <div style={{ flex: 1, minWidth: 0, borderRadius: 12, padding: "13px 15px", background: color.panelBg, border: `1px solid ${tint(color.teal, "57")}` }}>
-                  <div style={{ fontSize: 13, lineHeight: 1.55, color: color.text, marginBottom: 12 }}>{MOCK_LOOP_PENDING_Q}</div>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    {MOCK_LOOP_PENDING_CHIPS.map((c) => (
-                      <span
-                        key={c}
-                        style={{
-                          padding: "6px 13px",
-                          background: tint(color.teal, "1a"),
-                          border: `1px solid ${tint(color.teal, "57")}`,
-                          borderRadius: 20,
-                          color: color.teal,
-                          fontFamily: font.sans,
-                          fontSize: 12,
-                          fontWeight: 500,
-                        }}
-                      >
-                        {c}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-        {/* reply box — interactive interview is a later phase; disabled in Tauri */}
-        <div style={{ flex: "none", padding: "14px 26px", borderTop: `1px solid ${color.borderSubtle}`, background: color.titlebarBg }}>
-          <div style={{ maxWidth: 680, margin: "0 auto", display: "flex", alignItems: "center", gap: 10, height: 42, padding: "0 6px 0 15px", background: color.popoverBg, border: `1px solid ${color.borderRow}`, borderRadius: 11, opacity: isTauri ? 0.5 : 1 }}>
-            <span style={{ flex: 1, fontSize: 12.5, color: color.textGhost }}>
-              {isTauri ? "Replying to refine the plan is coming soon — tune per-item specs for now." : "Reply, or add a constraint of your own…"}
-            </span>
-            <span style={{ width: 30, height: 30, flex: "none", display: "flex", alignItems: "center", justifyContent: "center", background: color.violet, borderRadius: 8, color: "#fff" }}>
-              <SendIcon size={14} color="#fff" stroke={1.8} />
-            </span>
           </div>
         </div>
       </div>
@@ -268,11 +323,21 @@ function PlanSpecs() {
   const selectSpec = useStore((s) => s.selectSpec);
   const setSpecApproach = useStore((s) => s.setSpecApproach);
   const toggleSpecStep = useStore((s) => s.toggleSpecStep);
+  const addSpecStep = useStore((s) => s.addSpecStep);
+  const addSpecInstruction = useStore((s) => s.addSpecInstruction);
+  const answerLoopQuestion = useStore((s) => s.answerLoopQuestion);
+  const addPrereqTask = useStore((s) => s.addPrereqTask);
   const acceptSpec = useStore((s) => s.acceptSpec);
   const excludeSpec = useStore((s) => s.excludeSpec);
   const approveLoopPlan = useStore((s) => s.approveLoopPlan);
   const loopManifest = useStore((s) => s.loopManifest);
   const selectedLoop = useStore((s) => s.selectedLoop);
+  const loopInterview = useStore((s) => (selectedLoop ? s.loopInterview[selectedLoop] : undefined));
+  // Per-item editors: a step to add, an instruction to append, a prereq task to spin off.
+  const [stepDraft, setStepDraft] = useState("");
+  const [instrDraft, setInstrDraft] = useState("");
+  const [prereqOpen, setPrereqOpen] = useState(false);
+  const [prereqTitle, setPrereqTitle] = useState("");
   // Select an existing ref or undefined — NEVER a fresh `[]` inside the selector, or
   // zustand v5 re-renders forever (and crashes the view). Default outside.
   const liveItems = useStore((s) => (selectedLoop ? s.loopItems[selectedLoop] : undefined));
@@ -298,6 +363,17 @@ function PlanSpecs() {
     );
   }
   const approach = specApproach[sel.id] ?? sel.approach;
+  const itemThread = loopInterview?.[sel.id];
+  // A blocked/review item is where a prereq is most useful (the model asked for one).
+  const canPrereq = isTauri && (effStatus(sel) === "review" || effStatus(sel) === "queued");
+  const slug = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "task";
+  const submitPrereq = async () => {
+    const title = prereqTitle.trim();
+    if (!title) return;
+    await addPrereqTask(sel.id, { id: slug(title), title });
+    setPrereqTitle("");
+    setPrereqOpen(false);
+  };
 
   const approachBtn = (key: string, title: string, sub: string, accent: string) => {
     const active = approach === key;
@@ -512,21 +588,122 @@ function PlanSpecs() {
                 </button>
               );
             })}
-            <button style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "10px 13px", border: `1px dashed ${color.borderChip2}`, borderRadius: 10, background: "transparent", color: color.textFainter, fontFamily: font.sans, fontSize: 12, cursor: "pointer" }}>
-              <PlusIcon size={13} stroke={1.6} />
-              Add a step for this item
-            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "4px 6px 4px 13px", border: `1px dashed ${color.borderChip2}`, borderRadius: 10, background: "transparent" }}>
+              <PlusIcon size={13} stroke={1.6} color={color.textFainter} />
+              <input
+                value={stepDraft}
+                onChange={(e) => setStepDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && stepDraft.trim()) {
+                    addSpecStep(sel.id, stepDraft.trim());
+                    setStepDraft("");
+                  }
+                }}
+                placeholder="Add a step for this item…"
+                style={{ flex: 1, background: "transparent", border: "none", outline: "none", color: color.textSoft, fontFamily: font.sans, fontSize: 12, padding: "6px 0" }}
+              />
+              <button
+                onClick={() => {
+                  if (stepDraft.trim()) {
+                    addSpecStep(sel.id, stepDraft.trim());
+                    setStepDraft("");
+                  }
+                }}
+                disabled={!stepDraft.trim()}
+                style={{ padding: "5px 11px", border: "none", borderRadius: 7, background: stepDraft.trim() ? tint(color.violet, "33") : "transparent", color: stepDraft.trim() ? color.violetLight : color.textGhost, fontFamily: font.sans, fontSize: 11.5, fontWeight: 600, cursor: stepDraft.trim() ? "pointer" : "default" }}
+              >
+                Add
+              </button>
+            </div>
           </div>
+
+          {/* Interview — the strategist's open questions for THIS item (and the thread
+              so far). A "Needs your call" item is the entry point into this Q&A. */}
+          {isTauri && (itemThread?.pending || (itemThread?.transcript.length ?? 0) > 0) && (
+            <>
+              <div style={{ ...microLabel, marginBottom: 9, color: itemThread?.pending ? color.teal : color.textGhost }}>
+                {itemThread?.pending ? "THE STRATEGIST NEEDS YOUR CALL" : "INTERVIEW"}
+              </div>
+              <div style={{ maxWidth: 640, marginBottom: 22 }}>
+                <InterviewThread thread={itemThread} onAnswer={(t) => answerLoopQuestion(sel.id, t)} />
+              </div>
+            </>
+          )}
+
+          {/* Quick-add the prerequisite the model asked about — wires this item to wait
+              on a new task in the work graph. */}
+          {canPrereq && (
+            <div style={{ marginBottom: 22 }}>
+              {!prereqOpen ? (
+                <button
+                  onClick={() => setPrereqOpen(true)}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "7px 12px", border: `1px dashed ${tint(color.violet, "66")}`, borderRadius: 8, background: "transparent", color: color.violetLight, fontFamily: font.sans, fontSize: 11.5, fontWeight: 600, cursor: "pointer" }}
+                >
+                  <PlusIcon size={13} stroke={1.6} />
+                  Add a prerequisite task
+                </button>
+              ) : (
+                <div style={{ maxWidth: 640, display: "flex", alignItems: "center", gap: 8, padding: "4px 6px 4px 13px", border: `1px solid ${tint(color.violet, "66")}`, borderRadius: 10, background: FIELD }}>
+                  <input
+                    value={prereqTitle}
+                    onChange={(e) => setPrereqTitle(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void submitPrereq();
+                      if (e.key === "Escape") {
+                        setPrereqOpen(false);
+                        setPrereqTitle("");
+                      }
+                    }}
+                    placeholder="New task this item should wait on, e.g. “Add the Tailwind config”"
+                    autoFocus
+                    style={{ flex: 1, background: "transparent", border: "none", outline: "none", color: color.textSoft, fontFamily: font.sans, fontSize: 12, padding: "7px 0" }}
+                  />
+                  <button
+                    onClick={() => void submitPrereq()}
+                    disabled={!prereqTitle.trim()}
+                    style={{ padding: "6px 12px", border: "none", borderRadius: 7, background: prereqTitle.trim() ? color.violet : "transparent", color: prereqTitle.trim() ? "#fff" : color.textGhost, fontFamily: font.sans, fontSize: 11.5, fontWeight: 600, cursor: prereqTitle.trim() ? "pointer" : "default" }}
+                  >
+                    Add &amp; gate
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
           <div style={{ ...microLabel, marginBottom: 9 }}>PER-ITEM INSTRUCTION</div>
           <div style={{ maxWidth: 640, border: `1px solid ${color.borderRow}`, borderRadius: 10, background: FIELD, padding: "12px 13px", marginBottom: 22 }}>
             {sel.note && (
               <div style={{ display: "flex", gap: 8, marginBottom: 10, paddingBottom: 10, borderBottom: `1px solid ${color.borderRail2}` }}>
                 <InfoIcon size={13} color={color.amber} stroke={1.6} style={{ flex: "none", marginTop: 2 }} />
-                <span style={{ fontSize: 12, color: "#caa46a", lineHeight: 1.55 }}>{sel.note}</span>
+                <span style={{ fontSize: 12, color: "#caa46a", lineHeight: 1.55, whiteSpace: "pre-wrap" }}>{sel.note}</span>
               </div>
             )}
-            <span style={{ fontSize: 12, color: color.textGhost }}>Add an instruction just for this item…</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input
+                value={instrDraft}
+                onChange={(e) => setInstrDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && instrDraft.trim()) {
+                    addSpecInstruction(sel.id, instrDraft.trim());
+                    setInstrDraft("");
+                  }
+                }}
+                placeholder="Add an instruction just for this item…"
+                style={{ flex: 1, background: "transparent", border: "none", outline: "none", color: color.textSoft, fontFamily: font.sans, fontSize: 12 }}
+              />
+              <button
+                onClick={() => {
+                  if (instrDraft.trim()) {
+                    addSpecInstruction(sel.id, instrDraft.trim());
+                    setInstrDraft("");
+                  }
+                }}
+                disabled={!instrDraft.trim()}
+                style={{ padding: "5px 11px", border: "none", borderRadius: 7, background: instrDraft.trim() ? tint(color.violet, "33") : "transparent", color: instrDraft.trim() ? color.violetLight : color.textGhost, fontFamily: font.sans, fontSize: 11.5, fontWeight: 600, cursor: instrDraft.trim() ? "pointer" : "default" }}
+              >
+                Add
+              </button>
+            </div>
           </div>
 
           <div style={{ ...microLabel, marginBottom: 9 }}>TESTS THAT MUST PASS</div>

@@ -709,6 +709,175 @@ pub fn write_loop_plan_meta(repo: &str, id: &str, meta: &Value) -> R<()> {
     write_json(&loop_dir(repo, id).join("plan.json"), meta)
 }
 
+// ---- plan interview (.locke/loops/<id>/interview/) ----
+//
+// A live, multi-turn Q&A between the Plan-mode strategist and the human. When the
+// strategist needs a decision before it can finish a spec it calls the `loop_ask`
+// MCP tool, which BLOCKS (polling the filesystem) until the human answers. The
+// per-key `.q`/`.a` files are the wire; `transcript.json` is the durable,
+// append-only record the Plan view replays on reload.
+//
+//   interview/<key>.q.json     pending question { nonce, question, choices, file?, ts }
+//   interview/<key>.a.json     the human's answer { nonce, text }
+//   interview/transcript.json  append-only [{ key, role, text, file?, ts }]
+//
+// `<key>` is `sanitize_path(file)` for a per-item question, or the reserved
+// `__scope__` for a scope-level one (`file` absent). Per-item and scope interviews
+// coexist (one `.q.json` per key), so a blocked item doesn't hide the scope chat.
+
+fn loop_interview_dir(repo: &str, id: &str) -> PathBuf {
+    loop_dir(repo, id).join("interview")
+}
+
+/// The RAW interview key for a question: the item's repo-relative path / task id, or
+/// the reserved `__scope__` for a scope-level question (`file` absent or empty). This
+/// is the key the live event, the transcript rows, and the front-end all share — the
+/// `.q`/`.a` files sanitize it for the filename (`interview_stem`), but every API here
+/// takes the raw key so callers don't have to agree on a sanitizer.
+pub fn interview_key(file: Option<&str>) -> String {
+    match file {
+        Some(f) if !f.is_empty() => f.to_string(),
+        _ => "__scope__".to_string(),
+    }
+}
+
+/// Filesystem-safe stem for an interview key's `.q`/`.a` files (paths → `__`-joined).
+fn interview_stem(key: &str) -> String {
+    if key == "__scope__" {
+        key.to_string()
+    } else {
+        sanitize_path(key)
+    }
+}
+
+fn interview_q_path(repo: &str, id: &str, key: &str) -> PathBuf {
+    loop_interview_dir(repo, id).join(format!("{}.q.json", interview_stem(key)))
+}
+
+fn interview_a_path(repo: &str, id: &str, key: &str) -> PathBuf {
+    loop_interview_dir(repo, id).join(format!("{}.a.json", interview_stem(key)))
+}
+
+fn interview_transcript_path(repo: &str, id: &str) -> PathBuf {
+    loop_interview_dir(repo, id).join("transcript.json")
+}
+
+/// A fresh nonce pairing a question with its answer. Nanosecond clock + pid is
+/// unique enough that a stale answer (to a since-replaced question under the same
+/// key) never satisfies the blocked poller.
+fn fresh_nonce() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    format!("{}-{}", nanos, std::process::id())
+}
+
+/// Write the pending question for `key` (overwriting any prior), returning its
+/// nonce. The blocked `loop_ask` then polls `read_loop_answer` for a matching nonce.
+pub fn write_loop_question(
+    repo: &str,
+    id: &str,
+    key: &str,
+    question: &str,
+    choices: &[String],
+    file: Option<&str>,
+) -> R<String> {
+    ensure_locke(repo)?;
+    let nonce = fresh_nonce();
+    let q = json!({
+        "nonce": nonce,
+        "question": question,
+        "choices": choices,
+        "file": file,
+        "ts": now_iso(),
+    });
+    write_json(&interview_q_path(repo, id, key), &q)?;
+    Ok(nonce)
+}
+
+/// The pending question for `key`, if any (`{ nonce, question, choices, file?, ts }`).
+pub fn read_loop_question(repo: &str, id: &str, key: &str) -> R<Option<Value>> {
+    read_json(&interview_q_path(repo, id, key))
+}
+
+/// Drop the `.q`/`.a` pair for `key` (called once the agent has consumed the answer).
+pub fn clear_loop_question(repo: &str, id: &str, key: &str) -> R<()> {
+    for p in [interview_q_path(repo, id, key), interview_a_path(repo, id, key)] {
+        if p.exists() {
+            fs::remove_file(&p).map_err(|e| format!("clear interview file: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Record the human's answer for `key`, stamped with the pending question's nonce so
+/// the blocked `loop_ask` only unblocks on an answer to the question it actually
+/// asked (a no-op if there is no pending question).
+pub fn write_loop_answer(repo: &str, id: &str, key: &str, text: &str) -> R<()> {
+    ensure_locke(repo)?;
+    let nonce = read_loop_question(repo, id, key)?
+        .and_then(|q| q.get("nonce").and_then(|v| v.as_str()).map(String::from))
+        .unwrap_or_default();
+    write_json(&interview_a_path(repo, id, key), &json!({ "nonce": nonce, "text": text }))
+}
+
+/// The recorded answer for `key`, if any (`{ nonce, text }`).
+pub fn read_loop_answer(repo: &str, id: &str, key: &str) -> R<Option<Value>> {
+    read_json(&interview_a_path(repo, id, key))
+}
+
+/// Append one turn to the durable interview transcript (under the repo lock so the
+/// agent's `loop_ask` and the desktop's optimistic append don't clobber each other).
+pub fn append_interview_msg(repo: &str, id: &str, key: &str, role: &str, text: &str, file: Option<&str>) -> R<()> {
+    ensure_locke(repo)?;
+    let _lock = lock_repo(repo)?;
+    let path = interview_transcript_path(repo, id);
+    let mut log: Vec<Value> = match read_json(&path)? {
+        Some(v) => serde_json::from_value(v).map_err(|e| format!("parse transcript: {e}"))?,
+        None => Vec::new(),
+    };
+    log.push(json!({ "key": key, "role": role, "text": text, "file": file, "ts": now_iso() }));
+    write_json(&path, &serde_json::to_value(&log).map_err(|e| format!("serialize transcript: {e}"))?)
+}
+
+/// How many `agent`-role turns the transcript holds — the strategist's question
+/// count, which the `loop_ask` turn cap is enforced against.
+pub fn interview_agent_turns(repo: &str, id: &str) -> R<usize> {
+    let log: Vec<Value> = match read_json(&interview_transcript_path(repo, id))? {
+        Some(v) => serde_json::from_value(v).map_err(|e| format!("parse transcript: {e}"))?,
+        None => Vec::new(),
+    };
+    Ok(log.iter().filter(|m| m.get("role").and_then(|v| v.as_str()) == Some("agent")).count())
+}
+
+/// The whole interview for the Plan view on (re)load: the transcript plus every
+/// still-pending question keyed by interview key (so a reopened/stalled plan shows
+/// the open questions across all items and scope).
+pub fn read_interview(repo: &str, id: &str) -> R<Value> {
+    let transcript: Vec<Value> = match read_json(&interview_transcript_path(repo, id))? {
+        Some(v) => serde_json::from_value(v).map_err(|e| format!("parse transcript: {e}"))?,
+        None => Vec::new(),
+    };
+    // Key pending questions by the RAW item key (the q.json's `file`, or `__scope__`
+    // when absent) — not the sanitized filename stem — so a reloaded plan keys an
+    // open question the same way the live `loop:interview` event does (the front-end
+    // matches it to a spec by its raw id).
+    let mut pending = serde_json::Map::new();
+    let dir = loop_interview_dir(repo, id);
+    if dir.exists() {
+        for entry in fs::read_dir(&dir).map_err(|e| format!("read interview dir: {e}"))? {
+            let entry = entry.map_err(|e| format!("read interview entry: {e}"))?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.ends_with(".q.json") {
+                if let Some(q) = read_json(&entry.path())? {
+                    let key = q.get("file").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("__scope__");
+                    pending.insert(key.to_string(), q);
+                }
+            }
+        }
+    }
+    Ok(json!({ "transcript": transcript, "pending": pending }))
+}
+
 // ---- target+spec manifest (.locke/loops/<id>/manifest.json) ----
 
 /// One row of a loop's manifest: a target file plus (once Plan mode runs) its
@@ -1049,6 +1218,70 @@ mod tests {
         assert_eq!(a.approach.as_deref(), Some("refactor"));
         assert_eq!(a.loc, 10, "existing fields preserved through merge");
         assert!(m.iter().any(|e| e.path == "src/c.js" && e.inc));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn interview_question_answer_round_trip() {
+        let dir = tmp("interview");
+        let repo = dir.to_str().unwrap();
+
+        // No pending question, empty transcript to start.
+        let iv = read_interview(repo, "lp1").unwrap();
+        assert!(iv["transcript"].as_array().unwrap().is_empty());
+        assert!(iv["pending"].as_object().unwrap().is_empty());
+
+        // The interview key is the RAW item path; scope uses `__scope__`. (The
+        // `.q`/`.a` files sanitize it for the filename — `src__Button.vue.q.json`.)
+        let key = interview_key(Some("src/Button.vue"));
+        assert_eq!(key, "src/Button.vue");
+        assert_eq!(interview_key(None), "__scope__");
+
+        let nonce = write_loop_question(repo, "lp1", &key, "Which filename?", &["a".into(), "b".into()], Some("src/Button.vue")).unwrap();
+        append_interview_msg(repo, "lp1", &key, "agent", "Which filename?", Some("src/Button.vue")).unwrap();
+
+        // The pending question surfaces for the Plan view, keyed by the RAW item key
+        // (the q.json's `file`) so it matches the live event and the spec id.
+        let iv = read_interview(repo, "lp1").unwrap();
+        let pending = iv["pending"].as_object().unwrap();
+        assert_eq!(pending["src/Button.vue"]["question"], "Which filename?");
+        assert_eq!(pending["src/Button.vue"]["nonce"].as_str().unwrap(), nonce);
+        assert_eq!(iv["transcript"].as_array().unwrap().len(), 1);
+
+        // The human's answer is stamped with the pending nonce (so a stale answer
+        // can't satisfy a since-replaced question).
+        assert!(read_loop_answer(repo, "lp1", &key).unwrap().is_none());
+        write_loop_answer(repo, "lp1", &key, "Button.vue").unwrap();
+        let a = read_loop_answer(repo, "lp1", &key).unwrap().unwrap();
+        assert_eq!(a["text"], "Button.vue");
+        assert_eq!(a["nonce"].as_str().unwrap(), nonce);
+
+        // The agent consumes it: append the human turn, clear the pair.
+        append_interview_msg(repo, "lp1", &key, "you", "Button.vue", None).unwrap();
+        clear_loop_question(repo, "lp1", &key).unwrap();
+        assert!(read_loop_question(repo, "lp1", &key).unwrap().is_none());
+        assert!(read_loop_answer(repo, "lp1", &key).unwrap().is_none());
+
+        // Transcript survives the clear; pending is empty again.
+        let iv = read_interview(repo, "lp1").unwrap();
+        assert_eq!(iv["transcript"].as_array().unwrap().len(), 2);
+        assert!(iv["pending"].as_object().unwrap().is_empty());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn interview_agent_turn_count_drives_cap() {
+        let dir = tmp("interview-cap");
+        let repo = dir.to_str().unwrap();
+
+        assert_eq!(interview_agent_turns(repo, "lp1").unwrap(), 0);
+        append_interview_msg(repo, "lp1", "__scope__", "agent", "q1", None).unwrap();
+        append_interview_msg(repo, "lp1", "__scope__", "you", "a1", None).unwrap();
+        append_interview_msg(repo, "lp1", "__scope__", "agent", "q2", None).unwrap();
+        // Only agent turns count toward the per-loop question cap.
+        assert_eq!(interview_agent_turns(repo, "lp1").unwrap(), 2);
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -109,6 +109,23 @@ struct DonePayload {
     state: String,
 }
 
+/// A live plan-interview question the strategist raised via `loop_ask` (the agent is
+/// now blocked in the MCP tool, waiting for the human's answer). Keyed by the raw
+/// item key (file path or task id), or `__scope__` for a scope-level question, so the
+/// Plan view routes it to the right spec / the Scope tab.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct InterviewPayload {
+    loop_id: String,
+    key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file: Option<String>,
+    question: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    choices: Vec<String>,
+    t: String,
+}
+
 /// App-managed registry of in-flight loops, keyed by loopId.
 #[derive(Default)]
 pub struct LoopRegistry(pub Mutex<HashMap<String, LoopHandle>>);
@@ -180,6 +197,7 @@ struct Scheduler {
 
 /// What a worker needs to run an item, copied out so the scheduler lock is released
 /// during the (long) agent run.
+#[derive(Clone)]
 struct Picked {
     i: usize,
     id: String,
@@ -661,9 +679,13 @@ fn protocol_footer(phase: Phase, loop_id: &str, key: &str, target: &str, is_task
              - The build worker must make these checks pass: {tests}.\n\
              - Write your plan by calling `loop_write_spec` with loop_id=\"{loop_id}\", file=\"{key}\", a markdown \
              `spec` (objective + concrete edits + how to verify), and optional `approach`/`detected`/`steps`/`tests`/`note`.\n\
-             - If a human must decide before this item can be built, call `loop_write_spec` with needs_review=true and a \
-             `note` explaining the decision — do not guess.\n\
-             - Call `loop_write_spec` exactly once; do not edit or commit anything."
+             - If a human decision is needed before you can finish this spec, ASK: call `loop_ask` with loop_id=\"{loop_id}\", \
+             file=\"{key}\", a single focused `question` (optional `choices`), and wait for the answer — then ask the next \
+             question if needed and continue. Prefer asking over guessing. You may also call `loop_add_task` mid-conversation \
+             to spin off a prerequisite the human confirms.\n\
+             - Only if the human doesn't answer (you'll get a note saying so) should you fall back to \
+             `loop_write_spec` with needs_review=true and a `note` explaining the open decision.\n\
+             - Call `loop_write_spec` exactly once when the spec is complete; do not edit or commit anything."
         );
     }
     let scope = if is_task {
@@ -829,6 +851,52 @@ fn emit_stream(ctx: &Ctx, st: &str, path: &str, text: &str) {
     );
 }
 
+/// Per-item handshake between an agent thread and its pool worker: set true when the
+/// agent enters a human interview, so the worker releases its slot (the agent then
+/// finishes off-pool). The MCP `loop_ask` writes the durable `interview/` record; this
+/// only drives the desktop's live event + slot release.
+type InterviewSignal = Arc<(Mutex<bool>, Condvar)>;
+
+/// Surface a `loop_ask` tool call as a live `loop:interview` event (the durable
+/// question file is written by the MCP server). `default_key` is the item key for a
+/// per-item agent (the question is about that item unless the agent overrode `file`).
+fn surface_interview(ctx: &Ctx, default_key: Option<&str>, input: &Value) {
+    let question = input.get("question").and_then(|v| v.as_str()).unwrap_or("");
+    if question.is_empty() {
+        return;
+    }
+    let choices: Vec<String> = input
+        .get("choices")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let file = input
+        .get("file")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .or_else(|| default_key.map(String::from));
+    let key = file.clone().unwrap_or_else(|| "__scope__".to_string());
+    let _ = ctx.app.emit(
+        "loop:interview",
+        InterviewPayload {
+            loop_id: ctx.loop_id.clone(),
+            key,
+            file,
+            question: question.to_string(),
+            choices,
+            t: now_clock(),
+        },
+    );
+}
+
+/// Flag the item as interviewing and wake its pool worker so it releases the slot.
+fn signal_interviewing(sig: &InterviewSignal) {
+    let (lock, cvar) = &**sig;
+    *lock.lock().unwrap() = true;
+    cvar.notify_all();
+}
+
 // ---- the per-item worker ----
 
 enum Outcome {
@@ -847,8 +915,45 @@ fn process_item(ctx: &Arc<Ctx>, p: &Picked) {
     emit_item(ctx, &p.id, &p.key, ctx.phase.in_flight(), Some(start_line.into()), Some(2), p.wave, p.priority, vec![]);
     emit_progress(ctx);
 
-    let outcome = run_one(ctx, p).unwrap_or_else(Outcome::Failed);
+    // Run the item on its own thread. If its agent enters a human interview (blocks on
+    // `loop_ask`), it sets `interviewing` and we release this pool worker so other
+    // items keep speccing — the agent then runs to completion off-pool on this thread,
+    // doing its own `finish_item`. Without an interview the worker just joins, so
+    // throughput (and ordering) is unchanged from the no-question path.
+    let interviewing: InterviewSignal = Arc::new((Mutex::new(false), Condvar::new()));
+    let handle = {
+        let ctx = ctx.clone();
+        let p = p.clone();
+        let sig = interviewing.clone();
+        std::thread::spawn(move || {
+            let outcome = run_one(&ctx, &p, &sig).unwrap_or_else(Outcome::Failed);
+            finish_item(&ctx, &p, outcome);
+            // Wake the worker if it's still waiting (item finished without interviewing).
+            let (lock, cvar) = &*sig;
+            let _g = lock.lock().unwrap();
+            cvar.notify_all();
+        })
+    };
 
+    // Hold the pool slot until the item finishes OR begins an interview.
+    let (lock, cvar) = &*interviewing;
+    let mut guard = lock.lock().unwrap();
+    while !*guard && !handle.is_finished() {
+        let (g, _) = cvar.wait_timeout(guard, Duration::from_millis(200)).unwrap();
+        guard = g;
+    }
+    let detached = *guard;
+    drop(guard);
+    if !detached {
+        let _ = handle.join();
+    }
+    // If detached, the spawned thread owns the rest of the item (and its finish_item).
+}
+
+/// Settle one item's terminal status: record it, mark the work-graph node, wake parked
+/// workers (a `Done` may have unblocked dependents), and emit. Runs on the pool worker
+/// for a normal item, or on the detached agent thread for one that interviewed.
+fn finish_item(ctx: &Arc<Ctx>, p: &Picked, outcome: Outcome) {
     // The scheduler marks Done/Review/Failed identically in both phases (a specced
     // item satisfies a dependent just as a built one does); only the *emitted*
     // status string differs so the Plan view reads it as a SpecStatus.
@@ -890,7 +995,7 @@ fn process_item(ctx: &Arc<Ctx>, p: &Picked) {
 }
 
 /// The heavy lifting for one item: worktree → agent → checks → commit/route.
-fn run_one(ctx: &Arc<Ctx>, p: &Picked) -> R<Outcome> {
+fn run_one(ctx: &Arc<Ctx>, p: &Picked, interviewing: &InterviewSignal) -> R<Outcome> {
     let file = &p.key;
     let seed_tip = git_out(&ctx.seed, &["rev-parse", "HEAD"])?;
     let wt = std::env::temp_dir()
@@ -911,7 +1016,7 @@ fn run_one(ctx: &Arc<Ctx>, p: &Picked) -> R<Outcome> {
 
     let result = (|| -> R<Outcome> {
         // Run the agent (auto mode, unattended) in the item worktree.
-        run_agent_stream(ctx, &p.id, p, &wt)?;
+        run_agent_stream(ctx, &p.id, p, &wt, interviewing)?;
         // An individual cancel takes precedence over a whole-loop stop in the message.
         if ctx.is_cancelled(file) {
             return Ok(Outcome::Cancelled);
@@ -1009,7 +1114,7 @@ fn capture_patch(ctx: &Ctx, file: &str, wt: &str) {
 /// routine approvals; any escalation that still reaches us is allowed (the worktree
 /// is isolated and the run is explicitly unattended — the checks/review/spec gates
 /// are the safety net). Returns when the process exits.
-fn stream_claude<F: FnMut(&str, &str)>(ctx: &Arc<Ctx>, wt: &str, prompt: &str, cancel_key: &str, mut on_block: F) -> R<()> {
+fn stream_claude<F: FnMut(&str, &str, &Value)>(ctx: &Arc<Ctx>, wt: &str, prompt: &str, cancel_key: &str, mut on_block: F) -> R<()> {
     let exe = crate::actions::resolve_agent_path("claude");
     let mut child = Command::new(&exe)
         .args([
@@ -1082,11 +1187,12 @@ fn stream_claude<F: FnMut(&str, &str)>(ctx: &Arc<Ctx>, wt: &str, prompt: &str, c
                             Some("text") => {
                                 let t = b.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
                                 if !t.is_empty() {
-                                    on_block("text", t);
+                                    on_block("text", t, &Value::Null);
                                 }
                             }
                             Some("tool_use") => {
-                                on_block("tool", b.get("name").and_then(|v| v.as_str()).unwrap_or(""));
+                                let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                                on_block("tool", name, b.get("input").unwrap_or(&Value::Null));
                             }
                             _ => {}
                         }
@@ -1115,12 +1221,21 @@ fn stream_claude<F: FnMut(&str, &str)>(ctx: &Arc<Ctx>, wt: &str, prompt: &str, c
 }
 
 /// Run one item's agent (build edit or plan spec), streaming progress to the UI.
-fn run_agent_stream(ctx: &Arc<Ctx>, item_id: &str, p: &Picked, wt: &str) -> R<()> {
+fn run_agent_stream(ctx: &Arc<Ctx>, item_id: &str, p: &Picked, wt: &str, interviewing: &InterviewSignal) -> R<()> {
     let prompt = render_prompt(ctx, &p.key, &p.target, p.is_task);
     let mut steps = 0u32;
-    stream_claude(ctx, wt, &prompt, &p.key, |kind, payload| match kind {
+    stream_claude(ctx, wt, &prompt, &p.key, |kind, payload, input| match kind {
         "text" => emit_item(ctx, item_id, &p.key, ctx.phase.in_flight(), Some(payload.chars().take(80).collect()), None, p.wave, p.priority, vec![]),
         "tool" => {
+            // A live interview: surface the question and release this pool slot so
+            // other items keep speccing while the human answers (the agent blocks in
+            // the MCP `loop_ask` tool meanwhile, then continues here off-pool).
+            if payload == "loop_ask" {
+                surface_interview(ctx, Some(&p.key), input);
+                signal_interviewing(interviewing);
+                emit_item(ctx, item_id, &p.key, ctx.phase.in_flight(), Some("waiting on your answer…".into()), None, p.wave, p.priority, vec![]);
+                return;
+            }
             // Build progress tracks edits; plan progress tracks reads/analysis.
             let verb = match (ctx.phase, payload) {
                 (Phase::Build, "Edit" | "Write" | "MultiEdit") => Some("editing"),
@@ -1162,6 +1277,10 @@ fn run_scope_agent(ctx: &Arc<Ctx>, file_count: u64) {
          depend on it wait until it's done; use `requires` to order tasks among themselves). Decide the run order \
          yourself — you own the orchestration; the human will review the work graph before the build runs, so propose \
          the structure you think is right rather than asking.\n\n\
+         If a decision would materially change the plan (scope, naming, which approach to standardise on), ASK the \
+         human ONE question at a time by calling `loop_ask` (loop_id=\"{id}\", a single focused `question`, optional \
+         `choices`), wait for the answer, then continue — prefer asking over guessing. Leave `file` empty here so the \
+         question shows on the Scope tab.\n\n\
          The build workers must make these checks pass: {tests}. Do NOT edit any file — analysis only. Call \
          `loop_write_plan` exactly once; call `loop_add_task` once per task (or not at all if no extra tasks are \
          needed).",
@@ -1171,9 +1290,13 @@ fn run_scope_agent(ctx: &Arc<Ctx>, file_count: u64) {
         tests = tests,
     );
     emit_stream(ctx, "running", "plan", "drafting the loop plan…");
-    let _ = stream_claude(ctx, &ctx.seed, &prompt, "", |kind, payload| {
+    let _ = stream_claude(ctx, &ctx.seed, &prompt, "", |kind, payload, input| {
         if kind == "text" {
             emit_stream(ctx, "running", "plan", &payload.chars().take(80).collect::<String>());
+        } else if kind == "tool" && payload == "loop_ask" {
+            // Scope-level question — surface it on the Scope tab. The scope pass runs
+            // sequentially in the coordinator, so it simply blocks until answered.
+            surface_interview(ctx, None, input);
         }
     });
     emit_stream(ctx, "done", "plan", "plan ready");

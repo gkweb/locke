@@ -11,6 +11,7 @@ import {
   type LoopProgress,
   type LoopEventPayload,
   type LoopDonePayload,
+  type LoopInterviewEvent,
 } from "./api/git.js";
 import { color, font } from "./theme/tokens.js";
 import { ActionBar } from "./components/ActionBar.js";
@@ -111,6 +112,7 @@ export function App() {
       listen<LoopProgress>("loop:progress", (e) => s.onLoopProgress(e.payload)),
       listen<LoopEventPayload>("loop:event", (e) => s.onLoopEvent(e.payload)),
       listen<LoopDonePayload>("loop:done", (e) => s.onLoopDone(e.payload)),
+      listen<LoopInterviewEvent>("loop:interview", (e) => s.onLoopInterview(e.payload)),
       // A second `locke <path>` launch is forwarded here by the single-instance
       // plugin — switch the open window to that repo.
       listen<string>("cli:open-repo", (e) => void useStore.getState().openRepo(e.payload)),
