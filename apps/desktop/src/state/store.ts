@@ -254,6 +254,8 @@ interface LockeState {
   /** "Files changed" rail (diff tab) visibility + width (clamped 240–560). */
   filesRailOpen: boolean;
   filesRailWidth: number;
+  /** Plan view's dry-run spec rail width (clamped 300–760). */
+  planRailWidth: number;
   /** Action-bar approvals tray open. */
   approvalsOpen: boolean;
   /** Global search query (action bar + side panel). */
@@ -449,6 +451,7 @@ interface LockeState {
   setPanelWidth: (w: number) => void;
   toggleFilesRail: () => void;
   setFilesRailWidth: (w: number) => void;
+  setPlanRailWidth: (w: number) => void;
   toggleApprovals: () => void;
   setQuery: (q: string) => void;
   /** Set where a nav destination is surfaced (top / bottom / off). */
@@ -710,6 +713,7 @@ export const useStore = create<LockeState>((set, get) => ({
   panelWidth: 300,
   filesRailOpen: true,
   filesRailWidth: 240,
+  planRailWidth: 360,
   approvalsOpen: false,
   query: "",
   agentMode: true,
@@ -1415,6 +1419,7 @@ export const useStore = create<LockeState>((set, get) => ({
   setPanelWidth: (w) => set({ panelWidth: Math.max(240, Math.min(560, Math.round(w))) }),
   toggleFilesRail: () => set({ filesRailOpen: !get().filesRailOpen }),
   setFilesRailWidth: (w) => set({ filesRailWidth: Math.max(240, Math.min(560, Math.round(w))) }),
+  setPlanRailWidth: (w) => set({ planRailWidth: Math.max(300, Math.min(760, Math.round(w))) }),
   toggleApprovals: () => set({ approvalsOpen: !get().approvalsOpen, settingsOpen: false }),
   setQuery: (q) => set({ query: q }),
   setNavPlace: (key, place) => set((s) => ({ navPlace: { ...s.navPlace, [key]: place } })),

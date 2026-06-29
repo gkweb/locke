@@ -50,6 +50,22 @@ function PlanScope() {
   const selectedLoop = useStore((s) => s.selectedLoop);
   const active = useStore((s) => (selectedLoop ? !!s.activeLoops[selectedLoop] : false));
   const specCount = useStore((s) => (s.loops.find((l) => l.id === s.selectedLoop)?.total ?? 318));
+  const railWidth = useStore((s) => s.planRailWidth);
+  const setRailWidth = useStore((s) => s.setPlanRailWidth);
+
+  // Drag-resize: the rail is right-docked, so a leftward drag widens it.
+  const startResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = railWidth;
+    const onMove = (ev: MouseEvent) => setRailWidth(startWidth + (startX - ev.clientX));
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
 
   // Real plan data comes from the strategist's scope pass; plain-vite keeps the
   // scripted mock. The interactive interview is a later phase, so in Tauri the
@@ -149,8 +165,13 @@ function PlanScope() {
         </div>
       </div>
 
-      {/* dry-run spec rail */}
-      <div style={{ width: 340, flex: "none", borderLeft: `1px solid ${color.borderSubtle}`, background: color.sidebarBg, display: "flex", flexDirection: "column", minHeight: 0 }}>
+      {/* dry-run spec rail (drag the left edge to resize) */}
+      <div style={{ position: "relative", width: railWidth, flex: "none", borderLeft: `1px solid ${color.borderSubtle}`, background: color.sidebarBg, display: "flex", flexDirection: "column", minHeight: 0 }}>
+        <span
+          onMouseDown={startResize}
+          title="Drag to resize"
+          style={{ position: "absolute", top: 0, bottom: 0, left: -3, width: 7, cursor: "col-resize", zIndex: 6 }}
+        />
         <div style={{ flex: 1, overflowY: "auto", padding: "18px 17px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
             <span style={sectionLabel}>DRY-RUN SPEC</span>
@@ -193,10 +214,16 @@ function PlanScope() {
           {summary.map((sp, i) => (
             <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 9, padding: "9px 0", borderBottom: `1px solid ${color.borderRowFaint3}` }}>
               <span style={{ width: 6, height: 6, borderRadius: "50%", flex: "none", marginTop: 5, background: sp.pend ? color.amber : color.teal }} />
-              <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: color.textSoft, lineHeight: 1.4 }}>{sp.label}</span>
-              <span style={{ fontSize: 10.5, fontFamily: font.mono, flex: "none", textAlign: "right", color: sp.pend ? color.amber : color.textFaint }}>
-                {sp.detail}
-              </span>
+              {/* Stack label + detail and wrap both — strategist details are free text
+                  (sometimes long/monospace), so a fixed two-column row overlaps. */}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, color: color.textSoft, lineHeight: 1.4, overflowWrap: "anywhere" }}>{sp.label}</div>
+                {sp.detail && (
+                  <div style={{ marginTop: 3, fontSize: 10.5, fontFamily: font.mono, lineHeight: 1.45, color: sp.pend ? color.amber : color.textFaint, overflowWrap: "anywhere" }}>
+                    {sp.detail}
+                  </div>
+                )}
+              </div>
             </div>
           ))}
           {assumptions.length > 0 && <div style={{ ...microLabel, margin: "20px 0 10px" }}>ASSUMPTIONS</div>}
