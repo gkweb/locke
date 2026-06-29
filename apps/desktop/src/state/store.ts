@@ -521,7 +521,7 @@ interface LockeState {
   /** Back from the item review to the monitor. */
   loopReviewBack: () => void;
   /** Resolve the item review (approve or re-queue) → back to the monitor. */
-  resolveLoopReview: (decision: "approve" | "request") => void;
+  resolveLoopReview: (decision: "approve" | "request", feedback?: string) => void;
   setSpecApproach: (id: string, approach: string) => void;
   toggleSpecStep: (id: string, k: string) => void;
   /** Add a planned-edit step to one item's spec (rendered now, persisted on accept). */
@@ -1779,12 +1779,15 @@ export const useStore = create<LockeState>((set, get) => ({
   },
   openLoopReview: (itemId) => set({ loopView: "review", loopReviewItem: itemId }),
   loopReviewBack: () => set({ loopView: "monitor", loopReviewItem: null }),
-  resolveLoopReview: (decision) => {
+  resolveLoopReview: (decision, feedback) => {
     const s = get();
+    // The review composer passes its text directly; fall back to any session-collected
+    // feedback for callers that don't (kept for compatibility).
+    const note = (feedback ?? s.loopFeedback.join("\n")).trim();
     if (!MOCK && s.selectedLoop && s.repoPath) {
       const file = (s.loopItems[s.selectedLoop] ?? []).find((i) => i.id === s.loopReviewItem)?.path;
       if (file) {
-        void resolveLoopItemApi(s.repoPath, s.selectedLoop, file, decision === "approve" ? "approve" : "request", s.loopFeedback.join("\n"));
+        void resolveLoopItemApi(s.repoPath, s.selectedLoop, file, decision === "approve" ? "approve" : "request", note);
       }
     }
     set({ loopView: "monitor", loopReviewItem: null, loopFeedback: [] });

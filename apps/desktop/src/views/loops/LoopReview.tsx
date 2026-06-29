@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { LoopDiffLine } from "@locke/core";
 import { useStore } from "../../state/store.js";
 import { isTauri } from "../../api/git.js";
@@ -18,6 +19,7 @@ export function LoopReview() {
   const loopReviewItem = useStore((s) => s.loopReviewItem);
   const loopReviewBack = useStore((s) => s.loopReviewBack);
   const resolveLoopReview = useStore((s) => s.resolveLoopReview);
+  const [feedback, setFeedback] = useState("");
 
   const storeItems = useStore((s) => (selectedLoop ? s.loopItems[selectedLoop] : undefined));
   const storeRecords = useStore((s) => (selectedLoop ? s.loopItemRecords[selectedLoop] : undefined));
@@ -74,7 +76,7 @@ export function LoopReview() {
           </span>
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 9 }}>
             <HoverButton
-              onClick={() => resolveLoopReview("request")}
+              onClick={() => resolveLoopReview("request", feedback)}
               style={{ display: "flex", alignItems: "center", gap: 7, padding: "9px 14px", background: "transparent", border: `1px solid ${tint(color.red, "4d")}`, borderRadius: 9, color: color.red, fontFamily: font.sans, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
               hoverStyle={{ background: tint(color.red, "16") }}
             >
@@ -176,11 +178,30 @@ export function LoopReview() {
             </div>
           </div>
           <div style={{ flex: "none", padding: "13px 16px", borderTop: `1px solid ${color.borderRowFaint2}` }}>
-            <div style={{ border: `1px solid ${color.borderRow}`, borderRadius: 10, background: color.popoverBg, padding: "11px 12px", marginBottom: 10 }}>
-              <span style={{ fontSize: 12, color: color.textGhost }}>Add feedback — Locke will fold it into the re-queued run…</span>
-            </div>
+            <textarea
+              value={feedback}
+              onChange={(e) => setFeedback(e.target.value)}
+              placeholder="Add feedback — Locke will fold it into the re-queued run…"
+              rows={3}
+              style={{
+                width: "100%",
+                boxSizing: "border-box",
+                resize: "vertical",
+                minHeight: 64,
+                border: `1px solid ${color.borderRow}`,
+                borderRadius: 10,
+                background: color.popoverBg,
+                padding: "11px 12px",
+                marginBottom: 10,
+                color: color.textSoft,
+                fontFamily: font.sans,
+                fontSize: 12,
+                lineHeight: 1.5,
+                outline: "none",
+              }}
+            />
             <HoverButton
-              onClick={() => resolveLoopReview("request")}
+              onClick={() => resolveLoopReview("request", feedback)}
               style={{ width: "100%", padding: 9, background: tint(color.amber, "1f"), border: `1px solid ${tint(color.amber, "66")}`, borderRadius: 9, color: color.amber, fontFamily: font.sans, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
               hoverStyle={{ background: tint(color.amber, "33") }}
             >
