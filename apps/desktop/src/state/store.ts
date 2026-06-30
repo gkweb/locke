@@ -1747,6 +1747,9 @@ export const useStore = create<LockeState>((set, get) => ({
       blocked: 0,
       rate: "—",
       elapsed: plan ? "planning" : "0m 0s",
+      // Carry the seed prompt onto the optimistic placeholder so the Plan view's Scope
+      // tab can show it immediately, before the first read_loops refresh from disk.
+      template: s.draftPrompt,
     };
     set((st) => ({
       loops: [placeholder, ...st.loops.filter((l) => l.id !== loopId)],

@@ -42,8 +42,9 @@ function avatarStyle(who: "agent" | "you"): React.CSSProperties {
   };
 }
 
-/** One chat bubble in an interview thread. */
-function Bubble({ role, text }: { role: "agent" | "you"; text: string }) {
+/** One chat bubble in an interview thread. `pre` keeps the text's own line breaks
+ *  (used for the verbatim seed prompt). */
+function Bubble({ role, text, pre }: { role: "agent" | "you"; text: string; pre?: boolean }) {
   return (
     <div style={{ display: "flex", gap: 11 }}>
       <span style={avatarStyle(role)}>{role === "agent" ? "CL" : "YO"}</span>
@@ -57,7 +58,9 @@ function Bubble({ role, text }: { role: "agent" | "you"; text: string }) {
           border: `1px solid ${role === "agent" ? color.borderRail : "#241f33"}`,
         }}
       >
-        <div style={{ fontSize: 13, lineHeight: 1.55, color: color.textSoft }}>{text}</div>
+        <div style={{ fontSize: 13, lineHeight: 1.55, color: color.textSoft, whiteSpace: pre ? "pre-wrap" : "normal", overflowWrap: "anywhere" }}>
+          {text}
+        </div>
       </div>
     </div>
   );
@@ -150,6 +153,13 @@ function PlanScope() {
   const planMeta = useStore((s) => s.loopPlanMeta);
   const manifest = useStore((s) => s.loopManifest);
   const selectedLoop = useStore((s) => s.selectedLoop);
+  // The creator's seed task prompt — shown at the top of the thread so the Scope tab
+  // isn't blank while the strategist drafts. Prefer the loop record's persisted
+  // template (survives reload); fall back to the live draft for the just-started run.
+  const seedPrompt = useStore((s) => {
+    const lp = s.loops.find((l) => l.id === s.selectedLoop);
+    return (lp?.template ?? s.draftPrompt ?? "").trim();
+  });
   const scopeThread = useStore((s) => (selectedLoop ? s.loopInterview[selectedLoop]?.__scope__ : undefined));
   const answerLoopQuestion = useStore((s) => s.answerLoopQuestion);
   const active = useStore((s) => (selectedLoop ? !!s.activeLoops[selectedLoop] : false));
@@ -200,6 +210,9 @@ function PlanScope() {
             </div>
             {isTauri ? (
               <>
+                {/* The seed prompt the loop was created with — gives the thread content
+                    to show while the strategist is still drafting. */}
+                {seedPrompt && <Bubble role="you" text={seedPrompt} pre />}
                 {/* The strategist's opener; the live Q&A (if any) follows. */}
                 <Bubble
                   role="agent"

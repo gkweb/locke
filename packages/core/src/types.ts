@@ -232,6 +232,9 @@ export interface Loop {
   /** The review (pull) opened for this loop's output, once one exists (0/undefined =
    *  none). Lets a finished loop deep-link back to its review. */
   pullId?: number;
+  /** The creator's seed task prompt (the per-item template). Surfaced in the Plan
+   *  view so the Scope tab shows what was asked while the strategist drafts. */
+  template?: string;
 }
 
 /** One file a loop iterates over (board cards, stream rows, grid focus). */
