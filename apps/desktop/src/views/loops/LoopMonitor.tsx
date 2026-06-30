@@ -1,4 +1,6 @@
+import { useEffect, useState } from "react";
 import type { Loop, LoopItem, LoopItemState, LoopStreamEvent } from "@locke/core";
+import type { LoopTrailEntry } from "../../api/git.js";
 import { useStore } from "../../state/store.js";
 import { isTauri } from "../../api/git.js";
 import { color, font, tint, agentKind, agentAccent } from "../../theme/tokens.js";
@@ -17,6 +19,9 @@ import {
   StreamIcon,
   GridIcon,
   FolderTreeIcon,
+  SearchIcon,
+  ActivityIcon,
+  RefreshIcon,
 } from "../../components/icons.js";
 import { HoverButton } from "../../components/primitives.js";
 
@@ -49,18 +54,21 @@ function itemLine(it: LoopItem): { text: string; color: string } {
   return { text: "queued", color: "#7b8494" };
 }
 
-function ItemCard({ it, paused }: { it: LoopItem; paused: boolean }) {
+function ItemCard({ it, paused, selected }: { it: LoopItem; paused: boolean; selected?: boolean }) {
   const col = itemStateColor[it.status];
   const line = itemLine(it);
   const openLoopReview = useStore((s) => s.openLoopReview);
+  const openInspect = useStore((s) => s.openInspect);
   return (
     <div
+      onClick={() => openInspect(it.id)}
       style={{
-        border: `1px solid ${color.borderRow}`,
+        border: `1px solid ${selected ? tint(col, "88") : color.borderRow}`,
         borderLeft: `2px solid ${col}`,
         borderRadius: 10,
-        background: color.panelBg,
+        background: selected ? tint(col, "12") : color.panelBg,
         padding: "11px 12px",
+        cursor: "pointer",
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 7 }}>
@@ -110,7 +118,10 @@ function ItemCard({ it, paused }: { it: LoopItem; paused: boolean }) {
       )}
       {it.status === "review" && (
         <HoverButton
-          onClick={() => openLoopReview(it.id)}
+          onClick={(e) => {
+            e.stopPropagation();
+            openLoopReview(it.id);
+          }}
           style={{
             marginTop: 9,
             width: "100%",
@@ -146,6 +157,7 @@ function LayoutToggle() {
     { key: "waves" as const, label: "Waves", Icon: FolderTreeIcon },
     { key: "stream" as const, label: "Stream", Icon: StreamIcon },
     { key: "grid" as const, label: "Grid", Icon: GridIcon },
+    { key: "inspect" as const, label: "Inspect", Icon: SearchIcon },
   ];
   return (
     <div
@@ -384,6 +396,220 @@ function WavesLayout({ paused, items }: { paused: boolean; items: LoopItem[] }) 
   );
 }
 
+// An item is "stalled" when it's running but no tool/text/stream event has landed in
+// this long — purely a visual cue (no auto-kill); the human decides whether to act.
+const STALL_MS = 90_000;
+
+// Re-render every `ms` so live elapsed clocks tick and stall state re-evaluates.
+function useNow(ms: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), ms);
+    return () => clearInterval(t);
+  }, [ms]);
+  return now;
+}
+
+// Compact elapsed, e.g. "0:42", "12:07", "1:03:18".
+function fmtElapsed(fromMs: number, now: number): string {
+  const s = Math.max(0, Math.floor((now - fromMs) / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}` : `${m}:${String(ss).padStart(2, "0")}`;
+}
+
+// Master/detail drill-in: pick an item on the left, inspect its live action, real
+// elapsed, stall state and full tool trail on the right. Reachable from any layout
+// (clicking a card) and via the layout toggle; the back-chevron restores the layout
+// it was opened from so nothing is lost.
+function InspectLayout({ loopId, items, paused }: { loopId: string; items: LoopItem[]; paused: boolean }) {
+  const inspectItem = useStore((s) => s.inspectItem);
+  const closeInspect = useStore((s) => s.closeInspect);
+  const trail = useStore((s) => s.loopItemTrail[loopId]) ?? {};
+  const activity = useStore((s) => s.loopItemActivity[loopId]) ?? {};
+  const now = useNow(1000);
+
+  // Surface live work first: running, then review/failed, then the rest.
+  const rank: Record<string, number> = { running: 0, review: 1, failed: 2, blocked: 3, queued: 4, done: 5, excluded: 6 };
+  const ordered = [...items].sort((a, b) => (rank[a.status] ?? 9) - (rank[b.status] ?? 9) || a.path.localeCompare(b.path));
+  const sel = items.find((i) => i.id === inspectItem) ?? ordered[0];
+  const selTrail: LoopTrailEntry[] = (sel && trail[sel.id]) ?? [];
+  const lastAt = sel ? activity[sel.id] : undefined;
+  const stalled = !!sel && sel.status === "running" && !paused && lastAt != null && now - lastAt > STALL_MS;
+
+  return (
+    <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+      {/* master list */}
+      <div style={{ width: 320, flex: "none", borderRight: `1px solid ${color.borderSubtle}`, display: "flex", flexDirection: "column", minHeight: 0 }}>
+        <div style={{ flex: "none", display: "flex", alignItems: "center", gap: 8, padding: "14px 16px 10px" }}>
+          <HoverButton
+            onClick={closeInspect}
+            title="Back to the previous layout"
+            style={{ display: "flex", alignItems: "center", gap: 5, background: "transparent", border: "none", cursor: "pointer", color: color.textFaint, fontFamily: font.sans, fontSize: 12, padding: 0 }}
+            hoverStyle={{ color: color.textMuted }}
+          >
+            <ChevronLeftIcon size={13} stroke={1.5} />
+            Back
+          </HoverButton>
+          <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 700, letterSpacing: ".6px", color: color.textGhost }}>
+            {ordered.length} ITEMS
+          </span>
+        </div>
+        <div style={{ flex: 1, overflowY: "auto", padding: "0 11px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
+          {ordered.map((it) => (
+            <ItemCard key={it.id} it={it} paused={paused} selected={sel?.id === it.id} />
+          ))}
+        </div>
+      </div>
+
+      {/* detail */}
+      {sel ? (
+        <InspectDetail item={sel} trail={selTrail} startedAt={sel.startedAt} now={now} lastActivityAt={lastAt} stalled={stalled} paused={paused} />
+      ) : (
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: color.textGhost, fontSize: 13 }}>
+          Select an item to inspect.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InspectDetail({
+  item,
+  trail,
+  startedAt,
+  now,
+  lastActivityAt,
+  stalled,
+  paused,
+}: {
+  item: LoopItem;
+  trail: LoopTrailEntry[];
+  startedAt?: number;
+  now: number;
+  lastActivityAt?: number;
+  stalled: boolean;
+  paused: boolean;
+}) {
+  const col = itemStateColor[item.status];
+  const meta = itemStateMeta[item.status];
+  const line = itemLine(item);
+  const requeueLoopItem = useStore((s) => s.requeueLoopItem);
+  const nudgeLoopItem = useStore((s) => s.nudgeLoopItem);
+  const running = item.status === "running";
+  // Newest trail step at the top reads like a live feed.
+  const steps = [...trail].reverse();
+  return (
+    <div style={{ flex: 1, minWidth: 0, overflowY: "auto", padding: "20px 26px 40px" }}>
+      {/* identity + status */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+        <span style={{ width: 22, height: 22, flex: "none", borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", ...agentChipStyle(item.agent) }}>
+          <AgentMark kind={agentKind(item.agent)} label={item.agent} px={12} />
+        </span>
+        <span style={{ fontFamily: font.mono, fontSize: 14, color: color.textCode, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {item.path}
+        </span>
+        <span
+          style={{
+            marginLeft: "auto",
+            flex: "none",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "4px 11px",
+            borderRadius: 20,
+            fontSize: 11,
+            fontWeight: 600,
+            color: col,
+            background: tint(col, "1f"),
+            border: `1px solid ${tint(col, "4d")}`,
+          }}
+        >
+          <span style={{ width: 7, height: 7, borderRadius: "50%", background: "currentColor", animation: item.status === "running" && !paused ? "lkpulse 1.6s infinite" : undefined }} />
+          {meta.label}
+        </span>
+      </div>
+
+      {/* live action + elapsed + stall */}
+      <div style={{ display: "flex", alignItems: "center", gap: 14, margin: "12px 0 4px", flexWrap: "wrap" }}>
+        {startedAt != null && (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontFamily: font.mono, fontSize: 12.5, color: color.textFaint }}>
+            <ActivityIcon size={12} stroke={1.6} />
+            {fmtElapsed(startedAt, now)} elapsed
+          </span>
+        )}
+        {stalled && (
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "3px 10px",
+              borderRadius: 20,
+              fontSize: 11,
+              fontWeight: 600,
+              color: color.amber,
+              background: tint(color.amber, "1f"),
+              border: `1px solid ${tint(color.amber, "55")}`,
+            }}
+          >
+            <span style={{ width: 7, height: 7, borderRadius: "50%", background: "currentColor", animation: "lkpulse 1.6s infinite" }} />
+            {lastActivityAt != null ? `no activity ${fmtElapsed(lastActivityAt, now)}` : "no activity"}
+          </span>
+        )}
+      </div>
+      {line.text && <div style={{ fontSize: 12.5, lineHeight: 1.5, color: line.color, marginBottom: 14 }}>{line.text}</div>}
+
+      {/* live controls — nudge a (possibly stuck) agent, or kill & retry it */}
+      {running && (
+        <div style={{ display: "flex", gap: 9, marginBottom: 20 }}>
+          <HoverButton
+            onClick={() =>
+              nudgeLoopItem(item.id, "Are you still making progress? If you're stuck, say what's blocking you, then either continue or call loop_item_needs_review with the reason.")
+            }
+            title="Send the agent a follow-up message (best-effort — only lands while it's mid-turn)"
+            style={{ display: "flex", alignItems: "center", gap: 7, padding: "7px 13px", background: stalled ? tint(color.amber, "1f") : "transparent", border: `1px solid ${tint(color.amber, stalled ? "66" : "4d")}`, borderRadius: 8, color: color.amber, fontFamily: font.sans, fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+            hoverStyle={{ background: tint(color.amber, "2e") }}
+          >
+            <RefreshIcon size={11} stroke={1.7} />
+            Nudge agent
+          </HoverButton>
+          <HoverButton
+            onClick={() => requeueLoopItem(item.id)}
+            title="Kill this agent and re-queue the item to run again from scratch"
+            style={{ display: "flex", alignItems: "center", gap: 7, padding: "7px 13px", background: "transparent", border: `1px solid ${tint(color.red, "4d")}`, borderRadius: 8, color: color.red, fontFamily: font.sans, fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+            hoverStyle={{ background: tint(color.red, "16") }}
+          >
+            <StopIcon size={11} stroke={1.7} />
+            Cancel &amp; re-queue
+          </HoverButton>
+        </div>
+      )}
+
+      {/* tool trail */}
+      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".8px", color: color.textGhost, marginBottom: 12 }}>
+        TOOL TRAIL
+      </div>
+      {steps.length === 0 ? (
+        <div style={{ fontSize: 12, color: color.textGhost }}>No tool activity recorded yet.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column" }}>
+          {steps.map((s, i) => (
+            <div key={i} style={{ display: "flex", gap: 12, padding: "8px 0", borderBottom: `1px solid ${color.borderRowFaint}` }}>
+              <span style={{ flex: "none", width: 86, fontFamily: font.mono, fontSize: 11.5, fontWeight: 600, color: color.teal }}>{s.tool}</span>
+              <span style={{ flex: 1, minWidth: 0, fontFamily: font.mono, fontSize: 11.5, color: color.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {s.target ?? ""}
+              </span>
+              <span style={{ flex: "none", fontSize: 10.5, color: color.lineNo, fontFamily: font.mono }}>{s.t}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function LoopMonitor() {
   const loops = useStore((s) => s.loops);
   const selectedLoop = useStore((s) => s.selectedLoop);
@@ -543,6 +769,7 @@ export function LoopMonitor() {
       {monitorLayout === "waves" && <WavesLayout paused={loopPaused} items={items} />}
       {monitorLayout === "stream" && <StreamLayout paused={loopPaused} items={items} stream={stream} />}
       {monitorLayout === "grid" && <GridLayout loop={loop} paused={loopPaused} items={items} />}
+      {monitorLayout === "inspect" && <InspectLayout loopId={loop.id} paused={loopPaused} items={items} />}
     </div>
   );
 }

@@ -354,6 +354,25 @@ export interface LoopItemEvent {
   wave: number;
   priority: number;
   blockedBy?: string[];
+  /** Epoch ms the item first started running — drives the Inspect view's live elapsed. */
+  startedAt?: number;
+  t: string;
+}
+
+/** One step in an item's tool trail (`loop:trail`) — what the agent just did. */
+export interface LoopTrailEvent {
+  loopId: string;
+  itemId: string;
+  path: string;
+  tool: string;
+  target?: string;
+  t: string;
+}
+
+/** A persisted tool-trail entry on the item record. */
+export interface LoopTrailEntry {
+  tool: string;
+  target?: string;
   t: string;
 }
 
@@ -378,6 +397,28 @@ export interface LoopEventPayload {
   path: string;
   text: string;
   t: string;
+}
+
+/** A build agent's discovered prerequisite (`loop:block`) — `loop_block_on_task`. In
+ *  `approve` policy the agent is blocked until the human decides; `gated` says so. */
+export interface LoopBlockEvent {
+  loopId: string;
+  taskId: string;
+  fromItem: string;
+  title: string;
+  spec: string;
+  gated: boolean;
+  t: string;
+}
+
+/** A persisted pending block proposal (read on reload). */
+export interface LoopBlockRequest {
+  taskId: string;
+  title: string;
+  spec: string;
+  requires?: string[];
+  priority?: number;
+  ts?: string;
 }
 
 /** A loop finishing (`loop:done`). */
@@ -422,6 +463,8 @@ export interface LoopItemRecord {
   blockedBy?: string[];
   diff?: unknown[];
   notes?: { note: string; time: string }[];
+  /** Bounded ring of the agent's tool calls (newest last) — shown in Inspect. */
+  trail?: LoopTrailEntry[];
 }
 
 /** Start a Build-mode loop. Returns immediately; it streams via the `loop:*`
@@ -439,6 +482,8 @@ export const startLoop = (args: {
   concurrency: number;
   checks: { label: string; command: string }[];
   reviewOnDone: boolean;
+  /** "auto" | "approve" — how loop_block_on_task proposals are handled. "" → approve. */
+  blockPolicy: string;
 }): Promise<void> => (isTauri ? invoke<void>("start_loop", args) : Promise.resolve());
 
 /** Start a Plan-mode (strategist) run: a scope pass writes the loop's plan, then a
@@ -483,6 +528,28 @@ export const stopLoop = (loopId: string): Promise<void> =>
  *  The item is dropped from the run (excluded). No-op in mock mode. */
 export const stopLoopItem = (loopId: string, key: string): Promise<void> =>
   isTauri ? invoke<void>("stop_loop_item", { loopId, key }) : Promise.resolve();
+
+/** Cancel a single item's agent and re-queue it (retry from scratch) — the reliable
+ *  escape for a stalled item. No-op in mock mode. */
+export const requeueLoopItem = (loopId: string, key: string): Promise<void> =>
+  isTauri ? invoke<void>("requeue_loop_item", { loopId, key }) : Promise.resolve();
+
+/** Queue a nudge (follow-up user turn) for an item's live agent. Best-effort — only
+ *  lands while the agent is mid-turn. No-op in mock mode. */
+export const nudgeLoopItem = (loopId: string, key: string, text: string): Promise<void> =>
+  isTauri ? invoke<void>("nudge_loop_item", { loopId, key, text }) : Promise.resolve();
+
+/** Approve or reject a gated block-on-task proposal. No-op in mock mode. */
+export const resolveLoopBlock = (loopId: string, taskId: string, approve: boolean): Promise<void> =>
+  isTauri ? invoke<void>("resolve_loop_block", { loopId, taskId, approve }) : Promise.resolve();
+
+/** Pending block-on-task proposals (read on (re)load). */
+export const readLoopBlocks = (repo: string, loopId: string): Promise<LoopBlockRequest[]> =>
+  isTauri ? invoke<LoopBlockRequest[]>("read_loop_blocks", { repo, loopId }) : Promise.resolve([]);
+
+/** Set a loop's block-on-task policy ("auto" | "approve"). No-op in mock mode. */
+export const setLoopBlockPolicy = (repo: string, loopId: string, policy: string): Promise<void> =>
+  isTauri ? invoke<void>("set_loop_block_policy", { repo, loopId, policy }) : Promise.resolve();
 
 /** Resolve a review item: `"approve"` commits its diff onto the loop branch;
  *  anything else re-queues it with `feedback` folded in as a note. */

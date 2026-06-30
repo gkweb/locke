@@ -295,6 +295,8 @@ export function LoopBuilder() {
   const setDraftResolver = useStore((s) => s.setDraftResolver);
   const draftReviewOnDone = useStore((s) => s.draftReviewOnDone);
   const setDraftReviewOnDone = useStore((s) => s.setDraftReviewOnDone);
+  const draftBlockPolicy = useStore((s) => s.draftBlockPolicy);
+  const setDraftBlockPolicy = useStore((s) => s.setDraftBlockPolicy);
   const setDraftPrompt = useStore((s) => s.setDraftPrompt);
   const toggleTarget = useStore((s) => s.toggleTarget);
   const startLoop = useStore((s) => s.startLoop);
@@ -756,6 +758,42 @@ export function LoopBuilder() {
             </span>
             <span style={{ fontSize: 12, color: color.textSoft, lineHeight: 1.4 }}>
               Open a review when the loop finishes
+            </span>
+          </button>
+          {/* opt-in: auto-run prerequisites a build agent discovers (else they wait for
+              approval in the tray). Off by default — injected work spends extra tokens. */}
+          <button
+            onClick={() => setDraftBlockPolicy(draftBlockPolicy === "auto" ? "approve" : "auto")}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 9,
+              width: "100%",
+              textAlign: "left",
+              background: "transparent",
+              border: "none",
+              padding: "2px 0 6px",
+              cursor: "pointer",
+              fontFamily: font.sans,
+            }}
+          >
+            <span
+              style={{
+                width: 16,
+                height: 16,
+                flex: "none",
+                borderRadius: 5,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                background: draftBlockPolicy === "auto" ? color.violet : "transparent",
+                border: `1px solid ${draftBlockPolicy === "auto" ? color.violet : color.borderChip2}`,
+              }}
+            >
+              {draftBlockPolicy === "auto" && <CheckIcon size={11} color="#fff" stroke={2.2} />}
+            </span>
+            <span style={{ fontSize: 12, color: color.textSoft, lineHeight: 1.4 }}>
+              Auto-run prerequisites agents discover (else approve each in the tray)
             </span>
           </button>
           {!canStart && (

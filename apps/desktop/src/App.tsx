@@ -10,6 +10,8 @@ import {
   type LoopItemEvent,
   type LoopProgress,
   type LoopEventPayload,
+  type LoopTrailEvent,
+  type LoopBlockEvent,
   type LoopDonePayload,
   type LoopInterviewEvent,
 } from "./api/git.js";
@@ -111,6 +113,8 @@ export function App() {
       listen<LoopItemEvent>("loop:item", (e) => s.onLoopItem(e.payload)),
       listen<LoopProgress>("loop:progress", (e) => s.onLoopProgress(e.payload)),
       listen<LoopEventPayload>("loop:event", (e) => s.onLoopEvent(e.payload)),
+      listen<LoopTrailEvent>("loop:trail", (e) => s.onLoopTrail(e.payload)),
+      listen<LoopBlockEvent>("loop:block", (e) => s.onLoopBlock(e.payload)),
       listen<LoopDonePayload>("loop:done", (e) => s.onLoopDone(e.payload)),
       listen<LoopInterviewEvent>("loop:interview", (e) => s.onLoopInterview(e.payload)),
       // A second `locke <path>` launch is forwarded here by the single-instance

@@ -223,8 +223,9 @@ pub fn start_loop(
     concurrency: u64,
     checks: Vec<actions::CheckSpec>,
     review_on_done: bool,
+    block_policy: String,
 ) -> Result<(), String> {
-    loops::start_loop(app.clone(), &registry, loop_id, repo, branch, base, pattern, title, template, targets, concurrency, checks, review_on_done)
+    loops::start_loop(app.clone(), &registry, loop_id, repo, branch, base, pattern, title, template, targets, concurrency, checks, review_on_done, block_policy)
 }
 
 #[tauri::command]
@@ -286,6 +287,21 @@ pub fn stop_loop(registry: tauri::State<loops::LoopRegistry>, loop_id: String) -
 #[tauri::command]
 pub fn stop_loop_item(registry: tauri::State<loops::LoopRegistry>, loop_id: String, key: String) -> Result<(), String> {
     loops::stop_loop_item(&registry, &loop_id, &key)
+}
+
+#[tauri::command]
+pub fn requeue_loop_item(registry: tauri::State<loops::LoopRegistry>, loop_id: String, key: String) -> Result<(), String> {
+    loops::requeue_loop_item(&registry, &loop_id, &key)
+}
+
+#[tauri::command]
+pub fn nudge_loop_item(registry: tauri::State<loops::LoopRegistry>, loop_id: String, key: String, text: String) -> Result<(), String> {
+    loops::nudge_loop_item(&registry, &loop_id, &key, &text)
+}
+
+#[tauri::command]
+pub fn resolve_loop_block(registry: tauri::State<loops::LoopRegistry>, loop_id: String, task_id: String, approve: bool) -> Result<(), String> {
+    loops::resolve_loop_block(&registry, &loop_id, &task_id, approve)
 }
 
 #[tauri::command]
@@ -440,6 +456,19 @@ pub fn answer_loop_question(repo: String, loop_id: String, key: String, text: St
 #[tauri::command]
 pub fn read_loop_interview(repo: String, loop_id: String) -> Result<Value, String> {
     store::read_interview(&repo, &loop_id)
+}
+
+/// Pending block-on-task proposals (no decision yet) — surfaced in the approvals tray;
+/// read on (re)load so a reopened run still shows its open prerequisite proposals.
+#[tauri::command]
+pub fn read_loop_blocks(repo: String, loop_id: String) -> Result<Vec<Value>, String> {
+    store::read_loop_block_requests(&repo, &loop_id)
+}
+
+/// Set a loop's block-on-task policy ("auto" | "approve"); read at build-run start.
+#[tauri::command]
+pub fn set_loop_block_policy(repo: String, loop_id: String, policy: String) -> Result<(), String> {
+    store::update_loop(&repo, &loop_id, |l| l.block_policy = policy.clone())
 }
 
 /// Merge per-spec edits the creator makes in the Plan view into a manifest row (the

@@ -73,6 +73,27 @@ struct ItemPayload {
     /// Ids of unmet (not-yet-done) dependencies — drives the "blocked by …" UI.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     blocked_by: Vec<String>,
+    /// Epoch ms when this item first started running — drives live elapsed in the
+    /// Inspect view. Carried on every emit (idempotent) so a late subscriber still
+    /// gets it; `None` for items that never started (e.g. blocked).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    started_at: Option<u64>,
+    t: String,
+}
+
+/// One step in an item's tool trail — emitted live (`loop:trail`) and persisted as a
+/// bounded ring on the item record so the Inspect view can show what the agent did.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct TrailPayload {
+    loop_id: String,
+    item_id: String,
+    path: String,
+    /// Tool name, e.g. "Read", "Edit", "Grep", "Bash".
+    tool: String,
+    /// Short human target derived from the tool input (file path, pattern, cmd head).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target: Option<String>,
     t: String,
 }
 
@@ -128,6 +149,24 @@ struct InterviewPayload {
     t: String,
 }
 
+/// A build agent's `loop_block_on_task` proposal (`loop:block`): a discovered
+/// prerequisite the agent wants run before its item. In `approve` policy the agent is
+/// blocked until the human decides; in `auto` it's emitted for visibility only.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct BlockPayload {
+    loop_id: String,
+    /// The injected task's id (the block handshake key).
+    task_id: String,
+    /// The item key whose agent raised this (the one now waiting).
+    from_item: String,
+    title: String,
+    spec: String,
+    /// True while it awaits human approval (false under the `auto` policy).
+    gated: bool,
+    t: String,
+}
+
 /// App-managed registry of in-flight loops, keyed by loopId.
 #[derive(Default)]
 pub struct LoopRegistry(pub Mutex<HashMap<String, LoopHandle>>);
@@ -137,6 +176,15 @@ pub struct LoopHandle {
     stopped: Arc<AtomicBool>,
     /// Item keys the user cancelled individually (kill just that agent, run continues).
     cancelled: Arc<Mutex<HashSet<String>>>,
+    /// Subset of `cancelled` the user wants RE-QUEUED (re-run from scratch) rather than
+    /// left terminal — the "cancel & re-queue" escape for a stalled item.
+    requeue: Arc<Mutex<HashSet<String>>>,
+    /// Pending nudge messages per item key — drained into the live agent's stdin by the
+    /// run watcher (best-effort: a follow-up user message to an apparently-stuck agent).
+    nudges: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    /// Human decisions on gated `loop_block_on_task` proposals (taskId → approved),
+    /// applied by the worker pool on its next scan.
+    block_decisions: Arc<Mutex<HashMap<String, bool>>>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -186,6 +234,12 @@ struct Node {
     priority: i64,
     wave: u32,
     status: St,
+    /// Held back from scheduling until ungated — a `loop_block_on_task` prerequisite
+    /// awaiting human approval (always false for normal nodes and `auto`-policy ones).
+    gated: bool,
+    /// Injected mid-run by a build agent (`loop_block_on_task`) — its completion writes
+    /// the `.done.json` that unblocks the agent waiting on it.
+    injected: bool,
 }
 
 /// A dependency-aware scheduler: hands out items whose `requires` are all `done`,
@@ -208,6 +262,9 @@ struct Picked {
     is_task: bool,
     wave: u32,
     priority: i64,
+    /// True for a `loop_block_on_task` prerequisite — its `finish_item` writes the
+    /// `.done.json` that releases the agent blocked on it.
+    injected: bool,
 }
 
 impl Scheduler {
@@ -228,6 +285,8 @@ impl Scheduler {
                     priority: e.priority,
                     wave: if e.wave > 0 { e.wave } else { *waves.get(&id).unwrap_or(&0) },
                     status: St::Queued,
+                    gated: false,
+                    injected: false,
                     id,
                 }
             })
@@ -254,13 +313,14 @@ impl Scheduler {
         self.nodes[i].requires.iter().filter(|d| !self.satisfied(d)).cloned().collect()
     }
 
-    /// Highest-priority queued item whose deps are all done; marks it Running.
+    /// Highest-priority queued item whose deps are all done; marks it Running. Gated
+    /// nodes (prerequisites awaiting approval) are skipped until ungated.
     fn next_ready(&mut self) -> Option<Picked> {
         let pick = self
             .nodes
             .iter()
             .enumerate()
-            .filter(|(_, n)| n.status == St::Queued && n.requires.iter().all(|d| self.satisfied(d)))
+            .filter(|(_, n)| n.status == St::Queued && !n.gated && n.requires.iter().all(|d| self.satisfied(d)))
             .max_by_key(|(_, n)| (n.priority, -(n.wave as i64)))
             .map(|(i, _)| i)?;
         self.nodes[pick].status = St::Running;
@@ -273,11 +333,55 @@ impl Scheduler {
             is_task: n.is_task,
             wave: n.wave,
             priority: n.priority,
+            injected: n.injected,
         })
     }
 
     fn mark(&mut self, i: usize, status: St) {
         self.nodes[i].status = status;
+    }
+
+    /// Inject a new task node mid-run (a `loop_block_on_task` prerequisite). Returns
+    /// false if the id already exists (idempotent — a retried tool call won't dup it).
+    fn add_node(&mut self, id: &str, target: &str, requires: Vec<String>, priority: i64, gated: bool) -> bool {
+        if self.idx.contains_key(id) {
+            return false;
+        }
+        self.nodes.push(Node {
+            id: id.to_string(),
+            key: id.to_string(),
+            target: target.to_string(),
+            is_task: true,
+            requires,
+            priority,
+            wave: 0,
+            status: St::Queued,
+            gated,
+            injected: true,
+        });
+        self.idx.insert(id.to_string(), self.nodes.len() - 1);
+        true
+    }
+
+    /// Release a gated node so the pool can pick it up (approval granted). Returns the
+    /// node's `(key, wave, priority)` if it was found and gated.
+    fn ungate(&mut self, id: &str) -> Option<(String, u32, i64)> {
+        let i = *self.idx.get(id)?;
+        if self.nodes[i].gated {
+            self.nodes[i].gated = false;
+            let n = &self.nodes[i];
+            Some((n.key.clone(), n.wave, n.priority))
+        } else {
+            None
+        }
+    }
+
+    /// `(i, key, wave, priority)` for a node by id — used to terminate a rejected
+    /// injected prerequisite without picking it.
+    fn locate(&self, id: &str) -> Option<(usize, String, u32, i64)> {
+        let i = *self.idx.get(id)?;
+        let n = &self.nodes[i];
+        Some((i, n.key.clone(), n.wave, n.priority))
     }
 
     /// Nothing running and nothing currently runnable → the run can't advance.
@@ -370,7 +474,6 @@ struct Ctx {
     seed: String,
     template: String,
     checks: Vec<CheckSpec>,
-    total: u64,
     sched: Mutex<Scheduler>,
     cond: Condvar,
     commit_lock: Mutex<()>,
@@ -378,6 +481,18 @@ struct Ctx {
     stopped: Arc<AtomicBool>,
     /// Shared with this loop's `LoopHandle` — keys the user cancelled individually.
     cancelled: Arc<Mutex<HashSet<String>>>,
+    /// Shared with the `LoopHandle` — cancelled keys to re-queue rather than terminate.
+    requeue: Arc<Mutex<HashSet<String>>>,
+    /// Shared with the `LoopHandle` — pending nudge messages per item key.
+    nudges: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    /// Shared with the `LoopHandle` — human decisions on gated block-on-task proposals.
+    block_decisions: Arc<Mutex<HashMap<String, bool>>>,
+    /// The loop's block-on-task policy: "auto" (inject + run at once) or "approve"
+    /// (gate behind human approval). Empty/unknown → treated as "approve".
+    block_policy: String,
+    /// Per-item start time (epoch ms), keyed by item key — seeded when an item first
+    /// runs, read back into every `loop:item` emit for the Inspect view's live elapsed.
+    item_starts: Mutex<HashMap<String, u64>>,
     start: Instant,
 }
 
@@ -423,6 +538,11 @@ fn now_clock() -> String {
     let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let tod = secs % 86_400;
     format!("{:02}:{:02}:{:02}", tod / 3600, (tod % 3600) / 60, tod % 60)
+}
+
+fn now_epoch_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
 // ---- glob matching (no deps) ----
@@ -780,7 +900,10 @@ fn parse_patch(patch: &str) -> Vec<Value> {
 // ---- progress emission ----
 
 fn emit_progress(ctx: &Ctx) {
-    let c = ctx.sched.lock().unwrap().counts();
+    let (c, total) = {
+        let g = ctx.sched.lock().unwrap();
+        (g.counts(), g.total())
+    };
     let mins = ctx.start.elapsed().as_secs_f64() / 60.0;
     let rate = if mins > 0.05 { format!("{:.1} / min", c.done as f64 / mins) } else { "—".into() };
     let elapsed = {
@@ -788,6 +911,8 @@ fn emit_progress(ctx: &Ctx) {
         if s >= 3600 { format!("{}h {}m", s / 3600, (s % 3600) / 60) } else { format!("{}m {}s", s / 60, s % 60) }
     };
     let _ = locke_store::update_loop(&ctx.repo, &ctx.loop_id, |l| {
+        // `total` can grow mid-run as block-on-task injects prerequisites.
+        l.total = total;
         l.done = c.done;
         l.running = c.running;
         l.review = c.review;
@@ -801,7 +926,7 @@ fn emit_progress(ctx: &Ctx) {
         "loop:progress",
         ProgressPayload {
             loop_id: ctx.loop_id.clone(),
-            total: ctx.total,
+            total,
             done: c.done,
             running: c.running,
             review: c.review,
@@ -826,6 +951,7 @@ fn emit_item(
     priority: i64,
     blocked_by: Vec<String>,
 ) {
+    let started_at = ctx.item_starts.lock().unwrap().get(path).copied();
     let _ = ctx.app.emit(
         "loop:item",
         ItemPayload {
@@ -839,9 +965,43 @@ fn emit_item(
             wave,
             priority,
             blocked_by,
+            started_at,
             t: now_clock(),
         },
     );
+}
+
+/// Record one tool-trail step: persist it to the item record (bounded ring, kept by
+/// the caller) and emit a live `loop:trail` event for the Inspect view.
+fn emit_trail(ctx: &Ctx, item_id: &str, key: &str, ring: &[Value], tool: &str, target: Option<String>) {
+    let _ = locke_store::merge_loop_item(&ctx.repo, &ctx.loop_id, key, json!({ "trail": ring }));
+    let _ = ctx.app.emit(
+        "loop:trail",
+        TrailPayload {
+            loop_id: ctx.loop_id.clone(),
+            item_id: item_id.to_string(),
+            path: key.to_string(),
+            tool: tool.to_string(),
+            target,
+            t: now_clock(),
+        },
+    );
+}
+
+/// A short human-readable target for a tool call, pulled from its input: the file for
+/// file tools, the pattern for search tools, the command head for Bash. `None` when
+/// nothing obvious applies (the tool name alone is shown).
+fn trail_target(tool: &str, input: &Value) -> Option<String> {
+    let s = |k: &str| input.get(k).and_then(|v| v.as_str()).map(str::to_string);
+    match tool {
+        "Edit" | "Write" | "MultiEdit" | "Read" | "NotebookEdit" => s("file_path").or_else(|| s("path")),
+        "Grep" | "Glob" => s("pattern"),
+        "Bash" => s("command").map(|c| {
+            let head: String = c.split_whitespace().take(6).collect::<Vec<_>>().join(" ");
+            if head.len() < c.len() { format!("{head} …") } else { head }
+        }),
+        _ => s("file_path").or_else(|| s("path")).or_else(|| s("pattern")),
+    }
 }
 
 fn emit_stream(ctx: &Ctx, st: &str, path: &str, text: &str) {
@@ -899,6 +1059,105 @@ fn signal_interviewing(sig: &InterviewSignal) {
     cvar.notify_all();
 }
 
+/// Handle a `loop_block_on_task` tool call from the build agent on `from_key`: persist
+/// the prerequisite as an injected task, add it to the live work graph (gated by the
+/// loop's policy), and surface it. The agent stays blocked in the MCP tool meanwhile;
+/// the calling worker releases its slot (caller invokes `signal_interviewing`).
+fn inject_block_task(ctx: &Arc<Ctx>, from_key: &str, input: &Value) {
+    let id = input.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let title = input.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let spec = input.get("spec").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if id.is_empty() || title.is_empty() {
+        return;
+    }
+    let requires: Vec<String> = input
+        .get("requires")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let priority = input.get("priority").and_then(|v| v.as_i64()).unwrap_or(0);
+    let gated = ctx.block_policy != "auto";
+
+    // Persist the prerequisite: its spec (so the worker's `loop_read_spec` finds it) and
+    // a manifest task row marked `injected` (drives the cap + the "injected" UI tag).
+    let _ = locke_store::write_loop_spec(&ctx.repo, &ctx.loop_id, &id, &spec);
+    let spec_ref = format!("spec/{}.md", locke_store::sanitize_path(&id));
+    let (id_c, title_c, requires_c) = (id.clone(), title.clone(), requires.clone());
+    let _ = locke_store::update_loop_manifest(&ctx.repo, &ctx.loop_id, |entries| {
+        if !entries.iter().any(|e| !e.id.is_empty() && e.id == id_c) {
+            entries.push(locke_store::ManifestEntry {
+                id: id_c.clone(),
+                kind: "task".into(),
+                title: Some(title_c.clone()),
+                requires: requires_c.clone(),
+                priority,
+                spec: Some(spec_ref.clone()),
+                status: if gated { "proposed".into() } else { "queued".into() },
+                inc: true,
+                origin: "model".into(),
+                injected: true,
+                ..Default::default()
+            });
+        }
+    });
+
+    // Add it to the running scheduler. Gated nodes wait for approval; ungated ones the
+    // pool drains immediately. A duplicate id (retried tool call) is a no-op.
+    let added = ctx.sched.lock().unwrap().add_node(&id, &title, requires, priority, gated);
+    if added {
+        ctx.cond.notify_all();
+        emit_item(ctx, &id, &id, if gated { "blocked" } else { "queued" }, Some(if gated { "awaiting approval".into() } else { "injected prerequisite".into() }), None, 0, priority, vec![]);
+        emit_progress(ctx);
+    }
+    let _ = ctx.app.emit(
+        "loop:block",
+        BlockPayload {
+            loop_id: ctx.loop_id.clone(),
+            task_id: id,
+            from_item: from_key.to_string(),
+            title,
+            spec,
+            gated,
+            t: now_clock(),
+        },
+    );
+}
+
+/// Apply any pending human decisions on gated block-on-task proposals: approve →
+/// ungate (the pool then runs it); reject → terminate the node and write the rejected
+/// `.done.json` so the agent waiting on it unblocks. Called by each worker before it
+/// scans for ready work.
+fn apply_block_decisions(ctx: &Arc<Ctx>) {
+    let decisions: Vec<(String, bool)> = {
+        let mut d = ctx.block_decisions.lock().unwrap();
+        if d.is_empty() {
+            return;
+        }
+        d.drain().collect()
+    };
+    for (task_id, approved) in decisions {
+        if approved {
+            // Bind the guard to a temporary that drops at the semicolon, not across the emits.
+            let info = ctx.sched.lock().unwrap().ungate(&task_id);
+            if let Some((key, wave, prio)) = info {
+                ctx.cond.notify_all();
+                emit_item(ctx, &task_id, &key, "queued", Some("approved".into()), None, wave, prio, vec![]);
+                emit_progress(ctx);
+            }
+            continue;
+        }
+        // Rejected: terminate the node and unblock the waiting agent with a rejected done.
+        let loc = ctx.sched.lock().unwrap().locate(&task_id);
+        let Some((i, key, wave, prio)) = loc else { continue };
+        ctx.sched.lock().unwrap().mark(i, St::Review);
+        let _ = locke_store::write_loop_block_done(&ctx.repo, &ctx.loop_id, &task_id, "rejected", "Rejected by you — proceed without this prerequisite.");
+        let _ = locke_store::merge_loop_item(&ctx.repo, &ctx.loop_id, &key, json!({ "id": task_id, "status": "excluded", "line": "rejected", "injected": true }));
+        ctx.cond.notify_all();
+        emit_item(ctx, &task_id, &key, "excluded", Some("rejected".into()), None, wave, prio, vec![]);
+        emit_progress(ctx);
+    }
+}
+
 // ---- the per-item worker ----
 
 enum Outcome {
@@ -914,6 +1173,9 @@ fn process_item(ctx: &Arc<Ctx>, p: &Picked) {
     // `next_ready` already marked the node Running; emit it. Plan mode shows this as
     // "speccing" rather than "running".
     let start_line = if ctx.phase == Phase::Plan { "analysing…" } else { "starting…" };
+    // Seed the per-item start (epoch ms) so every emit carries `startedAt` for the
+    // Inspect view's live elapsed; insert-if-absent keeps a re-run's first start.
+    ctx.item_starts.lock().unwrap().entry(p.key.clone()).or_insert_with(now_epoch_ms);
     emit_item(ctx, &p.id, &p.key, ctx.phase.in_flight(), Some(start_line.into()), Some(2), p.wave, p.priority, vec![]);
     emit_progress(ctx);
 
@@ -956,6 +1218,23 @@ fn process_item(ctx: &Arc<Ctx>, p: &Picked) {
 /// workers (a `Done` may have unblocked dependents), and emit. Runs on the pool worker
 /// for a normal item, or on the detached agent thread for one that interviewed.
 fn finish_item(ctx: &Arc<Ctx>, p: &Picked, outcome: Outcome) {
+    // "Cancel & re-queue": a cancelled item the user asked to RETRY. Clear its cancel
+    // flags (so the re-run isn't immediately SIGKILLed) and reset its start clock, then
+    // put the node back to Queued so the pool re-picks it from scratch. Done before the
+    // normal terminal handling so a re-queue never lands in Review/Failed.
+    if matches!(outcome, Outcome::Cancelled) && ctx.requeue.lock().unwrap().remove(&p.key) {
+        ctx.cancelled.lock().unwrap().remove(&p.key);
+        ctx.item_starts.lock().unwrap().remove(&p.key);
+        {
+            let mut g = ctx.sched.lock().unwrap();
+            g.mark(p.i, St::Queued);
+        }
+        ctx.cond.notify_all();
+        emit_item(ctx, &p.id, &p.key, "queued", Some("re-queued".into()), None, p.wave, p.priority, vec![]);
+        emit_stream(ctx, "queued", &p.key, "re-queued by you");
+        emit_progress(ctx);
+        return;
+    }
     // The scheduler marks Done/Review/Failed identically in both phases (a specced
     // item satisfies a dependent just as a built one does); only the *emitted*
     // status string differs so the Plan view reads it as a SpecStatus.
@@ -991,6 +1270,11 @@ fn finish_item(ctx: &Arc<Ctx>, p: &Picked, outcome: Outcome) {
         g.mark(p.i, st);
     }
     ctx.cond.notify_all();
+    // An injected prerequisite reaching a terminal state unblocks the build agent that
+    // called `loop_block_on_task` and is polling for its `.done.json`.
+    if p.injected {
+        let _ = locke_store::write_loop_block_done(&ctx.repo, &ctx.loop_id, &p.id, emit_status, &line);
+    }
     emit_item(ctx, &p.id, &p.key, emit_status, Some(line.clone()), Some(100), p.wave, p.priority, vec![]);
     emit_stream(ctx, st_glyph, &p.key, &line);
     emit_progress(ctx);
@@ -1164,7 +1448,9 @@ fn stream_claude<F: FnMut(&str, &str, &Value)>(ctx: &Arc<Ctx>, wt: &str, prompt:
     let pid = child.id();
     let stopped = ctx.stopped.clone();
     let cancelled = ctx.cancelled.clone();
+    let nudges = ctx.nudges.clone();
     let key = cancel_key.to_string();
+    let nudge_stdin = stdin.clone();
     let watch_done = Arc::new(AtomicBool::new(false));
     let wd = watch_done.clone();
     let watcher = std::thread::spawn(move || loop {
@@ -1175,6 +1461,21 @@ fn stream_claude<F: FnMut(&str, &str, &Value)>(ctx: &Arc<Ctx>, wt: &str, prompt:
         if stopped.load(Ordering::Relaxed) || item_cancelled {
             let _ = Command::new("kill").arg("-9").arg(pid.to_string()).output();
             break;
+        }
+        // Drain any pending nudges into the live agent's stdin. Best-effort: the read
+        // loop nulls stdin once the turn ends, so a nudge only lands if the agent is
+        // still mid-turn (which is exactly the stalled case it targets).
+        if !key.is_empty() {
+            let pending: Vec<String> = nudges.lock().unwrap().get_mut(&key).map(std::mem::take).unwrap_or_default();
+            if !pending.is_empty() {
+                if let Some(si) = nudge_stdin.lock().unwrap().as_mut() {
+                    for text in pending {
+                        let msg = json!({ "type": "user", "message": { "role": "user", "content": text } });
+                        let _ = writeln!(si, "{msg}");
+                    }
+                    let _ = si.flush();
+                }
+            }
         }
         std::thread::sleep(Duration::from_millis(150));
     });
@@ -1238,6 +1539,10 @@ fn stream_claude<F: FnMut(&str, &str, &Value)>(ctx: &Arc<Ctx>, wt: &str, prompt:
 fn run_agent_stream(ctx: &Arc<Ctx>, item_id: &str, p: &Picked, wt: &str, interviewing: &InterviewSignal) -> R<()> {
     let prompt = render_prompt(ctx, &p.key, &p.target, p.is_task);
     let mut steps = 0u32;
+    // Bounded ring of the agent's tool calls — persisted to the item record and
+    // streamed live so the Inspect view can show what it actually did.
+    const TRAIL_MAX: usize = 30;
+    let mut trail: Vec<Value> = Vec::new();
     stream_claude(ctx, wt, &prompt, &p.key, |kind, payload, input| match kind {
         "text" => emit_item(ctx, item_id, &p.key, ctx.phase.in_flight(), Some(payload.chars().take(80).collect()), None, p.wave, p.priority, vec![]),
         "tool" => {
@@ -1250,6 +1555,25 @@ fn run_agent_stream(ctx: &Arc<Ctx>, item_id: &str, p: &Picked, wt: &str, intervi
                 emit_item(ctx, item_id, &p.key, ctx.phase.in_flight(), Some("waiting on your answer…".into()), None, p.wave, p.priority, vec![]);
                 return;
             }
+            // A discovered prerequisite: inject it into the work graph and release this
+            // slot so the pool runs it while this item's agent blocks (off-pool) in the
+            // MCP tool waiting for it — same detach handshake as an interview.
+            if payload == "loop_block_on_task" {
+                inject_block_task(ctx, &p.key, input);
+                signal_interviewing(interviewing);
+                let title = input.get("title").and_then(|v| v.as_str()).unwrap_or("a prerequisite");
+                emit_item(ctx, item_id, &p.key, ctx.phase.in_flight(), Some(format!("blocked on prerequisite: {title}")), None, p.wave, p.priority, vec![]);
+                return;
+            }
+            // Record the tool in the trail (every tool, not just the ones that move
+            // the progress bar) so the drill-in shows the full activity.
+            let target = trail_target(payload, input);
+            trail.push(json!({ "tool": payload, "target": target.clone(), "t": now_clock() }));
+            if trail.len() > TRAIL_MAX {
+                let drop = trail.len() - TRAIL_MAX;
+                trail.drain(0..drop);
+            }
+            emit_trail(ctx, item_id, &p.key, &trail, payload, target);
             // Build progress tracks edits; plan progress tracks reads/analysis.
             let verb = match (ctx.phase, payload) {
                 (Phase::Build, "Edit" | "Write" | "MultiEdit") => Some("editing"),
@@ -1391,6 +1715,8 @@ fn spawn_workers(ctx: &Arc<Ctx>, n: usize) -> Vec<std::thread::JoinHandle<()>> {
                 std::thread::sleep(Duration::from_millis(250));
                 continue;
             }
+            // Apply any approve/reject decisions on gated prerequisites before scanning.
+            apply_block_decisions(&ctx);
             let picked = {
                 let mut g = ctx.sched.lock().unwrap();
                 loop {
@@ -1441,6 +1767,7 @@ pub fn start_loop(
     concurrency: u64,
     checks: Vec<CheckSpec>,
     review_on_done: bool,
+    block_policy: String,
 ) -> R<()> {
     // Fall back to the loop's persisted record where approve→build reuses the
     // planning loop and may not re-send everything: the original prompt, the loop's
@@ -1457,6 +1784,12 @@ pub fn start_loop(
         title
     };
     let review_on_done = prior.as_ref().map(|l| l.review_on_done).unwrap_or(review_on_done);
+    // Block-on-task policy: the build arg wins; else the plan's saved choice; else approve.
+    let block_policy = if block_policy.trim().is_empty() {
+        prior.as_ref().map(|l| l.block_policy.clone()).filter(|p| !p.is_empty()).unwrap_or_else(|| "approve".into())
+    } else {
+        block_policy
+    };
     // Seed worktree on the loop branch (create it from base if new). A branch can
     // only be checked out once, so a brand-new chore branch is expected.
     let seed = std::env::temp_dir()
@@ -1504,6 +1837,7 @@ pub fn start_loop(
             template: template.clone(),
             concurrency,
             review_on_done,
+            block_policy: block_policy.clone(),
             pull_id: prior.as_ref().map(|l| l.pull_id).unwrap_or(0),
             ..Default::default()
         },
@@ -1512,11 +1846,20 @@ pub fn start_loop(
     let paused = Arc::new(AtomicBool::new(false));
     let stopped = Arc::new(AtomicBool::new(false));
     let cancelled = Arc::new(Mutex::new(HashSet::new()));
-    registry
-        .0
-        .lock()
-        .unwrap()
-        .insert(loop_id.clone(), LoopHandle { paused: paused.clone(), stopped: stopped.clone(), cancelled: cancelled.clone() });
+    let requeue = Arc::new(Mutex::new(HashSet::new()));
+    let nudges = Arc::new(Mutex::new(HashMap::new()));
+    let block_decisions = Arc::new(Mutex::new(HashMap::new()));
+    registry.0.lock().unwrap().insert(
+        loop_id.clone(),
+        LoopHandle {
+            paused: paused.clone(),
+            stopped: stopped.clone(),
+            cancelled: cancelled.clone(),
+            requeue: requeue.clone(),
+            nudges: nudges.clone(),
+            block_decisions: block_decisions.clone(),
+        },
+    );
 
     let ctx = Arc::new(Ctx {
         app,
@@ -1527,13 +1870,17 @@ pub fn start_loop(
         seed: seed.clone(),
         template,
         checks,
-        total,
         sched: Mutex::new(sched),
         cond: Condvar::new(),
         commit_lock: Mutex::new(()),
         paused,
         stopped,
         cancelled,
+        requeue,
+        nudges,
+        block_decisions,
+        block_policy: block_policy.clone(),
+        item_starts: Mutex::new(HashMap::new()),
         start: Instant::now(),
     });
     emit_progress(&ctx);
@@ -1714,11 +2061,20 @@ pub fn start_plan(
     let paused = Arc::new(AtomicBool::new(false));
     let stopped = Arc::new(AtomicBool::new(false));
     let cancelled = Arc::new(Mutex::new(HashSet::new()));
-    registry
-        .0
-        .lock()
-        .unwrap()
-        .insert(loop_id.clone(), LoopHandle { paused: paused.clone(), stopped: stopped.clone(), cancelled: cancelled.clone() });
+    let requeue = Arc::new(Mutex::new(HashSet::new()));
+    let nudges = Arc::new(Mutex::new(HashMap::new()));
+    let block_decisions = Arc::new(Mutex::new(HashMap::new()));
+    registry.0.lock().unwrap().insert(
+        loop_id.clone(),
+        LoopHandle {
+            paused: paused.clone(),
+            stopped: stopped.clone(),
+            cancelled: cancelled.clone(),
+            requeue: requeue.clone(),
+            nudges: nudges.clone(),
+            block_decisions: block_decisions.clone(),
+        },
+    );
 
     let ctx = Arc::new(Ctx {
         app,
@@ -1729,13 +2085,18 @@ pub fn start_plan(
         seed: seed.clone(),
         template,
         checks,
-        total,
         sched: Mutex::new(sched),
         cond: Condvar::new(),
         commit_lock: Mutex::new(()),
         paused,
         stopped,
         cancelled,
+        requeue,
+        nudges,
+        block_decisions,
+        // Plan mode never injects build prerequisites — block-on-task is Build-only.
+        block_policy: String::new(),
+        item_starts: Mutex::new(HashMap::new()),
         start: Instant::now(),
     });
     emit_progress(&ctx);
@@ -1816,6 +2177,35 @@ pub fn stop_loop_item(registry: &LoopRegistry, loop_id: &str, key: &str) -> R<()
     let guard = registry.0.lock().unwrap();
     let h = guard.get(loop_id).ok_or("loop not found")?;
     h.cancelled.lock().unwrap().insert(key.to_string());
+    Ok(())
+}
+
+/// Cancel a single item's agent AND re-queue it: SIGKILL the current (e.g. stalled)
+/// run, then `finish_item` re-marks the node Queued so the pool retries it from
+/// scratch. The reliable escape for a stuck item.
+pub fn requeue_loop_item(registry: &LoopRegistry, loop_id: &str, key: &str) -> R<()> {
+    let guard = registry.0.lock().unwrap();
+    let h = guard.get(loop_id).ok_or("loop not found")?;
+    h.requeue.lock().unwrap().insert(key.to_string());
+    h.cancelled.lock().unwrap().insert(key.to_string());
+    Ok(())
+}
+
+/// Queue a nudge message for an item's live agent — a follow-up user turn pushed into
+/// its stdin by the run watcher. Best-effort (delivered only while the agent is mid-turn).
+pub fn nudge_loop_item(registry: &LoopRegistry, loop_id: &str, key: &str, text: &str) -> R<()> {
+    let guard = registry.0.lock().unwrap();
+    let h = guard.get(loop_id).ok_or("loop not found")?;
+    h.nudges.lock().unwrap().entry(key.to_string()).or_default().push(text.to_string());
+    Ok(())
+}
+
+/// Approve or reject a gated `loop_block_on_task` proposal — the worker pool applies it
+/// on its next scan (ungate + run, or terminate + unblock the waiting agent).
+pub fn resolve_loop_block(registry: &LoopRegistry, loop_id: &str, task_id: &str, approve: bool) -> R<()> {
+    let guard = registry.0.lock().unwrap();
+    let h = guard.get(loop_id).ok_or("loop not found")?;
+    h.block_decisions.lock().unwrap().insert(task_id.to_string(), approve);
     Ok(())
 }
 
@@ -2047,6 +2437,39 @@ mod tests {
         assert_eq!(second.id, "src/Cart.vue");
         assert!(!second.is_task);
         assert_eq!(second.target, "src/Cart.vue");
+    }
+
+    #[test]
+    fn injects_task_mid_run_ungated() {
+        // An `auto`-policy block-on-task injects a prerequisite that the pool picks up.
+        let mut s = Scheduler::new(&[node("src/A.vue", &[], 0)]);
+        let a = s.next_ready().unwrap();
+        assert_eq!(a.id, "src/A.vue");
+        // Inject an ungated prerequisite while A is in flight.
+        assert!(s.add_node("shared-util", "Extract shared util", vec![], 5, false));
+        // The injected, ungated task is now the next ready item and is flagged injected.
+        let t = s.next_ready().unwrap();
+        assert_eq!(t.id, "shared-util");
+        assert!(t.injected && t.is_task);
+        // A duplicate injection (retried tool call) is a no-op.
+        assert!(!s.add_node("shared-util", "Extract shared util", vec![], 5, false));
+        assert_eq!(s.total(), 2);
+    }
+
+    #[test]
+    fn gated_task_waits_for_approval() {
+        // An `approve`-policy injection is gated: not schedulable until ungated.
+        let mut s = Scheduler::new(&[node("src/A.vue", &[], 0)]);
+        let _a = s.next_ready().unwrap();
+        assert!(s.add_node("prereq", "A prerequisite", vec![], 9, true));
+        // Gated → skipped by the scheduler even though it's highest priority.
+        assert!(s.next_ready().is_none());
+        // Approval ungates it; now it's pickable.
+        assert!(s.ungate("prereq").is_some());
+        assert_eq!(s.next_ready().unwrap().id, "prereq");
+        // Ungating an unknown / already-open node is a no-op.
+        assert!(s.ungate("prereq").is_none());
+        assert!(s.ungate("nope").is_none());
     }
 
     #[test]

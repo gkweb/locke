@@ -255,6 +255,8 @@ export interface LoopItem {
   priority?: number;
   /** Unmet dependency ids (blocked items) — drives the "blocked by …" readout. */
   blockedBy?: string[];
+  /** Epoch ms the item first started running — drives the Inspect view's live elapsed. */
+  startedAt?: number;
 }
 
 /** A builder audit row — a matched file the user includes/excludes. */

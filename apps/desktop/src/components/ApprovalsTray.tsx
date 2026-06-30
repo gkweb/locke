@@ -17,6 +17,8 @@ export function ApprovalsTray() {
   const loopInterview = useStore((s) => s.loopInterview);
   const loops = useStore((s) => s.loops);
   const openLoopQuestion = useStore((s) => s.openLoopQuestion);
+  const loopBlocks = useStore((s) => s.loopBlocks);
+  const resolveLoopBlock = useStore((s) => s.resolveLoopBlock);
 
   // Every loop with a still-open question — the model is blocked awaiting an answer.
   const questions = Object.entries(loopInterview).flatMap(([loopId, threads]) =>
@@ -30,7 +32,14 @@ export function ApprovalsTray() {
         where: key === "__scope__" ? "scope" : key.split("/").pop() ?? key,
       })),
   );
-  const total = pending.length + questions.length;
+  // Gated block-on-task proposals — a build agent is blocked awaiting approval to spin
+  // up a discovered prerequisite.
+  const blocks = Object.entries(loopBlocks).flatMap(([loopId, list]) =>
+    list
+      .filter((b) => b.gated)
+      .map((b) => ({ loopId, taskId: b.taskId, title: b.title, spec: b.spec, loopTitle: loops.find((l) => l.id === loopId)?.title ?? loopId })),
+  );
+  const total = pending.length + questions.length + blocks.length;
 
   return (
     <div
@@ -128,6 +137,52 @@ export function ApprovalsTray() {
                 Answer
                 <ChevronRightIcon size={12} stroke={1.6} />
               </HoverButton>
+            </div>
+          ))}
+          {/* Block-on-task proposals — approve to spin up the prerequisite, or reject. */}
+          {blocks.map((b) => (
+            <div key={`${b.loopId}:${b.taskId}`} style={{ padding: "13px 15px", borderBottom: `1px solid ${color.borderRow}` }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                <span
+                  style={{
+                    width: 20,
+                    height: 20,
+                    borderRadius: 6,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: color.violetLight,
+                    background: tint(color.violet, "22"),
+                    border: `1px solid ${tint(color.violet, "55")}`,
+                    fontSize: 12,
+                    fontWeight: 700,
+                  }}
+                >
+                  +
+                </span>
+                <span style={{ fontSize: 11.5, color: color.textSoft, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {b.loopTitle}
+                </span>
+                <span style={{ fontSize: 11, color: color.textGhost, fontFamily: font.mono, marginLeft: "auto", flex: "none" }}>prerequisite</span>
+              </div>
+              <div style={{ fontSize: 12, color: color.text, fontWeight: 600, marginBottom: 4 }}>{b.title}</div>
+              <div style={{ fontSize: 11.5, color: color.textFaint, lineHeight: 1.45, marginBottom: 10, maxHeight: 54, overflow: "hidden" }}>{b.spec}</div>
+              <div style={{ display: "flex", gap: 7 }}>
+                <HoverButton
+                  onClick={() => resolveLoopBlock(b.loopId, b.taskId, false)}
+                  style={{ flex: "none", padding: "6px 12px", background: "transparent", border: `1px solid ${color.borderInput}`, borderRadius: 7, color: color.textDim, fontFamily: font.sans, fontSize: 11.5, fontWeight: 500, cursor: "pointer" }}
+                  hoverStyle={{ borderColor: "#3a414e" }}
+                >
+                  Reject
+                </HoverButton>
+                <HoverButton
+                  onClick={() => resolveLoopBlock(b.loopId, b.taskId, true)}
+                  style={{ flex: 1, padding: "6px 12px", background: tint(color.violet, "1f"), border: `1px solid ${tint(color.violet, "66")}`, borderRadius: 7, color: color.violetLight, fontFamily: font.sans, fontSize: 11.5, fontWeight: 600, cursor: "pointer" }}
+                  hoverStyle={{ background: tint(color.violet, "33") }}
+                >
+                  Approve &amp; run
+                </HoverButton>
+              </div>
             </div>
           ))}
           {pending.map((a) => {

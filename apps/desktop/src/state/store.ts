@@ -73,6 +73,8 @@ import {
   pauseLoop as pauseLoopApi,
   stopLoop as stopLoopApi,
   stopLoopItem as stopLoopItemApi,
+  requeueLoopItem as requeueLoopItemApi,
+  nudgeLoopItem as nudgeLoopItemApi,
   resolveLoopItem as resolveLoopItemApi,
   readLoops as readLoopsApi,
   readLoopItems as readLoopItemsApi,
@@ -92,9 +94,14 @@ import {
   type LoopItemEvent,
   type LoopProgress,
   type LoopEventPayload,
+  type LoopTrailEvent,
+  type LoopTrailEntry,
+  type LoopBlockEvent,
   type LoopDonePayload,
   type LoopInterviewEvent,
   type LoopItemRecord,
+  resolveLoopBlock as resolveLoopBlockApi,
+  readLoopBlocks as readLoopBlocksApi,
   isTauri,
   type CheckSpec,
   type LockeConfig,
@@ -186,6 +193,16 @@ function relTime(epochSecs: number): string {
   if (diff < 3600) return `${Math.floor(diff / 60)} min ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)} hours ago`;
   return `${Math.floor(diff / 86400)} days ago`;
+}
+
+// Stamp now() as an item's last-activity time (keyed by loopId → itemId). The Inspect
+// view diffs this against now to flag a stalled item without any backend timer.
+function stampActivity(
+  cur: Record<string, Record<string, number>>,
+  loopId: string,
+  itemId: string,
+): Record<string, Record<string, number>> {
+  return { ...cur, [loopId]: { ...(cur[loopId] ?? {}), [itemId]: Date.now() } };
 }
 
 // First file in a tree (depth-first), so the explorer can open with something
@@ -290,8 +307,13 @@ interface LockeState {
   loopView: LoopView;
   /** The loop the builder/plan/monitor/review act on. */
   selectedLoop: string | null;
-  /** Monitor layout: kanban board / live stream / tile grid. */
-  monitorLayout: "board" | "stream" | "grid" | "waves";
+  /** Monitor layout: kanban board / live stream / tile grid / inspect drill-in. */
+  monitorLayout: "board" | "stream" | "grid" | "waves" | "inspect";
+  /** The layout to restore when leaving Inspect — set when entering it from another
+   *  layout so the back-chevron returns to the exact prior view. */
+  prevMonitorLayout: "board" | "stream" | "grid" | "waves";
+  /** The item focused in the Inspect drill-in, or null. */
+  inspectItem: string | null;
   /** Plan-mode tab: scope interview vs per-item specs. */
   planTab: "scope" | "specs" | "graph";
   /** Selected per-item spec in the plan Item-specs tab. */
@@ -332,6 +354,15 @@ interface LockeState {
   loopStream: Record<string, LoopStreamEvent[]>;
   /** Raw per-item records (incl. captured review diffs), keyed by loopId. */
   loopItemRecords: Record<string, LoopItemRecord[]>;
+  /** Live tool trail, keyed by loopId then itemId (newest last; driven by `loop:trail`
+   *  and seeded from the persisted item record on load). Powers the Inspect timeline. */
+  loopItemTrail: Record<string, Record<string, LoopTrailEntry[]>>;
+  /** Last-activity epoch ms, keyed by loopId then itemId — stamped on every item/
+   *  trail/stream event. The Inspect view flags an item stalled when this goes stale. */
+  loopItemActivity: Record<string, Record<string, number>>;
+  /** Open block-on-task proposals keyed by loopId (build agents' discovered
+   *  prerequisites). Gated ones await approval in the tray; cleared once decided. */
+  loopBlocks: Record<string, LoopBlockEvent[]>;
   /** New-loop draft (seeded; mode + target selection are the interactive parts). */
   draftTitle: string;
   draftBranch: string;
@@ -344,6 +375,8 @@ interface LockeState {
   draftMode: LoopMode;
   /** Open a review of the loop's branch when it finishes (opt-out, default on). */
   draftReviewOnDone: boolean;
+  /** How a build agent's loop_block_on_task is handled: "approve" (default) | "auto". */
+  draftBlockPolicy: "approve" | "auto";
   /** The open repo's local branches, for the builder's base-branch picker. */
   repoBranches: string[];
 
@@ -487,7 +520,12 @@ interface LockeState {
   /** Return to the loops list. */
   loopToList: () => void;
   setLoopView: (v: LoopView) => void;
-  setMonitorLayout: (l: "board" | "stream" | "grid" | "waves") => void;
+  setMonitorLayout: (l: "board" | "stream" | "grid" | "waves" | "inspect") => void;
+  /** Focus an item in the Inspect drill-in, entering Inspect from the current layout
+   *  (stashed so the back-chevron restores it). */
+  openInspect: (itemId: string) => void;
+  /** Leave Inspect, restoring the layout active before it was opened. */
+  closeInspect: () => void;
   setPlanTab: (t: "scope" | "specs" | "graph") => void;
   selectSpec: (id: string) => void;
   setDraftMode: (m: LoopMode) => void;
@@ -496,6 +534,7 @@ interface LockeState {
   setDraftBase: (v: string) => void;
   setDraftResolver: (r: ResolverSpec) => void;
   setDraftReviewOnDone: (v: boolean) => void;
+  setDraftBlockPolicy: (v: "approve" | "auto") => void;
   /** Re-read the repo's pulls into the reviews queue (after a loop opens one). */
   loadReviews: () => Promise<void>;
   /** Open (creating if needed) the review for a finished loop's branch, then show it. */
@@ -522,6 +561,10 @@ interface LockeState {
   stopLoop: () => void;
   /** Cancel a single in-flight item by path (kills its agent; run continues). */
   stopLoopItem: (path: string) => void;
+  /** Cancel a stalled item's agent and re-queue it (retry from scratch). */
+  requeueLoopItem: (key: string) => void;
+  /** Nudge an item's live agent with a follow-up message (best-effort). */
+  nudgeLoopItem: (key: string, text: string) => void;
   /** Pause/resume the monitored loop. */
   togglePause: () => void;
   /** Open one item's review. */
@@ -571,7 +614,11 @@ interface LockeState {
   onLoopItem: (e: LoopItemEvent) => void;
   onLoopProgress: (e: LoopProgress) => void;
   onLoopEvent: (e: LoopEventPayload) => void;
+  onLoopTrail: (e: LoopTrailEvent) => void;
+  onLoopBlock: (e: LoopBlockEvent) => void;
   onLoopDone: (e: LoopDonePayload) => void;
+  /** Approve or reject a gated block-on-task proposal. */
+  resolveLoopBlock: (loopId: string, taskId: string, approve: boolean) => void;
 
   // ---- files explorer + extensions navigation ----
   /** Open the Files screen on a full file, optionally from a review's diff. */
@@ -776,6 +823,8 @@ export const useStore = create<LockeState>((set, get) => ({
   loopView: "list",
   selectedLoop: MOCK ? "vue3" : null,
   monitorLayout: "board",
+  prevMonitorLayout: "board",
+  inspectItem: null,
   planTab: "scope",
   selectedSpec: "s1",
   loopReviewItem: null,
@@ -795,6 +844,9 @@ export const useStore = create<LockeState>((set, get) => ({
   loopItems: {},
   loopStream: {},
   loopItemRecords: {},
+  loopItemTrail: {},
+  loopItemActivity: {},
+  loopBlocks: {},
   // The seeded example draft is mock-only (the design preview); a real session
   // opens a blank builder the user fills in.
   draftTitle: MOCK ? MOCK_LOOP_DRAFT.title : "",
@@ -802,6 +854,7 @@ export const useStore = create<LockeState>((set, get) => ({
   draftBase: MOCK ? MOCK_LOOP_DRAFT.base : "main",
   draftResolver: { kind: "glob", pattern: MOCK ? MOCK_LOOP_DRAFT.pattern : "" },
   draftReviewOnDone: true,
+  draftBlockPolicy: "approve",
   draftLoopId: null,
   draftPrompt: MOCK ? MOCK_LOOP_DRAFT.prompt : "",
   draftMode: "plan",
@@ -1560,7 +1613,21 @@ export const useStore = create<LockeState>((set, get) => ({
     void deleteLoopApi(s.repoPath, id);
   },
   setLoopView: (v) => set({ loopView: v }),
-  setMonitorLayout: (l) => set({ monitorLayout: l }),
+  setMonitorLayout: (l) =>
+    set((st) =>
+      // Entering Inspect from a real layout: remember it so the back-chevron returns
+      // there. Leaving it: nothing to stash. (Re-selecting Inspect keeps the old prev.)
+      l === "inspect" && st.monitorLayout !== "inspect"
+        ? { monitorLayout: l, prevMonitorLayout: st.monitorLayout }
+        : { monitorLayout: l },
+    ),
+  openInspect: (itemId) =>
+    set((st) => ({
+      inspectItem: itemId,
+      monitorLayout: "inspect",
+      ...(st.monitorLayout !== "inspect" ? { prevMonitorLayout: st.monitorLayout } : {}),
+    })),
+  closeInspect: () => set((st) => ({ monitorLayout: st.prevMonitorLayout, inspectItem: null })),
   setPlanTab: (t) => set({ planTab: t }),
   selectSpec: (id) => set({ selectedSpec: id }),
   setDraftMode: (m) => set({ draftMode: m }),
@@ -1569,6 +1636,7 @@ export const useStore = create<LockeState>((set, get) => ({
   setDraftBase: (v) => set({ draftBase: v }),
   setDraftResolver: (r) => set({ draftResolver: r }),
   setDraftReviewOnDone: (v) => set({ draftReviewOnDone: v }),
+  setDraftBlockPolicy: (v) => set({ draftBlockPolicy: v }),
   // Autosave the draft loop. Creates it (and a registry row) the moment it has a
   // title, then keeps it current; the full builder state lives in draft.json so it
   // reopens exactly. No-op in mock / without a repo / before it's named.
@@ -1702,7 +1770,9 @@ export const useStore = create<LockeState>((set, get) => ({
       checks: s.checkSpecs,
       reviewOnDone: s.draftReviewOnDone,
     };
-    void (plan ? startPlanApi(args) : startLoopApi(args));
+    // block_policy only applies to the Build runner; the plan run carries it forward
+    // on its record so approve→build inherits the choice.
+    void (plan ? startPlanApi(args) : startLoopApi({ ...args, blockPolicy: s.draftBlockPolicy }));
   },
   // Approve the strategist's plan and start the build over the same loop. The
   // (enriched, audited) manifest is already persisted, so start_loop consumes it
@@ -1737,6 +1807,8 @@ export const useStore = create<LockeState>((set, get) => ({
       checks: s.checkSpecs,
       // The backend prefers the value persisted on the plan; this is just a fallback.
       reviewOnDone: true,
+      // Empty → backend keeps the policy persisted on the plan record (or defaults approve).
+      blockPolicy: "",
     });
   },
   // Return a (possibly already-approved/building) loop to Plan mode: halt any run,
@@ -1803,6 +1875,15 @@ export const useStore = create<LockeState>((set, get) => ({
     set((st) => ({
       loopManifest: st.loopManifest.map((e) => (e.path === path ? { ...e, status: "queued" } : e)),
     }));
+  },
+  requeueLoopItem: (key) => {
+    const s = get();
+    if (!MOCK && s.selectedLoop) void requeueLoopItemApi(s.selectedLoop, key);
+    // The runner confirms via loop:item (queued → running again); no optimistic edit.
+  },
+  nudgeLoopItem: (key, text) => {
+    const s = get();
+    if (!MOCK && s.selectedLoop) void nudgeLoopItemApi(s.selectedLoop, key, text);
   },
   togglePause: () => {
     const next = !get().loopPaused;
@@ -2039,9 +2120,28 @@ export const useStore = create<LockeState>((set, get) => ({
         priority: r.priority,
         blockedBy: r.blockedBy,
       }));
+      // Seed the Inspect tool trail from the persisted ring so a reopened loop shows
+      // each item's history; live `loop:trail` events append from there.
+      const trail: Record<string, LoopTrailEntry[]> = {};
+      for (const r of recs) {
+        if (r.trail?.length) trail[r.id ?? r.path] = r.trail;
+      }
+      // Pending block-on-task proposals so a reopened run still shows them in the tray.
+      const blocks = await readLoopBlocksApi(repoPath, loopId);
+      const loopBlocksForId: LoopBlockEvent[] = blocks.map((b) => ({
+        loopId,
+        taskId: b.taskId,
+        fromItem: "",
+        title: b.title,
+        spec: b.spec,
+        gated: true,
+        t: b.ts ?? "",
+      }));
       set((s) => ({
         loopItems: { ...s.loopItems, [loopId]: items },
         loopItemRecords: { ...s.loopItemRecords, [loopId]: recs },
+        loopItemTrail: { ...s.loopItemTrail, [loopId]: trail },
+        loopBlocks: { ...s.loopBlocks, [loopId]: loopBlocksForId },
       }));
     } catch {
       // Leave prior items in place on a failed read.
@@ -2107,6 +2207,9 @@ export const useStore = create<LockeState>((set, get) => ({
         wave: e.wave,
         priority: e.priority,
         blockedBy: e.blockedBy,
+        // Carried on every emit, but absent for items that never started (blocked) —
+        // don't let a later event without it wipe a start we already recorded.
+        startedAt: e.startedAt ?? (idx >= 0 ? items[idx].startedAt : undefined),
       };
       if (idx >= 0) items[idx] = { ...items[idx], ...next };
       else items.push(next);
@@ -2116,7 +2219,7 @@ export const useStore = create<LockeState>((set, get) => ({
         s.loopView === "plan" && s.selectedLoop === e.loopId
           ? s.loopManifest.map((m) => ((m.id ?? m.path) === e.itemId || m.path === e.path ? { ...m, status: e.status } : m))
           : s.loopManifest;
-      return { loopItems: { ...s.loopItems, [e.loopId]: items }, loopManifest };
+      return { loopItems: { ...s.loopItems, [e.loopId]: items }, loopManifest, loopItemActivity: stampActivity(s.loopItemActivity, e.loopId, e.itemId) };
     }),
   onLoopProgress: (e) =>
     set((s) => ({
@@ -2129,8 +2232,32 @@ export const useStore = create<LockeState>((set, get) => ({
   onLoopEvent: (e) =>
     set((s) => {
       const arr = [{ st: e.st, path: e.path, text: e.text, t: e.t }, ...(s.loopStream[e.loopId] ?? [])].slice(0, 200);
-      return { loopStream: { ...s.loopStream, [e.loopId]: arr } };
+      // `e.path` is the item key (== itemId), so a stream line counts as activity too.
+      return { loopStream: { ...s.loopStream, [e.loopId]: arr }, loopItemActivity: stampActivity(s.loopItemActivity, e.loopId, e.path) };
     }),
+  onLoopTrail: (e) =>
+    set((s) => {
+      const byItem = s.loopItemTrail[e.loopId] ?? {};
+      const entry: LoopTrailEntry = { tool: e.tool, target: e.target, t: e.t };
+      const trail = [...(byItem[e.itemId] ?? []), entry].slice(-60);
+      return {
+        loopItemTrail: { ...s.loopItemTrail, [e.loopId]: { ...byItem, [e.itemId]: trail } },
+        loopItemActivity: stampActivity(s.loopItemActivity, e.loopId, e.itemId),
+      };
+    }),
+  onLoopBlock: (e) =>
+    set((s) => {
+      // Upsert by taskId; an `auto`-policy proposal is informational (not gated).
+      const cur = (s.loopBlocks[e.loopId] ?? []).filter((b) => b.taskId !== e.taskId);
+      return { loopBlocks: { ...s.loopBlocks, [e.loopId]: [...cur, e] } };
+    }),
+  resolveLoopBlock: (loopId, taskId, approve) => {
+    if (!MOCK) void resolveLoopBlockApi(loopId, taskId, approve);
+    // Drop it from the tray immediately — the runner confirms via loop:item.
+    set((s) => ({
+      loopBlocks: { ...s.loopBlocks, [loopId]: (s.loopBlocks[loopId] ?? []).filter((b) => b.taskId !== taskId) },
+    }));
+  },
   onLoopDone: (e) => {
     // loop:done always means the coordinator finished, so every outcome is terminal:
     // a "review" outcome (items need a human call) is still a finished build — map it

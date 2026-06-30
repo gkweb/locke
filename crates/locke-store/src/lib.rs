@@ -498,6 +498,10 @@ pub struct Loop {
     /// Lets the completed loop deep-link back to its review and dedup creation.
     #[serde(default)]
     pub pull_id: u64,
+    /// How a `loop_block_on_task` proposal is handled: "approve" (default — surface it
+    /// and wait for the human) or "auto" (inject + run the prerequisite immediately).
+    #[serde(default)]
+    pub block_policy: String,
     #[serde(default)]
     pub created_at: String,
     #[serde(default)]
@@ -911,6 +915,103 @@ pub fn read_interview(repo: &str, id: &str) -> R<Value> {
     Ok(json!({ "transcript": transcript, "pending": pending }))
 }
 
+// ---- mid-flight work injection (.locke/loops/<id>/block/<key>.req|done.json) ----
+//
+// A build agent's `loop_block_on_task` writes a `.req.json` and then BLOCKS polling for
+// the matching `.done.json` — exactly the interview's poll-a-file handshake, but the
+// "answer" is the injected prerequisite task reaching a terminal state (written by the
+// runner, or by the desktop on a rejected approval). `key` is the task's stable id.
+
+fn loop_block_dir(repo: &str, id: &str) -> PathBuf {
+    loop_dir(repo, id).join("block")
+}
+
+fn block_req_path(repo: &str, id: &str, key: &str) -> PathBuf {
+    loop_block_dir(repo, id).join(format!("{}.req.json", sanitize_path(key)))
+}
+
+fn block_done_path(repo: &str, id: &str, key: &str) -> PathBuf {
+    loop_block_dir(repo, id).join(format!("{}.done.json", sanitize_path(key)))
+}
+
+/// Record a block-on-task request (a discovered prerequisite), returning its nonce.
+/// The blocked `loop_block_on_task` polls `read_loop_block_done` for a matching nonce.
+pub fn write_loop_block_request(
+    repo: &str,
+    id: &str,
+    key: &str,
+    title: &str,
+    spec: &str,
+    requires: &[String],
+    priority: i64,
+) -> R<String> {
+    ensure_locke(repo)?;
+    let nonce = fresh_nonce();
+    let req = json!({
+        "nonce": nonce,
+        "taskId": key,
+        "title": title,
+        "spec": spec,
+        "requires": requires,
+        "priority": priority,
+        "ts": now_iso(),
+    });
+    write_json(&block_req_path(repo, id, key), &req)?;
+    Ok(nonce)
+}
+
+/// The pending block request for `key`, if any.
+pub fn read_loop_block_request(repo: &str, id: &str, key: &str) -> R<Option<Value>> {
+    read_json(&block_req_path(repo, id, key))
+}
+
+/// Mark an injected task terminal (`status` = done | failed | rejected), unblocking the
+/// agent that called `loop_block_on_task`. Stamped with the request's nonce so a stale
+/// done never satisfies a since-replaced request under the same key.
+pub fn write_loop_block_done(repo: &str, id: &str, key: &str, status: &str, summary: &str) -> R<()> {
+    ensure_locke(repo)?;
+    let nonce = read_loop_block_request(repo, id, key)?
+        .and_then(|q| q.get("nonce").and_then(|v| v.as_str()).map(String::from))
+        .unwrap_or_default();
+    write_json(&block_done_path(repo, id, key), &json!({ "nonce": nonce, "status": status, "summary": summary }))
+}
+
+/// The recorded terminal state for an injected task `key`, if any.
+pub fn read_loop_block_done(repo: &str, id: &str, key: &str) -> R<Option<Value>> {
+    read_json(&block_done_path(repo, id, key))
+}
+
+/// Drop the `.req`/`.done` pair for `key` (called once the agent has consumed the result).
+pub fn clear_loop_block(repo: &str, id: &str, key: &str) -> R<()> {
+    for p in [block_req_path(repo, id, key), block_done_path(repo, id, key)] {
+        if p.exists() {
+            fs::remove_file(&p).map_err(|e| format!("clear block file: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Every pending block request (no matching `.done.json` yet) — for the approvals tray
+/// and a reopened run. Returns the request objects.
+pub fn read_loop_block_requests(repo: &str, id: &str) -> R<Vec<Value>> {
+    let dir = loop_block_dir(repo, id);
+    let mut out = Vec::new();
+    if dir.exists() {
+        for entry in fs::read_dir(&dir).map_err(|e| format!("read block dir: {e}"))? {
+            let name = entry.map_err(|e| format!("read block entry: {e}"))?.file_name().to_string_lossy().to_string();
+            if let Some(stem) = name.strip_suffix(".req.json") {
+                if let Some(req) = read_json(&loop_block_dir(repo, id).join(&name))? {
+                    let key = req.get("taskId").and_then(|v| v.as_str()).unwrap_or(stem).to_string();
+                    if read_loop_block_done(repo, id, &key)?.is_none() {
+                        out.push(req);
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 // ---- target+spec manifest (.locke/loops/<id>/manifest.json) ----
 
 /// One row of a loop's manifest: a target file plus (once Plan mode runs) its
@@ -976,6 +1077,10 @@ pub struct ManifestEntry {
     /// → queued) or dropping them (`loop_drop_item` → excluded, with `reason`).
     #[serde(default)]
     pub status: String,
+    /// A task injected mid-run by a build agent via `loop_block_on_task` (a discovered
+    /// prerequisite). Drives the "injected" tag + the per-loop injection cap.
+    #[serde(default)]
+    pub injected: bool,
 }
 
 fn loop_manifest_path(repo: &str, id: &str) -> PathBuf {
@@ -1318,6 +1423,38 @@ mod tests {
         append_interview_msg(repo, "lp1", "__scope__", "agent", "q2", None).unwrap();
         // Only agent turns count toward the per-loop question cap.
         assert_eq!(interview_agent_turns(repo, "lp1").unwrap(), 2);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn block_on_task_handshake_round_trip() {
+        let dir = tmp("block-handshake");
+        let repo = dir.to_str().unwrap();
+
+        // No pending proposals to start.
+        assert!(read_loop_block_requests(repo, "lp1").unwrap().is_empty());
+        assert!(read_loop_block_done(repo, "lp1", "shared-util").unwrap().is_none());
+
+        // The agent posts a prerequisite and blocks; it surfaces as pending.
+        let nonce = write_loop_block_request(repo, "lp1", "shared-util", "Extract util", "do the thing", &["dep-a".into()], 5).unwrap();
+        let pending = read_loop_block_requests(repo, "lp1").unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0]["taskId"], "shared-util");
+        assert_eq!(pending[0]["title"], "Extract util");
+
+        // The runner marks it done, nonce-stamped so a stale done can't satisfy a
+        // since-replaced request. Once done, it's no longer "pending".
+        write_loop_block_done(repo, "lp1", "shared-util", "done", "landed on the branch").unwrap();
+        let d = read_loop_block_done(repo, "lp1", "shared-util").unwrap().unwrap();
+        assert_eq!(d["status"], "done");
+        assert_eq!(d["nonce"].as_str().unwrap(), nonce);
+        assert!(read_loop_block_requests(repo, "lp1").unwrap().is_empty());
+
+        // The agent consumes the result: the pair is cleared.
+        clear_loop_block(repo, "lp1", "shared-util").unwrap();
+        assert!(read_loop_block_request(repo, "lp1", "shared-util").unwrap().is_none());
+        assert!(read_loop_block_done(repo, "lp1", "shared-util").unwrap().is_none());
 
         let _ = fs::remove_dir_all(&dir);
     }

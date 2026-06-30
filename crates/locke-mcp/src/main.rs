@@ -308,6 +308,22 @@ fn tools_list() -> Value {
             }
         },
         {
+            "name": "loop_block_on_task",
+            "description": "Build mode: call this when, partway through your item, you discover it needs a PREREQUISITE done first (a shared util, a migration, a fix in another file) — work that should land before yours. Declare the prerequisite as a task and this BLOCKS until it has run, then returns its status so you can continue on top of it. Provide a unique `id` (kebab-case slug), a short `title`, and a `spec` describing exactly what the prerequisite must do. Depending on the loop's policy it either runs immediately or waits for the human to approve it first. There's a per-run cap on injected work; if you hit it (status \"capped\") or it times out, do what you safely can and otherwise call loop_item_needs_review. Don't use this for trivial in-file changes you can just make yourself.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "loop_id": { "type": "string", "description": "The loop id (given in your task prompt)." },
+                    "id": { "type": "string", "description": "A unique kebab-case id for the prerequisite task, e.g. \"extract-theme-util\"." },
+                    "title": { "type": "string", "description": "Short human label for the prerequisite, e.g. \"Extract shared theme helper\"." },
+                    "spec": { "type": "string", "description": "What the prerequisite must do — concrete enough for another agent to execute it without you." },
+                    "requires": { "type": "array", "items": { "type": "string" }, "description": "Optional ids the prerequisite itself depends on." },
+                    "priority": { "type": "number", "description": "Optional scheduling priority (higher runs first)." }
+                },
+                "required": ["loop_id", "id", "title", "spec"]
+            }
+        },
+        {
             "name": "loop_list_candidates",
             "description": "Plan mode (strategist): list the loop's current file set — the candidate pool the scope hint surfaced (status \"candidate\"), the files you've already included (status \"queued\"/\"specced\"), and any you've excluded (status \"excluded\", with the reason). The candidate pool is a HINT, not the work: it's your job to decide which of these files are actually in scope for the task, add files the hint missed (`loop_add_item`), and drop ones that don't belong (`loop_drop_item`). Returns each row's path, loc, risk, inc flag, status, and origin.",
             "inputSchema": {
@@ -376,6 +392,7 @@ fn handle_tools_call(msg: &Value, id: Option<Value>, repo: Option<&str>, agent: 
         "loop_add_item" => tool_loop_add_item(repo, &args),
         "loop_drop_item" => tool_loop_drop_item(repo, &args),
         "loop_ask" => tool_loop_ask(repo, &args),
+        "loop_block_on_task" => tool_loop_block_on_task(repo, &args),
         other => Err(format!("unknown tool: {other}")),
     };
 
@@ -889,6 +906,64 @@ fn tool_loop_ask(repo: &str, args: &Value) -> Result<Value, String> {
             }));
         }
         std::thread::sleep(std::time::Duration::from_millis(INTERVIEW_POLL_MS));
+    }
+}
+
+/// Max prerequisites a single loop run may inject via `loop_block_on_task`. Bounds the
+/// token cost of agents spawning ever more work; past it the tool returns a proceed note.
+const BLOCK_TASK_CAP: usize = 4;
+/// Backstop wait for an injected prerequisite to finish (it runs a whole agent + checks,
+/// and in `approve` mode waits on a human first, so this is generous).
+const BLOCK_TIMEOUT_SECS: u64 = 45 * 60;
+const BLOCK_POLL_MS: u64 = 700;
+
+/// Build mode: the agent has discovered that this item needs a prerequisite done FIRST.
+/// Declare it as a task and BLOCK until the runner injects + runs it (or, in `approve`
+/// mode, until the human decides). Returns the prerequisite's terminal status so the
+/// agent can resume. The agent stays alive mid-tool-call, so — like `loop_ask` — this
+/// needs no extra process plumbing; the runner detects the call, releases this item's
+/// pool slot, and writes the `.done.json` this poll is waiting on.
+fn tool_loop_block_on_task(repo: &str, args: &Value) -> Result<Value, String> {
+    let loop_id = arg_str(args, "loop_id")?;
+    let id = arg_str(args, "id")?;
+    let title = arg_str(args, "title")?;
+    let spec = arg_str(args, "spec")?;
+    let requires = arg_str_vec(args, "requires");
+    let priority = args.get("priority").and_then(|v| v.as_i64()).unwrap_or(0);
+
+    // Cap injected work per run so a chain of agents can't explode token spend.
+    let injected = locke_store::read_loop_manifest(repo, loop_id)?.iter().filter(|e| e.injected).count();
+    if injected >= BLOCK_TASK_CAP {
+        return Ok(json!({
+            "status": "capped",
+            "summary": format!(
+                "Injection cap reached ({BLOCK_TASK_CAP} prerequisites this run). Don't block on more work — \
+                 do what you safely can, and if this item genuinely can't proceed call loop_item_needs_review with the reason."
+            ),
+        }));
+    }
+
+    // Post the request, then poll for the runner's (or a rejected approval's) done file.
+    let nonce = locke_store::write_loop_block_request(repo, loop_id, id, title, spec, &requires, priority)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(BLOCK_TIMEOUT_SECS);
+    loop {
+        if let Some(d) = locke_store::read_loop_block_done(repo, loop_id, id)? {
+            if d.get("nonce").and_then(|v| v.as_str()) == Some(nonce.as_str()) {
+                let status = d.get("status").and_then(|v| v.as_str()).unwrap_or("done").to_string();
+                let summary = d.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                locke_store::clear_loop_block(repo, loop_id, id)?;
+                return Ok(json!({ "status": status, "summary": summary }));
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            locke_store::clear_loop_block(repo, loop_id, id)?;
+            return Ok(json!({
+                "status": "timedOut",
+                "summary": "The prerequisite didn't complete in time. Proceed with your best judgment; if this item \
+                            genuinely can't be done without it, call loop_item_needs_review with the reason.",
+            }));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(BLOCK_POLL_MS));
     }
 }
 
