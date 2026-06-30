@@ -299,7 +299,9 @@ export interface ManifestEntry extends LoopTarget {
   note?: string;
   /** Repo-relative ref to the per-item markdown spec, once written. */
   spec?: string;
-  /** Spec lifecycle: "" | speccing | specced | review | excluded. */
+  /** Spec lifecycle: "" | candidate | speccing | specced | review | excluded.
+   *  `candidate` = surfaced by the scope hint but not yet chosen by the strategist
+   *  (inc=false); it's promoted (→ queued) or dropped (→ excluded, with `reason`). */
   status?: string;
   /** Provenance: "resolver" (matched by the glob/list) | "model" (strategist-
    *  suggested task) | "human" (user-added). Empty on legacy rows (= "resolver"). */
@@ -324,6 +326,9 @@ export interface WorkGraphNode {
   wave: number;
   origin: NodeOrigin;
   status: string;
+  /** Why the strategist excluded this node (status "excluded") — shown so the
+   *  human can see what it chose to skip and why. */
+  reason?: string;
 }
 
 /** One planned edit step within a per-item spec. */

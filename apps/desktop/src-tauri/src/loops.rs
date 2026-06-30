@@ -1141,6 +1141,15 @@ fn stream_claude<F: FnMut(&str, &str, &Value)>(ctx: &Arc<Ctx>, wt: &str, prompt:
 
     let mut stdin = child.stdin.take().ok_or("no stdin")?;
     let stdout = child.stdout.take().ok_or("no stdout")?;
+    // Drain stderr in a background thread. `claude --verbose` writes copiously to
+    // stderr; with the pipe never read, its OS buffer (~64KB) fills and the agent
+    // BLOCKS on the next stderr write — hanging mid-run, alive but idle. A broadly-
+    // exploring agent (e.g. the decomposition scope pass) hits this fast.
+    let stderr_handle = child.stderr.take().map(|mut err| {
+        std::thread::spawn(move || {
+            let _ = std::io::copy(&mut err, &mut std::io::sink());
+        })
+    });
     let user_msg = json!({ "type": "user", "message": { "role": "user", "content": prompt } });
     writeln!(stdin, "{user_msg}").map_err(|e| format!("write prompt: {e}"))?;
     stdin.flush().ok();
@@ -1217,6 +1226,9 @@ fn stream_claude<F: FnMut(&str, &str, &Value)>(ctx: &Arc<Ctx>, wt: &str, prompt:
     let _ = child.wait();
     watch_done.store(true, Ordering::Relaxed);
     let _ = watcher.join();
+    if let Some(h) = stderr_handle {
+        let _ = h.join();
+    }
     Ok(())
 }
 
@@ -1256,47 +1268,94 @@ fn run_agent_stream(ctx: &Arc<Ctx>, item_id: &str, p: &Picked, wt: &str, intervi
 /// writes the loop's plan.md + scope metadata via `loop_write_plan`. Runs in the
 /// seed worktree before the per-item fan-out. Best-effort — a failed scope pass
 /// still lets per-item speccing proceed (items just lack shared conventions).
-fn run_scope_agent(ctx: &Arc<Ctx>, file_count: u64) {
+fn run_scope_agent(ctx: &Arc<Ctx>) {
     let tests = if ctx.checks.is_empty() {
         "(no checks configured)".to_string()
     } else {
         ctx.checks.iter().map(|c| c.label.clone()).collect::<Vec<_>>().join(", ")
     };
+    // The scope hint seeds a CANDIDATE POOL, not the work set. Tell the agent how
+    // many candidates it has so it knows whether to curate a pool or discover from
+    // scratch — but in both cases IT decides the files.
+    let pool = locke_store::read_loop_manifest(&ctx.repo, &ctx.loop_id)
+        .unwrap_or_default()
+        .iter()
+        .filter(|e| e.kind != "task" && e.status == "candidate")
+        .count();
+    let seed_line = if pool == 0 {
+        "No scope hint was given: there is NO candidate pool. EXPLORE the repository yourself to \
+         find every file this task applies to, and include each one with `loop_add_item`."
+            .to_string()
+    } else {
+        format!(
+            "A scope hint surfaced {pool} CANDIDATE file(s) — call `loop_list_candidates` to see them. \
+             Treat them as a starting hint, NOT the answer: the glob may include files that don't belong \
+             and miss files that do. Decide the real set yourself."
+        )
+    };
     let prompt = format!(
-        "You are the STRATEGIST opening a Locke loop (loop_id=\"{id}\"). The loop applies this task across {n} \
-         items in this repo:\n\n{task}\n\nRead enough of the codebase to understand the shared shape of the work, \
-         then write ONE global plan by calling `loop_write_plan` with:\n\
-         - `plan`: markdown conventions every per-item worker should follow (objective, shared rules, what to leave \
-         untouched). This is injected into every build prompt.\n\
-         - `assumptions`: the assumptions the loop is making (so the human can correct them before approving).\n\
-         - `summary`: a few rows describing what the loop will do across the set; set `pend=true` on any row that \
-         still needs a human decision.\n\n\
-         If the work needs PREREQUISITE or CUSTOM tasks that aren't one of the {n} files — e.g. create a shared \
-         module/composable, add a dependency, write a codemod, set up fixtures — call `loop_add_task` for each one \
-         (give it a slug `id`, a `title`, a `spec`, and use `blocks` with a glob or path list to make the files that \
-         depend on it wait until it's done; use `requires` to order tasks among themselves). Decide the run order \
-         yourself — you own the orchestration; the human will review the work graph before the build runs, so propose \
-         the structure you think is right rather than asking.\n\n\
-         If a decision would materially change the plan (scope, naming, which approach to standardise on), ASK the \
-         human ONE question at a time by calling `loop_ask` (loop_id=\"{id}\", a single focused `question`, optional \
-         `choices`), wait for the answer, then continue — prefer asking over guessing. Leave `file` empty here so the \
-         question shows on the Scope tab.\n\n\
-         The build workers must make these checks pass: {tests}. Do NOT edit any file — analysis only. Call \
-         `loop_write_plan` exactly once; call `loop_add_task` once per task (or not at all if no extra tasks are \
-         needed).",
+        "You are the STRATEGIST opening a Locke loop (loop_id=\"{id}\"). Your job is to turn this task into a \
+         concrete, reviewable WORK SET — you DECIDE which files and tasks the loop will do. The PROMPT below is the \
+         source of truth for the work; the resolver's candidate pool is only a hint.\n\n\
+         TASK:\n{task}\n\n\
+         {seed_line}\n\n\
+         Work in this order:\n\
+         1. REQUIREMENTS FIRST. Before fixing the set, if anything about the objective, boundaries, or acceptance \
+         criteria is ambiguous, ASK the human — call `loop_ask` (loop_id=\"{id}\", one focused `question`, optional \
+         `choices`), wait for the answer, then ask the next. Leave `file` empty so it shows on the Scope tab. Prefer \
+         asking over guessing on anything that changes the scope.\n\
+         2. EXPLORE read-only to understand the shared shape of the work and where it actually lives. Call \
+         `loop_list_candidates` to see the pool.\n\
+         3. AUTHOR THE SET. This is the core of your job:\n\
+         - `loop_add_item(path)` — include a file you've decided is in scope (a candidate you're keeping, OR a file \
+         the hint missed entirely).\n\
+         - `loop_drop_item(path, reason)` — exclude a candidate (or task) that doesn't belong. ALWAYS give a clear \
+         `reason`; the human sees it in the work graph and may re-include. Drop, don't silently ignore.\n\
+         - `loop_add_task(id, title, spec, blocks?, requires?)` — for work that ISN'T one of the files: a shared \
+         module/composable, a dependency, a codemod, fixtures. Use `blocks` (glob or paths) to make dependent files \
+         wait; `requires` to order tasks. This is also how you GROUP files under a shared prerequisite or SPLIT one \
+         concern across several units.\n\
+         4. WRITE THE PLAN. When the set is settled, call `loop_write_plan` once with `plan` (markdown conventions \
+         injected into every build worker), `assumptions` (so the human can correct them), and `summary` (a few rows \
+         describing what the loop will do; `pend=true` on any row still needing a decision).\n\n\
+         You own the orchestration — propose the structure you think is right; the human reviews the work graph before \
+         any build runs. The build workers must make these checks pass: {tests}. Do NOT edit any file — analysis only. \
+         Call `loop_write_plan` exactly once, when the work set is complete.",
         id = ctx.loop_id,
-        n = file_count,
         task = ctx.template,
+        seed_line = seed_line,
         tests = tests,
     );
-    emit_stream(ctx, "running", "plan", "drafting the loop plan…");
+    emit_stream(ctx, "running", "plan", "reading the codebase…");
     let _ = stream_claude(ctx, &ctx.seed, &prompt, "", |kind, payload, input| {
         if kind == "text" {
             emit_stream(ctx, "running", "plan", &payload.chars().take(80).collect::<String>());
-        } else if kind == "tool" && payload == "loop_ask" {
-            // Scope-level question — surface it on the Scope tab. The scope pass runs
-            // sequentially in the coordinator, so it simply blocks until answered.
-            surface_interview(ctx, None, input);
+        } else if kind == "tool" {
+            // Surface what the strategist is doing so a long exploration shows live
+            // progress instead of looking frozen.
+            match payload {
+                "loop_ask" => {
+                    // Scope-level question — surface it on the Scope tab. The scope pass
+                    // runs sequentially in the coordinator, so it blocks until answered.
+                    surface_interview(ctx, None, input);
+                }
+                "Read" | "Grep" | "Glob" => emit_stream(ctx, "running", "plan", "exploring the repository…"),
+                "loop_list_candidates" => emit_stream(ctx, "running", "plan", "reviewing the candidate pool…"),
+                "loop_add_item" => {
+                    let p = input.get("path").and_then(|v| v.as_str()).unwrap_or("a file");
+                    emit_stream(ctx, "running", "plan", &format!("including {p}"));
+                }
+                "loop_drop_item" => {
+                    let p = input.get("path").and_then(|v| v.as_str()).unwrap_or("a file");
+                    emit_stream(ctx, "running", "plan", &format!("excluding {p}"));
+                }
+                "loop_add_task" => {
+                    let t = input.get("title").and_then(|v| v.as_str()).unwrap_or("a task");
+                    emit_stream(ctx, "running", "plan", &format!("adding task: {t}"));
+                }
+                "loop_write_plan" => emit_stream(ctx, "running", "plan", "writing the plan…"),
+                _ => {}
+            }
         }
     });
     emit_stream(ctx, "done", "plan", "plan ready");
@@ -1539,20 +1598,42 @@ pub fn start_plan(
     run_git(&repo, &["worktree", "add", "--detach", &seed, &base])
         .map_err(|e| format!("plan worktree at {base}: {e}"))?;
 
-    // The set to spec: prefer the checked-in manifest's `inc` rows (carrying any
-    // requires/priority/wave), else the resolved/globbed file set. Mark each queued
-    // and persist the manifest now so the Plan view can list items immediately and
-    // approve→build has its source of truth.
-    let manifest = locke_store::read_loop_manifest(&repo, &loop_id).unwrap_or_default();
-    let mut entries: Vec<ManifestEntry> = if manifest.iter().any(|e| e.inc) {
-        manifest.into_iter().filter(|e| e.inc).collect()
-    } else {
-        let files = if targets.is_empty() { collect_targets(&repo, &pattern) } else { targets };
-        files
+    // Requirements-first: the PROMPT is the source of truth for the work, not the
+    // resolver. The scope hint only seeds a *candidate pool* (`inc=false`,
+    // status=`candidate`); the decomposition agent (run_scope_agent) authors the
+    // actual set by promoting candidates (`loop_add_item` → queued) / dropping them
+    // (`loop_drop_item` → excluded) / adding tasks. So here we DON'T pre-queue the
+    // glob: we keep every row (candidates + excluded + anything already authored) and
+    // only (re)queue rows the model has already included. The post-scope rebuild
+    // (below) seeds the spec scheduler from whatever the agent authors.
+    let mut entries = locke_store::read_loop_manifest(&repo, &loop_id).unwrap_or_default();
+    // If the manifest is empty but a scope hint was passed, seed it as CANDIDATES
+    // (not authoritative) — robustness when the front-end didn't pre-write them.
+    // No hint at all ⇒ leave empty: a prompt-only loop where the agent discovers.
+    if entries.is_empty() {
+        let files = if targets.is_empty() {
+            if pattern.trim().is_empty() { Vec::new() } else { collect_targets(&repo, &pattern) }
+        } else {
+            targets
+        };
+        entries = files
             .into_iter()
-            .map(|path| ManifestEntry { id: path.clone(), path, inc: true, kind: "file".into(), ..Default::default() })
-            .collect()
-    };
+            .map(|path| {
+                let loc = count_loc(&repo, &path);
+                ManifestEntry {
+                    id: path.clone(),
+                    path,
+                    kind: "file".into(),
+                    loc,
+                    risk: risk_band(loc).to_string(),
+                    inc: false,
+                    status: "candidate".into(),
+                    origin: "resolver".into(),
+                    ..Default::default()
+                }
+            })
+            .collect();
+    }
     for e in &mut entries {
         if e.id.is_empty() {
             e.id = e.path.clone();
@@ -1560,9 +1641,14 @@ pub fn start_plan(
         if e.kind.is_empty() {
             e.kind = "file".into();
         }
+        // Leave the candidate pool and dropped items as the model authored them.
+        if e.status == "candidate" || e.status == "excluded" {
+            continue;
+        }
         // Resume-safe: keep already-finished specs (specced / flagged-for-review);
-        // (re-)queue everything else. So a resumed plan only re-specs what's left.
-        if e.status != "specced" && e.status != "review" {
+        // (re-)queue everything else the model included. So a resumed plan only
+        // re-specs what's left.
+        if e.inc && e.status != "specced" && e.status != "review" {
             e.status = "queued".into();
         }
     }
@@ -1626,7 +1712,7 @@ pub fn start_plan(
     // Coordinator: scope pass → per-item spec fan-out → finalize to `planning`.
     std::thread::spawn(move || {
         if !ctx.stopped.load(Ordering::Relaxed) && !has_plan {
-            run_scope_agent(&ctx, total);
+            run_scope_agent(&ctx);
             // The scope agent may have added prerequisite/custom task nodes (via
             // `loop_add_task`) and fanned `requires` edges across files. Rebuild the
             // scheduler from the now-current manifest so any still-queued items it

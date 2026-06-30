@@ -3,7 +3,7 @@ import type { ResolverSpec } from "@locke/core";
 import { useStore } from "../../state/store.js";
 import { color, font, alpha, tint } from "../../theme/tokens.js";
 import { riskColor, resolverEmpty } from "../../lib/loops.js";
-import { BranchIcon, ChevronDownIcon, ChevronLeftIcon, CheckIcon, PlanDocIcon, PlayIcon } from "../../components/icons.js";
+import { BranchIcon, ChevronDownIcon, ChevronLeftIcon, CheckIcon, PlanDocIcon, PlayIcon, InfoIcon } from "../../components/icons.js";
 import { HoverButton } from "../../components/primitives.js";
 
 // Loops · builder — seed branch, task prompt, Plan/Build mode, then audit which
@@ -328,8 +328,20 @@ export function LoopBuilder() {
   const branchValid = isValidBranch(branch);
   const branchExists = branchValid && repoBranches.includes(branch);
 
-  const canStart =
-    draftTitle.trim() !== "" && branchValid && draftPrompt.trim() !== "" && !resolverEmpty(draftResolver);
+  // Plan mode: the prompt is the work and the strategist discovers the files, so a
+  // scope hint is OPTIONAL (blank ⇒ it explores the whole repo). Build mode has no
+  // strategist, so it still needs an explicit set.
+  const plan = draftMode !== "build";
+  // What's still missing for a start — surfaced inline so a disabled button never
+  // fails silently (the empty title renders as the "Name this loop" heading, which
+  // reads as filled).
+  const missing = [
+    draftTitle.trim() === "" && "a loop name",
+    !branchValid && "a valid seed branch",
+    draftPrompt.trim() === "" && "a task prompt",
+    !plan && resolverEmpty(draftResolver) && "a file pattern",
+  ].filter(Boolean) as string[];
+  const canStart = missing.length === 0;
 
   const targets = loopTargets.map((t) => ({
     ...t,
@@ -378,6 +390,10 @@ export function LoopBuilder() {
             ...bareInput,
             width: "100%",
             margin: "0 0 22px",
+            paddingBottom: 3,
+            // The placeholder reads like a real title, so cue the empty required
+            // field with a dashed underline until it's named.
+            borderBottom: draftTitle.trim() === "" ? `1px dashed ${color.amber}77` : "1px solid transparent",
             fontSize: 21,
             fontWeight: 700,
             letterSpacing: "-.4px",
@@ -518,8 +534,14 @@ export function LoopBuilder() {
           />
         </div>
 
-        {/* targets */}
-        <div style={{ ...label, marginBottom: 5 }}>AUDIT &amp; SELECT TARGETS</div>
+        {/* targets / scope hint */}
+        <div style={{ ...label, marginBottom: 5 }}>{plan ? "SCOPE HINT (OPTIONAL)" : "AUDIT & SELECT TARGETS"}</div>
+        {plan && (
+          <div style={{ fontSize: 11.5, color: color.textFainter, marginBottom: 8, lineHeight: 1.5 }}>
+            Where should the strategist look? It curates these as <em>candidates</em> — including, excluding, and
+            adding files to fit the prompt. Leave blank to let it search the whole repo.
+          </div>
+        )}
         <ResolverPicker resolver={draftResolver} onChange={setDraftResolver} />
         <div
           style={{
@@ -534,9 +556,15 @@ export function LoopBuilder() {
         >
           <span style={{ fontFamily: font.mono, color: color.textFaint }}>{loopMatched.toLocaleString()} files match</span>
           <span style={{ color: "#3a414e" }}>·</span>
-          <span style={{ color: color.green }}>{loopAutoIncluded.toLocaleString()} auto-included</span>
-          <span style={{ color: "#3a414e" }}>·</span>
-          <span style={{ color: color.amber }}>{targets.length} flagged for your call</span>
+          {plan ? (
+            <span style={{ color: color.violetLight }}>{selected} candidate{selected === 1 ? "" : "s"} for the model to curate</span>
+          ) : (
+            <>
+              <span style={{ color: color.green }}>{loopAutoIncluded.toLocaleString()} auto-included</span>
+              <span style={{ color: "#3a414e" }}>·</span>
+              <span style={{ color: color.amber }}>{targets.length} flagged for your call</span>
+            </>
+          )}
         </div>
 
         {targets.map((t) => (
@@ -655,7 +683,7 @@ export function LoopBuilder() {
             <span style={{ fontSize: 13, color: color.textFainter }}>/ {loopMatched.toLocaleString()}</span>
           </div>
           <div style={{ fontSize: 11.5, color: color.textFaint, marginBottom: 20 }}>
-            targets in scope · {excluded.toLocaleString()} excluded
+            {plan ? "candidates · the model decides the final set" : `targets in scope · ${excluded.toLocaleString()} excluded`}
           </div>
           <div
             style={{
@@ -693,9 +721,28 @@ export function LoopBuilder() {
             gap: 9,
           }}
         >
+          {!canStart && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 7,
+                fontSize: 11.5,
+                color: color.amber,
+                lineHeight: 1.4,
+              }}
+            >
+              <InfoIcon size={13} color={color.amber} stroke={1.7} />
+              <span>
+                Add {missing.slice(0, -1).join(", ")}
+                {missing.length > 1 ? " and " : ""}
+                {missing[missing.length - 1]} to start.
+              </span>
+            </div>
+          )}
           <HoverButton
             onClick={canStart ? startLoop : () => {}}
-            title={canStart ? undefined : "Add a title, seed branch, task prompt, and a file pattern first."}
+            title={canStart ? undefined : `Add ${missing.join(", ")} first.`}
             style={{
               width: "100%",
               display: "flex",

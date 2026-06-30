@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { LoopSpec, SpecStatus } from "@locke/core";
 import { useStore } from "../../state/store.js";
 import { isTauri } from "../../api/git.js";
 import { color, font, tint } from "../../theme/tokens.js";
-import { riskColor, specStatusMeta, baseName, manifestToSpecs, manifestToGraph, originMeta } from "../../lib/loops.js";
+import { riskColor, specStatusMeta, baseName, manifestToSpecs, manifestToGraph, originMeta, isConsidered } from "../../lib/loops.js";
 import {
   MOCK_LOOP_INTERVIEW,
   MOCK_LOOP_PENDING_Q,
@@ -176,10 +176,12 @@ function PlanScope() {
   // scope column is a read-only transcript of the plan the strategist drafted.
   const summary = isTauri ? planMeta?.summary ?? [] : MOCK_LOOP_SPEC_SUMMARY;
   const assumptions = isTauri ? planMeta?.assumptions ?? [] : MOCK_LOOP_ASSUMPTIONS;
-  const realCount = isTauri ? manifest.length : specCount;
+  // Counts are over the decided work set — candidate-pool rows don't count as specs.
+  const workItems = manifest.filter((e) => e.status !== "candidate");
+  const realCount = isTauri ? workItems.length : specCount;
   // "Live" only when a runner is attached this session; otherwise the indicators
-  // mustn't claim it's working. Unfinished = not specced/excluded yet.
-  const unfinished = manifest.filter((e) => e.status !== "specced" && e.status !== "review" && e.status !== "excluded").length;
+  // mustn't claim it's working. Unfinished = not specced/excluded/candidate yet.
+  const unfinished = workItems.filter((e) => e.status !== "specced" && e.status !== "review" && e.status !== "excluded").length;
   const live = !isTauri || active;
   const planning = live && (!isTauri || (summary.length === 0 && assumptions.length === 0));
   // Stalled: a planning loop with no runner and work still to do (e.g. after a
@@ -745,13 +747,18 @@ function PlanGraph() {
   const addLoopTask = useStore((s) => s.addLoopTask);
   const removeLoopNode = useStore((s) => s.removeLoopNode);
   const setLoopDeps = useStore((s) => s.setLoopDeps);
+  const reincludeLoopItem = useStore((s) => s.reincludeLoopItem);
 
   const [adding, setAdding] = useState(false);
   const [title, setTitle] = useState("");
   const [spec, setSpec] = useState("");
   const [modelOnly, setModelOnly] = useState(false);
+  const [showConsidered, setShowConsidered] = useState(false);
 
-  const graph = manifestToGraph(manifest);
+  // How many rows the strategist considered but didn't choose (candidate pool +
+  // excluded) — the toggle reveals them, with the model's reason for skipping.
+  const consideredCount = manifest.filter(isConsidered).length;
+  const graph = manifestToGraph(manifest, showConsidered);
   const shown = modelOnly ? graph.filter((n) => n.origin === "model") : graph;
   const waves = [...new Set(shown.map((n) => n.wave))].sort((a, b) => a - b);
   const idLabel = new Map(graph.map((n) => [n.id, n.kind === "task" ? n.label : baseName(n.label)]));
@@ -788,10 +795,30 @@ function PlanGraph() {
             <UnifiedIcon size={13} color={color.textGhost} stroke={1.5} />
             WORK GRAPH · {graph.length} node{graph.length === 1 ? "" : "s"}
           </div>
+          {consideredCount > 0 && (
+            <button
+              onClick={() => setShowConsidered((v) => !v)}
+              title="Show the candidate pool and the items the strategist excluded, with its reasons"
+              style={{
+                marginLeft: "auto",
+                fontSize: 11,
+                fontWeight: 600,
+                cursor: "pointer",
+                borderRadius: 6,
+                padding: "4px 10px",
+                fontFamily: font.sans,
+                background: showConsidered ? tint(color.amber, "24") : "transparent",
+                border: `1px solid ${showConsidered ? tint(color.amber, "57") : color.borderRow}`,
+                color: showConsidered ? color.amber : color.textFaint,
+              }}
+            >
+              Considered · {consideredCount}
+            </button>
+          )}
           <button
             onClick={() => setModelOnly((v) => !v)}
             style={{
-              marginLeft: "auto",
+              marginLeft: consideredCount > 0 ? 0 : "auto",
               fontSize: 11,
               fontWeight: 600,
               cursor: "pointer",
@@ -855,60 +882,96 @@ function PlanGraph() {
             <div style={{ ...microLabel, marginTop: 4 }}>WAVE {w}{w === 0 ? " · runs first" : ""}</div>
             {shown.filter((n) => n.wave === w).map((n) => {
               const om = originMeta[n.origin];
-              const candidates = graph.filter((c) => c.id !== n.id && !n.requires.includes(c.id) && c.wave <= n.wave);
+              const candidates = graph.filter((c) => !isConsidered(c) && c.id !== n.id && !n.requires.includes(c.id) && c.wave <= n.wave);
+              const excluded = n.status === "excluded";
+              const considered = excluded || n.status === "candidate";
               return (
-                <div key={n.id} style={{ display: "flex", flexDirection: "column", gap: 7, padding: "10px 12px", borderRadius: 9, background: color.panelBg, border: `1px solid ${n.kind === "task" ? tint(color.violet, "3a") : color.borderRail}` }}>
+                <div
+                  key={n.id}
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 7,
+                    padding: "10px 12px",
+                    borderRadius: 9,
+                    background: color.panelBg,
+                    border: `1px ${considered ? "dashed" : "solid"} ${n.kind === "task" ? tint(color.violet, "3a") : color.borderRail}`,
+                    opacity: considered ? 0.72 : 1,
+                  }}
+                >
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span style={chip(n.kind === "task" ? color.violetLight : color.textGhost)}>{n.kind === "task" ? "TASK" : "FILE"}</span>
-                    <span style={{ fontSize: 12.5, fontWeight: 600, color: color.text, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    <span style={{ fontSize: 12.5, fontWeight: 600, color: color.text, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textDecoration: excluded ? "line-through" : undefined }}>
                       {n.kind === "task" ? n.label : baseName(n.label)}
                     </span>
+                    {excluded && <span style={chip(color.red)}>EXCLUDED</span>}
+                    {n.status === "candidate" && <span style={chip(color.amber)}>CANDIDATE</span>}
                     <span style={chip(om.color)}>{om.label}</span>
                     <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, flex: "none" }}>
-                      {n.priority !== 0 && <span style={{ fontSize: 10.5, color: color.textFainter }}>prio {n.priority}</span>}
-                      {n.origin !== "resolver" && (
+                      {!considered && n.priority !== 0 && <span style={{ fontSize: 10.5, color: color.textFainter }}>prio {n.priority}</span>}
+                      {considered ? (
                         <HoverButton
-                          onClick={() => void removeLoopNode(n.id)}
-                          style={{ display: "flex", alignItems: "center", background: "transparent", border: "none", cursor: "pointer", color: color.textFaint, padding: 2 }}
-                          hoverStyle={{ color: color.red }}
+                          onClick={() => reincludeLoopItem(n.id)}
+                          title="Pull this back into the work set"
+                          style={{ fontSize: 10.5, fontWeight: 600, fontFamily: font.sans, background: "transparent", border: `1px solid ${tint(color.teal, "4d")}`, borderRadius: 5, padding: "2px 8px", cursor: "pointer", color: color.teal }}
+                          hoverStyle={{ background: tint(color.teal, "16") }}
                         >
-                          <XIcon size={12} stroke={1.8} />
+                          Re-include
                         </HoverButton>
+                      ) : (
+                        n.origin !== "resolver" && (
+                          <HoverButton
+                            onClick={() => void removeLoopNode(n.id)}
+                            style={{ display: "flex", alignItems: "center", background: "transparent", border: "none", cursor: "pointer", color: color.textFaint, padding: 2 }}
+                            hoverStyle={{ color: color.red }}
+                          >
+                            <XIcon size={12} stroke={1.8} />
+                          </HoverButton>
+                        )
                       )}
                     </div>
                   </div>
-                  {/* dependency edges */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                    <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: ".5px", color: color.textGhost }}>REQUIRES</span>
-                    {n.requires.length === 0 && <span style={{ fontSize: 11.5, color: color.textFainter }}>nothing</span>}
-                    {n.requires.map((dep) => (
-                      <span key={dep} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: color.textSoft, background: color.chipBg, border: `1px solid ${color.borderChip}`, borderRadius: 5, padding: "2px 4px 2px 7px" }}>
-                        {idLabel.get(dep) ?? dep}
-                        <button
-                          onClick={() => void setLoopDeps(n.id, n.requires.filter((r) => r !== dep), n.priority)}
-                          style={{ display: "flex", background: "transparent", border: "none", cursor: "pointer", color: color.textFaint, padding: 0 }}
+                  {/* the strategist's reason for skipping — why this isn't in the set */}
+                  {considered ? (
+                    <div style={{ fontSize: 11.5, color: color.textFaint, lineHeight: 1.5 }}>
+                      {excluded
+                        ? n.reason || "Excluded by the strategist (no reason given)."
+                        : "In the candidate pool — the strategist hasn't chosen this for the set."}
+                    </div>
+                  ) : (
+                    /* dependency edges */
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: ".5px", color: color.textGhost }}>REQUIRES</span>
+                      {n.requires.length === 0 && <span style={{ fontSize: 11.5, color: color.textFainter }}>nothing</span>}
+                      {n.requires.map((dep) => (
+                        <span key={dep} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: color.textSoft, background: color.chipBg, border: `1px solid ${color.borderChip}`, borderRadius: 5, padding: "2px 4px 2px 7px" }}>
+                          {idLabel.get(dep) ?? dep}
+                          <button
+                            onClick={() => void setLoopDeps(n.id, n.requires.filter((r) => r !== dep), n.priority)}
+                            style={{ display: "flex", background: "transparent", border: "none", cursor: "pointer", color: color.textFaint, padding: 0 }}
+                          >
+                            <XIcon size={10} stroke={1.8} />
+                          </button>
+                        </span>
+                      ))}
+                      {candidates.length > 0 && (
+                        <select
+                          value=""
+                          onChange={(e) => {
+                            if (e.target.value) void setLoopDeps(n.id, [...n.requires, e.target.value], n.priority);
+                          }}
+                          style={{ fontSize: 11, color: color.textFaint, background: "transparent", border: `1px dashed ${color.borderRow}`, borderRadius: 5, padding: "2px 6px", cursor: "pointer", fontFamily: font.sans, outline: "none" }}
                         >
-                          <XIcon size={10} stroke={1.8} />
-                        </button>
-                      </span>
-                    ))}
-                    {candidates.length > 0 && (
-                      <select
-                        value=""
-                        onChange={(e) => {
-                          if (e.target.value) void setLoopDeps(n.id, [...n.requires, e.target.value], n.priority);
-                        }}
-                        style={{ fontSize: 11, color: color.textFaint, background: "transparent", border: `1px dashed ${color.borderRow}`, borderRadius: 5, padding: "2px 6px", cursor: "pointer", fontFamily: font.sans, outline: "none" }}
-                      >
-                        <option value="">+ requires…</option>
-                        {candidates.map((c) => (
-                          <option key={c.id} value={c.id} style={{ background: FIELD, color: color.text }}>
-                            {c.kind === "task" ? c.label : baseName(c.label)}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
+                          <option value="">+ requires…</option>
+                          {candidates.map((c) => (
+                            <option key={c.id} value={c.id} style={{ background: FIELD, color: color.text }}>
+                              {c.kind === "task" ? c.label : baseName(c.label)}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -926,11 +989,25 @@ export function LoopPlan() {
   const setPlanTab = useStore((s) => s.setPlanTab);
   const loopToList = useStore((s) => s.loopToList);
   const stopLoop = useStore((s) => s.stopLoop);
-  const manifestLen = useStore((s) => s.loopManifest.length);
+  // Count only decided work items, not the undecided candidate pool, so a loop that
+  // is still all-candidates reads as "0 targets" rather than the raw pool size.
+  const manifestLen = useStore((s) => s.loopManifest.filter((e) => e.status !== "candidate").length);
 
   const loop = loops.find((l) => l.id === selectedLoop) ?? loops[0];
   const title = loop?.title ?? "Loop";
   const count = isTauri ? loop?.total || manifestLen : loop?.total || 318;
+
+  // While a plan is being drafted, poll the durable interview files so an open
+  // question surfaces even when the live `loop:interview` event is missed or the
+  // agent was orphaned by an app restart (no runner streaming it). Cheap read; stops
+  // once the plan leaves the planning state.
+  const refreshLoopInterview = useStore((s) => s.refreshLoopInterview);
+  const planning = isTauri && (loop?.state === "planning" || loop?.mode === "plan");
+  useEffect(() => {
+    if (!planning || !selectedLoop) return;
+    const id = setInterval(() => void refreshLoopInterview(selectedLoop), 2500);
+    return () => clearInterval(id);
+  }, [planning, selectedLoop, refreshLoopInterview]);
 
   const tabBtn = (key: "scope" | "specs" | "graph", label: string, badge?: string) => {
     const active = planTab === key;

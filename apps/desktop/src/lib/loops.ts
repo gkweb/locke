@@ -84,7 +84,11 @@ const SPEC_STATUSES: SpecStatus[] = ["specced", "review", "speccing", "queued", 
  *  strategist enriches the manifest (approach/detected/steps/tests/status); this
  *  maps it to the `LoopSpec` shape the Plan view renders (steps gain stable keys). */
 export function manifestToSpecs(entries: ManifestEntry[]): LoopSpec[] {
-  return entries.map((e) => ({
+  // Candidate-pool rows aren't per-item specs — they belong to the Work graph's
+  // "Considered" view, not the spec list. Everything else (incl. excluded) maps.
+  return entries
+    .filter((e) => e.status !== "candidate")
+    .map((e) => ({
     id: e.id || e.path,
     path: e.path,
     risk: (["low", "med", "high"].includes(e.risk ?? "") ? e.risk : "low") as LoopRisk,
@@ -136,11 +140,19 @@ export function computeWaves(entries: ManifestEntry[]): Map<string, number> {
   return wave;
 }
 
-/** Derive the Plan-view work-graph nodes from a loop's manifest rows: drops
- *  excluded nodes, normalizes origin, and assigns each its (pinned or derived)
- *  wave. Returned sorted by wave then descending priority — the run order. */
-export function manifestToGraph(entries: ManifestEntry[]): WorkGraphNode[] {
-  const live = entries.filter((e) => e.status !== "excluded");
+/** A row the strategist considered but didn't choose for the work set: still a
+ *  candidate (surfaced by the scope hint, not yet decided) or explicitly excluded. */
+export function isConsidered(e: { status?: string }): boolean {
+  return e.status === "candidate" || e.status === "excluded";
+}
+
+/** Derive the Plan-view work-graph nodes from a loop's manifest rows. By default
+ *  returns the DECIDED work set (included files + tasks); pass `showConsidered` to
+ *  also surface the candidate pool and excluded rows (carrying the model's `reason`)
+ *  so the human can see what it skipped and why. Normalizes origin, assigns each its
+ *  (pinned or derived) wave, sorted by wave then descending priority — the run order. */
+export function manifestToGraph(entries: ManifestEntry[], showConsidered = false): WorkGraphNode[] {
+  const live = entries.filter((e) => (showConsidered ? true : !isConsidered(e)));
   const waves = computeWaves(live);
   const nodes: WorkGraphNode[] = live.map((e) => {
     const id = e.id || e.path;
@@ -154,6 +166,7 @@ export function manifestToGraph(entries: ManifestEntry[]): WorkGraphNode[] {
       wave: e.wave && e.wave > 0 ? e.wave : (waves.get(id) ?? 0),
       origin: nodeOrigin(e),
       status: e.status ?? "",
+      reason: e.reason,
     };
   });
   return nodes.sort((a, b) => a.wave - b.wave || b.priority - a.priority || a.label.localeCompare(b.label));

@@ -937,7 +937,10 @@ pub struct ManifestEntry {
     /// Repo-relative ref to the per-item markdown spec, once written.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spec: Option<String>,
-    /// Spec lifecycle: "" | speccing | specced | review | excluded.
+    /// Spec lifecycle: "" | candidate | speccing | specced | review | excluded.
+    /// `candidate` = surfaced by the scope hint but NOT yet chosen by the strategist
+    /// (inc=false); it authors the work set by promoting candidates (`loop_add_item`
+    /// → queued) or dropping them (`loop_drop_item` → excluded, with `reason`).
     #[serde(default)]
     pub status: String,
 }
@@ -1341,6 +1344,47 @@ mod tests {
         assert!(m.iter().find(|e| e.path == "src/Nav.vue").unwrap().requires.iter().any(|r| r == "add-use-cart"));
         assert!(m.iter().find(|e| e.path == "src/util.ts").unwrap().requires.is_empty(), ".ts file untouched");
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // A candidate pool (inc=false) round-trips, and the strategist's authoring
+    // (promote → queued, drop → excluded with a reason) survives a re-read.
+    #[test]
+    fn candidate_pool_authors_to_a_work_set() {
+        let dir = tmp("candidates");
+        let repo = dir.to_str().unwrap();
+        write_loop_manifest(
+            repo,
+            "lp1",
+            &[
+                ManifestEntry { path: "src/A.vue".into(), id: "src/A.vue".into(), origin: "resolver".into(), inc: false, status: "candidate".into(), ..Default::default() },
+                ManifestEntry { path: "src/B.vue".into(), id: "src/B.vue".into(), origin: "resolver".into(), inc: false, status: "candidate".into(), ..Default::default() },
+            ],
+        )
+        .unwrap();
+        // Candidates persist as out-of-scope until the model decides.
+        let pool = read_loop_manifest(repo, "lp1").unwrap();
+        assert!(pool.iter().all(|e| !e.inc && e.status == "candidate"));
+
+        update_loop_manifest(repo, "lp1", |entries| {
+            for e in entries.iter_mut() {
+                if e.path == "src/A.vue" {
+                    e.inc = true;
+                    e.status = "queued".into();
+                } else if e.path == "src/B.vue" {
+                    e.inc = false;
+                    e.status = "excluded".into();
+                    e.reason = Some("test-only fixture".into());
+                }
+            }
+        })
+        .unwrap();
+
+        let m = read_loop_manifest(repo, "lp1").unwrap();
+        let a = m.iter().find(|e| e.path == "src/A.vue").unwrap();
+        assert_eq!((a.inc, a.status.as_str()), (true, "queued"));
+        let b = m.iter().find(|e| e.path == "src/B.vue").unwrap();
+        assert_eq!((b.inc, b.status.as_str(), b.reason.as_deref()), (false, "excluded", Some("test-only fixture")));
         let _ = fs::remove_dir_all(&dir);
     }
 

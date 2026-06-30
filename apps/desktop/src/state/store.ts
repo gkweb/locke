@@ -530,6 +530,8 @@ interface LockeState {
   addSpecInstruction: (id: string, text: string) => void;
   acceptSpec: (id: string) => void;
   excludeSpec: (id: string) => void;
+  /** Re-include a candidate / excluded item the strategist skipped (→ queued). */
+  reincludeLoopItem: (id: string) => void;
   /** Add a human-authored task node to the plan's work graph, then reload it. */
   addLoopTask: (task: { id: string; title: string; spec?: string; requires?: string[]; priority?: number }) => Promise<void>;
   /** Spin off a prerequisite task from a blocked/review item: create the task and add
@@ -541,6 +543,9 @@ interface LockeState {
   setLoopDeps: (node: string, requires: string[], priority?: number) => Promise<void>;
   /** Fold a live `loop:interview` question into the interview slice (+ Plan view). */
   onLoopInterview: (e: LoopInterviewEvent) => void;
+  /** Re-read the durable interview files and surface any open question — the fallback
+   *  when a live event is missed or the agent was orphaned by an app restart. */
+  refreshLoopInterview: (loopId: string) => Promise<void>;
   /** Answer an open interview question for `key` (raw item key or `__scope__`). */
   answerLoopQuestion: (key: string, text: string) => Promise<void>;
   /** Navigate to a loop's plan and the item/scope an interview question is about (the
@@ -1619,13 +1624,21 @@ export const useStore = create<LockeState>((set, get) => ({
     }
     // Reuse the saved draft's id so the draft becomes the running loop (no dupe).
     const loopId = s.draftLoopId ?? slugId("loop");
-    // Fold the user's audit (`targetSel` over each row's `inc`) into the resolved
-    // entries, persist that as the loop's manifest, and run the included set.
-    const entries: ManifestEntry[] = s.loopTargets.map((t) => ({
-      ...t,
-      inc: Object.prototype.hasOwnProperty.call(s.targetSel, t.path) ? s.targetSel[t.path] : t.inc,
-    }));
-    const targets = entries.filter((t) => t.inc).map((t) => t.path);
+    // The resolver only seeds a scope hint. In PLAN mode the prompt is the source
+    // of truth: write the resolved rows as a CANDIDATE POOL (`inc:false`,
+    // status:"candidate") and let the strategist author the real set (include/drop/
+    // add). A pre-flight exclude in the audit drops a row from the pool entirely.
+    // In BUILD mode there's no strategist, so keep today's verbatim behaviour: the
+    // audit's included rows ARE the work set.
+    const included = (t: ManifestEntry) =>
+      Object.prototype.hasOwnProperty.call(s.targetSel, t.path) ? s.targetSel[t.path] : t.inc;
+    const entries: ManifestEntry[] = plan
+      ? s.loopTargets
+          .filter((t) => included(t)) // a pre-flight exclude removes it from the pool
+          .map((t) => ({ ...t, inc: false, status: "candidate" }))
+      : s.loopTargets.map((t) => ({ ...t, inc: included(t) }));
+    // Build mode hands the runner the explicit set; plan mode lets the model decide.
+    const targets = plan ? [] : entries.filter((t) => t.inc).map((t) => t.path);
     const pattern = resolverSummary(s.draftResolver);
     const placeholder: Loop = {
       id: loopId,
@@ -1652,9 +1665,9 @@ export const useStore = create<LockeState>((set, get) => ({
       planTab: plan ? "scope" : st.planTab,
       loopPaused: false,
       draftLoopId: null,
-      // Seed the Plan view with the included rows (queued) so items show at once;
-      // the strategist fills in approach/steps/status as it specs each.
-      loopManifest: plan ? entries.filter((t) => t.inc).map((t) => ({ ...t, status: "queued" })) : st.loopManifest,
+      // Seed the Plan view with the candidate pool so it shows at once; the
+      // strategist then promotes/drops/adds and fills in approach/steps/status.
+      loopManifest: plan ? entries : st.loopManifest,
       loopPlanMeta: plan ? null : st.loopPlanMeta,
       activeLoops: { ...st.activeLoops, [loopId]: true },
       loopItems: { ...st.loopItems, [loopId]: [] },
@@ -1847,6 +1860,17 @@ export const useStore = create<LockeState>((set, get) => ({
     set({ loopManifest, specStatus: { ...s.specStatus, [id]: nowExcluded ? "excluded" : "review" } });
     if (!MOCK && s.repoPath && s.selectedLoop) void writeLoopManifestApi(s.repoPath, s.selectedLoop, loopManifest);
   },
+  // Pull a candidate (or excluded item) back into the work set the strategist
+  // proposed — the human overriding what the model chose to skip. Clears the
+  // exclusion reason and queues it for speccing.
+  reincludeLoopItem: (id) => {
+    const s = get();
+    const loopManifest = s.loopManifest.map((e) =>
+      (e.id ?? e.path) === id ? { ...e, status: "queued", inc: true, reason: undefined } : e,
+    );
+    set({ loopManifest, specStatus: { ...s.specStatus, [id]: "queued" } });
+    if (!MOCK && s.repoPath && s.selectedLoop) void writeLoopManifestApi(s.repoPath, s.selectedLoop, loopManifest);
+  },
 
   // Work-graph edits (the human's lightweight editor in the Plan view). Each writes
   // through the backend's `update_loop_manifest` primitive, then reloads the manifest
@@ -1896,6 +1920,52 @@ export const useStore = create<LockeState>((set, get) => ({
       loop[e.key] = { transcript, pending: { question: e.question, choices: e.choices, file: e.file } };
       return { loopInterview: { ...s.loopInterview, [e.loopId]: loop } };
     }),
+  // Durable fallback for the live `loop:interview` event: re-read the on-disk
+  // transcript + pending questions and merge them in. The blocking interview writes
+  // a durable `interview/<key>.q.json` per question; if the live event is missed —
+  // or the agent was orphaned by an app restart so no runner is streaming it — this
+  // poll still surfaces the open question so the human can answer and unblock it.
+  refreshLoopInterview: async (loopId) => {
+    const { repoPath } = get();
+    if (MOCK || !repoPath) return;
+    let interview: Awaited<ReturnType<typeof readLoopInterviewApi>>;
+    try {
+      interview = await readLoopInterviewApi(repoPath, loopId);
+    } catch {
+      return; // a failed read just leaves the prior interview state in place
+    }
+    set((s) => {
+      const prev = s.loopInterview[loopId] ?? {};
+      // Durable transcript is the source of truth for completed turns.
+      const threads: Record<string, LoopInterviewThread> = {};
+      for (const m of interview.transcript) {
+        (threads[m.key] ??= { transcript: [] }).transcript.push({ role: m.role, text: m.text });
+      }
+      for (const [key, q] of Object.entries(interview.pending)) {
+        const t = (threads[key] ??= { transcript: [] });
+        // Suppress a question the human just answered in-session: the durable
+        // `q.json` lingers for up to one MCP poll until the agent consumes the
+        // answer, so don't re-open it (and keep their optimistic reply visible).
+        const pl = prev[key]?.transcript ?? [];
+        const justAnswered =
+          prev[key]?.pending === undefined &&
+          pl[pl.length - 1]?.role === "you" &&
+          pl[pl.length - 2]?.role === "agent" &&
+          pl[pl.length - 2]?.text === q.question;
+        if (justAnswered) {
+          if (t.transcript[t.transcript.length - 1]?.role !== "you") t.transcript.push(pl[pl.length - 1]);
+          continue;
+        }
+        const last = t.transcript[t.transcript.length - 1];
+        if (last?.role === "you") continue; // answered durably; await the agent's next ask
+        if (!(last?.role === "agent" && last.text === q.question)) {
+          t.transcript.push({ role: "agent", text: q.question });
+        }
+        t.pending = { question: q.question, choices: q.choices, file: q.file };
+      }
+      return { loopInterview: { ...s.loopInterview, [loopId]: threads } };
+    });
+  },
   // Answer an open question: optimistically append the human turn and clear the
   // pending question, then write the answer (the blocked strategist picks it up).
   answerLoopQuestion: async (key, text) => {
@@ -1977,7 +2047,10 @@ export const useStore = create<LockeState>((set, get) => ({
         (threads[key] ??= { transcript: [] }).pending = { question: q.question, choices: q.choices, file: q.file };
       }
       set((s) => ({
-        loopManifest: inc,
+        // Keep the WHOLE manifest — candidate-pool and excluded rows included — so
+        // the Work-graph "Considered" view survives a reload/poll. The specs list and
+        // counts filter out `candidate` rows (they're not work items yet).
+        loopManifest: manifest,
         loopPlanMeta: meta,
         loopInterview: { ...s.loopInterview, [loopId]: threads },
         selectedSpec: inc[0]?.id ?? inc[0]?.path ?? s.selectedSpec,
