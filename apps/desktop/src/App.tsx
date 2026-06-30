@@ -13,6 +13,7 @@ import {
   type LoopTrailEvent,
   type LoopBlockEvent,
   type LoopDonePayload,
+  type LoopReviewEvent,
   type LoopInterviewEvent,
 } from "./api/git.js";
 import { color, font } from "./theme/tokens.js";
@@ -116,6 +117,7 @@ export function App() {
       listen<LoopTrailEvent>("loop:trail", (e) => s.onLoopTrail(e.payload)),
       listen<LoopBlockEvent>("loop:block", (e) => s.onLoopBlock(e.payload)),
       listen<LoopDonePayload>("loop:done", (e) => s.onLoopDone(e.payload)),
+      listen<LoopReviewEvent>("loop:review", (e) => s.onLoopReview(e.payload)),
       listen<LoopInterviewEvent>("loop:interview", (e) => s.onLoopInterview(e.payload)),
       // A second `locke <path>` launch is forwarded here by the single-instance
       // plugin — switch the open window to that repo.

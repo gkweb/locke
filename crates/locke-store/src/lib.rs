@@ -628,6 +628,38 @@ pub fn ensure_loop_review(repo: &str, loop_id: &str) -> R<u64> {
     Ok(id)
 }
 
+/// Get-or-create the review (pull) for one wave of a loop running under the "wave"
+/// review scope: a stacked review of `wave_branch` against `base_ref` (the prior
+/// wave's branch, or the loop base for the first wave). Idempotent and the single
+/// point of dedup — reuses the wave's ledger entry if present, else any pull already
+/// on this branch+base, else creates one — and records `(wave, id)` on the loop so a
+/// resumed run never opens a second review for the same wave.
+pub fn ensure_wave_review(repo: &str, loop_id: &str, wave: u32, wave_branch: &str, base_ref: &str, title: &str) -> R<u64> {
+    let lp = read_loop(repo, loop_id)?.ok_or_else(|| format!("loop {loop_id} not found"))?;
+    let pulls = read_pulls(repo)?;
+    // Already opened for this wave and the pull still exists → reuse it.
+    if let Some((_, id)) = lp.wave_pulls.iter().find(|(w, _)| *w == wave) {
+        if pulls.pulls.iter().any(|p| p.id == *id) {
+            return Ok(*id);
+        }
+    }
+    if wave_branch.trim().is_empty() {
+        return Err("wave has no branch to review".into());
+    }
+    let id = match pulls.pulls.iter().find(|p| p.branch == wave_branch && p.base == base_ref) {
+        Some(p) => p.id,
+        None => create_pull(repo, wave_branch, base_ref, title, "Locke loop", true)?.id,
+    };
+    update_loop(repo, loop_id, |l| {
+        if let Some(slot) = l.wave_pulls.iter_mut().find(|(w, _)| *w == wave) {
+            slot.1 = id;
+        } else {
+            l.wave_pulls.push((wave, id));
+        }
+    })?;
+    Ok(id)
+}
+
 /// Remove a loop from the registry and delete its `.locke/loops/<id>/` tree.
 /// Only Locke's tracking is removed — git commits/branches are untouched.
 pub fn delete_loop(repo: &str, id: &str) -> R<()> {

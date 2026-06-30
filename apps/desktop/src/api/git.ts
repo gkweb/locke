@@ -432,6 +432,15 @@ export interface LoopDonePayload {
   pullId: number;
 }
 
+/** A per-wave review opened mid-run under the "wave" review scope (`loop:review`):
+ *  one wave's stacked review is ready while later waves keep building. */
+export interface LoopReviewEvent {
+  loopId: string;
+  wave: number;
+  pullId: number;
+  t: string;
+}
+
 /** A live plan-interview question the strategist raised via `loop_ask` (`loop:interview`).
  *  The agent is blocked awaiting the answer. `key` is the raw item key (file path or
  *  task id), or `__scope__` for a scope-level question. */

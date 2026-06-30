@@ -167,6 +167,20 @@ struct BlockPayload {
     t: String,
 }
 
+/// A per-wave review opened mid-run under `review_scope == "wave"` (`loop:review`):
+/// the wave's stacked review (pull) is ready for the creator's attention while later
+/// waves keep building.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ReviewPayload {
+    loop_id: String,
+    /// The wave this review covers (0-based).
+    wave: u32,
+    /// The review (pull) id just opened for the wave.
+    pull_id: u64,
+    t: String,
+}
+
 /// App-managed registry of in-flight loops, keyed by loopId.
 #[derive(Default)]
 pub struct LoopRegistry(pub Mutex<HashMap<String, LoopHandle>>);
@@ -428,6 +442,23 @@ impl Scheduler {
             }
         }
         c
+    }
+
+    /// The largest wave number across all nodes (0 if empty).
+    fn max_wave(&self) -> u32 {
+        self.nodes.iter().map(|n| n.wave).max().unwrap_or(0)
+    }
+
+    /// Wave numbers whose every node has reached a terminal state — i.e. nothing in
+    /// that wave is still Queued or Running, so no more commits will land for it.
+    /// Drives per-wave review sealing.
+    fn settled_waves(&self) -> Vec<u32> {
+        let mut by_wave: std::collections::BTreeMap<u32, bool> = std::collections::BTreeMap::new();
+        for n in &self.nodes {
+            let terminal = !matches!(n.status, St::Queued | St::Running);
+            by_wave.entry(n.wave).and_modify(|a| *a &= terminal).or_insert(terminal);
+        }
+        by_wave.into_iter().filter(|(_, t)| *t).map(|(w, _)| w).collect()
     }
 }
 
@@ -1284,6 +1315,83 @@ fn finish_item(ctx: &Arc<Ctx>, p: &Picked, outcome: Outcome) {
     emit_item(ctx, &p.id, &p.key, emit_status, Some(line.clone()), Some(100), p.wave, p.priority, vec![]);
     emit_stream(ctx, st_glyph, &p.key, &line);
     emit_progress(ctx);
+    // Per-wave review scope: a settled item may have just closed out its wave.
+    check_wave_seals(ctx);
+}
+
+/// Seal any wave that just settled, opening its stacked review. Build-only and a
+/// no-op unless `review_scope == "wave"`. A wave is sealed mid-run only once a higher
+/// wave exists (so the wave is closed and later commits land elsewhere); the top wave
+/// is sealed at completion, when the loop branch HEAD is final (see the coordinator).
+fn check_wave_seals(ctx: &Arc<Ctx>) {
+    if ctx.phase != Phase::Build || ctx.review_scope != "wave" {
+        return;
+    }
+    let (settled, max_wave) = {
+        let g = ctx.sched.lock().unwrap();
+        (g.settled_waves(), g.max_wave())
+    };
+    for w in settled {
+        if w < max_wave {
+            seal_wave(ctx, w);
+        }
+    }
+}
+
+/// Snapshot the loop branch tip into `<branch>-wave-<n>` and open a stacked review for
+/// it (base = the prior sealed wave's branch, or the loop base for the first wave).
+/// Idempotent: once per wave per process (`sealed_waves`) and once ever (`wave_pulls`
+/// on the loop record, so a resumed run never re-opens a wave's review). Emits
+/// `loop:review` on first creation.
+fn seal_wave(ctx: &Arc<Ctx>, wave: u32) {
+    if ctx.review_scope != "wave" {
+        return;
+    }
+    // One seal attempt per wave per process (guards concurrent settles in a wave).
+    if !ctx.sealed_waves.lock().unwrap().insert(wave) {
+        return;
+    }
+    let Some(lp) = locke_store::read_loop(&ctx.repo, &ctx.loop_id).ok().flatten() else { return };
+    // Honour the review opt-out and require a branch to snapshot.
+    if !lp.review_on_done || lp.branch.trim().is_empty() {
+        return;
+    }
+    // Already opened on a prior run (resume dedup).
+    if lp.wave_pulls.iter().any(|(w, _)| *w == wave) {
+        return;
+    }
+    let wave_branch = format!("{}-wave-{}", lp.branch, wave);
+    // Base = the highest already-sealed wave below this one, else the loop's base.
+    let base_ref = lp
+        .wave_pulls
+        .iter()
+        .filter(|(w, _)| *w < wave)
+        .max_by_key(|(w, _)| *w)
+        .map(|(w, _)| format!("{}-wave-{}", lp.branch, w))
+        .unwrap_or_else(|| lp.base.clone());
+    // Snapshot the loop branch tip into the wave branch. Serialize against cherry-picks
+    // so HEAD is stable while we read it.
+    {
+        let _g = ctx.commit_lock.lock().unwrap();
+        if run_git(&ctx.repo, &["branch", "-f", &wave_branch, &lp.branch]).is_err() {
+            return;
+        }
+    }
+    // Skip a wave that added no commits over its base (e.g. every item routed to review
+    // without committing) — a review of an empty diff is just noise. The branch still
+    // exists as a chain anchor, so a later non-empty wave bases on the right commit.
+    let span = git_out(&ctx.repo, &["rev-list", "--count", &format!("{base_ref}..{wave_branch}")]).unwrap_or_default();
+    if span.trim() == "0" {
+        return;
+    }
+    let base_title = if lp.title.trim().is_empty() { lp.branch.clone() } else { lp.title.clone() };
+    let title = format!("{base_title} · wave {}", wave + 1);
+    if let Ok(pull_id) = locke_store::ensure_wave_review(&ctx.repo, &ctx.loop_id, wave, &wave_branch, &base_ref, &title) {
+        let _ = ctx.app.emit(
+            "loop:review",
+            ReviewPayload { loop_id: ctx.loop_id.clone(), wave, pull_id, t: now_clock() },
+        );
+    }
 }
 
 /// The heavy lifting for one item: worktree → agent → checks → commit/route.
@@ -1929,12 +2037,23 @@ pub fn start_loop(
             "done"
         };
         let _ = locke_store::update_loop(&ctx.repo, &ctx.loop_id, |l| l.state = if state == "stopped" { "paused".into() } else { "done".into() });
+        // Per-wave scope: seal every remaining wave at the final HEAD before tearing
+        // down the worktree. Lower waves already sealed are skipped (idempotent); the
+        // top wave — deferred during the run — is sealed here against final HEAD, so no
+        // commit escapes review coverage. A stopped run settled nothing, so skip it.
+        if state != "stopped" && ctx.review_scope == "wave" {
+            let max_wave = ctx.sched.lock().unwrap().max_wave();
+            for w in 0..=max_wave {
+                seal_wave(&ctx, w);
+            }
+        }
         let _ = run_git(&ctx.repo, &["worktree", "remove", "--force", &ctx.seed]);
         let _ = std::fs::remove_dir_all(&ctx.seed);
         let _ = run_git(&ctx.repo, &["worktree", "prune"]);
         // Open a review of the loop's branch for the creator's attention (opt-out).
-        // A stopped run produced no settled output, so only on a real finish.
-        let pull_id = if state != "stopped" && review_on_done {
+        // A stopped run produced no settled output, so only on a real finish. Under the
+        // "wave" scope the per-wave reviews already cover the branch, so skip this one.
+        let pull_id = if state != "stopped" && review_on_done && ctx.review_scope != "wave" {
             locke_store::ensure_loop_review(&ctx.repo, &ctx.loop_id).unwrap_or(0)
         } else {
             0

@@ -98,6 +98,7 @@ import {
   type LoopTrailEntry,
   type LoopBlockEvent,
   type LoopDonePayload,
+  type LoopReviewEvent,
   type LoopInterviewEvent,
   type LoopItemRecord,
   resolveLoopBlock as resolveLoopBlockApi,
@@ -621,6 +622,7 @@ interface LockeState {
   onLoopTrail: (e: LoopTrailEvent) => void;
   onLoopBlock: (e: LoopBlockEvent) => void;
   onLoopDone: (e: LoopDonePayload) => void;
+  onLoopReview: (e: LoopReviewEvent) => void;
   /** Approve or reject a gated block-on-task proposal. */
   resolveLoopBlock: (loopId: string, taskId: string, approve: boolean) => void;
 
@@ -2293,6 +2295,15 @@ export const useStore = create<LockeState>((set, get) => ({
     if (e.state === "planning" && get().selectedLoop === e.loopId && get().loopView === "plan") {
       void get().loadLoopPlan(e.loopId);
     }
+  },
+  onLoopReview: (e) => {
+    // A wave just sealed its own review (review_scope === "wave"): pull it into the
+    // reviews queue and stamp the loop's pullId so the Monitor can deep-link to the
+    // most recent wave review while later waves keep building.
+    set((s) => ({
+      loops: s.loops.map((l) => (l.id === e.loopId && e.pullId ? { ...l, pullId: e.pullId } : l)),
+    }));
+    if (e.pullId) void get().loadReviews();
   },
   // Re-read the repo's pulls into the reviews queue (mirrors openRepo's load) — so a
   // review a loop just opened out-of-band shows up without reopening the repo.
