@@ -69,6 +69,7 @@ pub fn run() {
             commands::read_runs,
             commands::start_loop,
             commands::start_plan,
+            commands::open_loop_review,
             commands::read_loop_plan_meta,
             commands::set_loop_mode,
             commands::pause_loop,

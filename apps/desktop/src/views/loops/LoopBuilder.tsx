@@ -293,6 +293,8 @@ export function LoopBuilder() {
   const setDraftBranch = useStore((s) => s.setDraftBranch);
   const setDraftBase = useStore((s) => s.setDraftBase);
   const setDraftResolver = useStore((s) => s.setDraftResolver);
+  const draftReviewOnDone = useStore((s) => s.draftReviewOnDone);
+  const setDraftReviewOnDone = useStore((s) => s.setDraftReviewOnDone);
   const setDraftPrompt = useStore((s) => s.setDraftPrompt);
   const toggleTarget = useStore((s) => s.toggleTarget);
   const startLoop = useStore((s) => s.startLoop);
@@ -721,6 +723,41 @@ export function LoopBuilder() {
             gap: 9,
           }}
         >
+          {/* opt-out: open a review of the loop's branch when it finishes */}
+          <button
+            onClick={() => setDraftReviewOnDone(!draftReviewOnDone)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 9,
+              width: "100%",
+              textAlign: "left",
+              background: "transparent",
+              border: "none",
+              padding: "2px 0 6px",
+              cursor: "pointer",
+              fontFamily: font.sans,
+            }}
+          >
+            <span
+              style={{
+                width: 16,
+                height: 16,
+                flex: "none",
+                borderRadius: 5,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                background: draftReviewOnDone ? color.violet : "transparent",
+                border: `1px solid ${draftReviewOnDone ? color.violet : color.borderChip2}`,
+              }}
+            >
+              {draftReviewOnDone && <CheckIcon size={11} color="#fff" stroke={2.2} />}
+            </span>
+            <span style={{ fontSize: 12, color: color.textSoft, lineHeight: 1.4 }}>
+              Open a review when the loop finishes
+            </span>
+          </button>
           {!canStart && (
             <div
               style={{

@@ -67,6 +67,7 @@ import {
   readRuns,
   startLoop as startLoopApi,
   startPlan as startPlanApi,
+  openLoopReview as openLoopReviewApi,
   readLoopPlanMeta as readLoopPlanMetaApi,
   setLoopMode as setLoopModeApi,
   pauseLoop as pauseLoopApi,
@@ -341,6 +342,8 @@ interface LockeState {
   draftLoopId: string | null;
   draftPrompt: string;
   draftMode: LoopMode;
+  /** Open a review of the loop's branch when it finishes (opt-out, default on). */
+  draftReviewOnDone: boolean;
   /** The open repo's local branches, for the builder's base-branch picker. */
   repoBranches: string[];
 
@@ -492,6 +495,11 @@ interface LockeState {
   setDraftBranch: (v: string) => void;
   setDraftBase: (v: string) => void;
   setDraftResolver: (r: ResolverSpec) => void;
+  setDraftReviewOnDone: (v: boolean) => void;
+  /** Re-read the repo's pulls into the reviews queue (after a loop opens one). */
+  loadReviews: () => Promise<void>;
+  /** Open (creating if needed) the review for a finished loop's branch, then show it. */
+  reviewLoopChanges: (loopId: string) => Promise<void>;
   /** Persist the draft loop (creates it on first save once it has a title). */
   saveDraft: () => void;
   /** Delete a loop (registry + .locke tree; git untouched). */
@@ -793,6 +801,7 @@ export const useStore = create<LockeState>((set, get) => ({
   draftBranch: MOCK ? MOCK_LOOP_DRAFT.branch : "",
   draftBase: MOCK ? MOCK_LOOP_DRAFT.base : "main",
   draftResolver: { kind: "glob", pattern: MOCK ? MOCK_LOOP_DRAFT.pattern : "" },
+  draftReviewOnDone: true,
   draftLoopId: null,
   draftPrompt: MOCK ? MOCK_LOOP_DRAFT.prompt : "",
   draftMode: "plan",
@@ -1492,6 +1501,7 @@ export const useStore = create<LockeState>((set, get) => ({
             draftMode: d.mode ?? "plan",
             draftResolver: d.resolver ?? { kind: "glob", pattern: "" },
             targetSel: d.targetSel ?? {},
+            draftReviewOnDone: d.reviewOnDone ?? true,
             draftLoopId: id,
           });
         }
@@ -1558,6 +1568,7 @@ export const useStore = create<LockeState>((set, get) => ({
   setDraftBranch: (v) => set({ draftBranch: v }),
   setDraftBase: (v) => set({ draftBase: v }),
   setDraftResolver: (r) => set({ draftResolver: r }),
+  setDraftReviewOnDone: (v) => set({ draftReviewOnDone: v }),
   // Autosave the draft loop. Creates it (and a registry row) the moment it has a
   // title, then keeps it current; the full builder state lives in draft.json so it
   // reopens exactly. No-op in mock / without a repo / before it's named.
@@ -1595,6 +1606,7 @@ export const useStore = create<LockeState>((set, get) => ({
       mode: s.draftMode,
       resolver: s.draftResolver,
       targetSel: s.targetSel,
+      reviewOnDone: s.draftReviewOnDone,
     });
   },
   setDraftPrompt: (v) => set({ draftPrompt: v }),
@@ -1680,6 +1692,7 @@ export const useStore = create<LockeState>((set, get) => ({
       branch: s.draftBranch,
       base: s.draftBase,
       pattern,
+      title: s.draftTitle,
       template: s.draftPrompt,
       targets,
       // DEV: dialed right down while we finesse the flows + stop controls, so a
@@ -1687,6 +1700,7 @@ export const useStore = create<LockeState>((set, get) => ({
       // once the controls are settled.
       concurrency: plan ? 1 : 2,
       checks: s.checkSpecs,
+      reviewOnDone: s.draftReviewOnDone,
     };
     void (plan ? startPlanApi(args) : startLoopApi(args));
   },
@@ -1715,11 +1729,14 @@ export const useStore = create<LockeState>((set, get) => ({
       branch: loop.branch,
       base: loop.base,
       pattern: loop.pattern,
+      title: loop.title,
       // Empty: the runner reads the loop's persisted template + enriched manifest.
       template: s.draftPrompt,
       targets: [],
       concurrency: 2, // DEV: see startLoop note
       checks: s.checkSpecs,
+      // The backend prefers the value persisted on the plan; this is just a fallback.
+      reviewOnDone: true,
     });
   },
   // Return a (possibly already-approved/building) loop to Plan mode: halt any run,
@@ -1764,10 +1781,13 @@ export const useStore = create<LockeState>((set, get) => ({
       branch: loop.branch,
       base: loop.base,
       pattern: loop.pattern,
+      title: loop.title,
       template: s.draftPrompt, // empty falls back to the loop's persisted template
       targets: [],
       concurrency: 1, // DEV: see startLoop note
       checks: s.checkSpecs,
+      // Backend prefers the value persisted on the loop; this is just a fallback.
+      reviewOnDone: true,
     });
   },
   stopLoop: () => {
@@ -2112,18 +2132,62 @@ export const useStore = create<LockeState>((set, get) => ({
       return { loopStream: { ...s.loopStream, [e.loopId]: arr } };
     }),
   onLoopDone: (e) => {
+    // loop:done always means the coordinator finished, so every outcome is terminal:
+    // a "review" outcome (items need a human call) is still a finished build — map it
+    // to "done" (the header reads the review/failed counts to badge it), NOT "building".
     const state: LoopState =
-      e.state === "done" ? "done" : e.state === "stopped" ? "paused" : e.state === "planning" ? "planning" : "building";
+      e.state === "stopped" ? "paused" : e.state === "planning" ? "planning" : "done";
     set((s) => {
       const activeLoops = { ...s.activeLoops };
       delete activeLoops[e.loopId];
-      return { loops: s.loops.map((l) => (l.id === e.loopId ? { ...l, state } : l)), activeLoops };
+      return {
+        loops: s.loops.map((l) => (l.id === e.loopId ? { ...l, state, ...(e.pullId ? { pullId: e.pullId } : {}) } : l)),
+        activeLoops,
+      };
     });
+    // The backend opened a review for this loop's output — pull it into the queue so
+    // the completed Monitor's "Open review" can deep-link to it.
+    if (e.pullId) void get().loadReviews();
     // A finished planning pass: reload the manifest + scope metadata so the Plan
     // view shows the strategist's full specs (approach/steps/tests), not just dots.
     if (e.state === "planning" && get().selectedLoop === e.loopId && get().loopView === "plan") {
       void get().loadLoopPlan(e.loopId);
     }
+  },
+  // Re-read the repo's pulls into the reviews queue (mirrors openRepo's load) — so a
+  // review a loop just opened out-of-band shows up without reopening the repo.
+  loadReviews: async () => {
+    const { repoPath } = get();
+    if (MOCK || !repoPath) return;
+    try {
+      const store = await readPulls(repoPath);
+      const merged = await Promise.all(
+        store.pulls.map(async (pull) => {
+          const [g, comments] = await Promise.all([
+            reviewSummary(repoPath, pull.branch, pull.base).catch(() => null),
+            loadComments(repoPath, pull.id).catch(() => null),
+          ]);
+          const open = comments?.threads.filter((t) => !t.resolved).length ?? 0;
+          return toReview(pull, g, open);
+        }),
+      );
+      const pulls: Record<string, PullRecord> = {};
+      for (const pull of store.pulls) pulls[String(pull.id)] = pull;
+      set({ reviews: merged.slice().reverse(), pulls });
+    } catch {
+      // A failed read just leaves the prior reviews in place.
+    }
+  },
+  // Open the review for a finished loop's branch: the backend get-or-creates it
+  // (deduped, stamps the loop's pull_id), then we surface it and navigate.
+  reviewLoopChanges: async (loopId) => {
+    const { repoPath } = get();
+    if (MOCK || !repoPath) return;
+    const pullId = await openLoopReviewApi(repoPath, loopId).catch(() => 0);
+    if (!pullId) return;
+    set((s) => ({ loops: s.loops.map((l) => (l.id === loopId ? { ...l, pullId } : l)) }));
+    await get().loadReviews();
+    get().openReview(String(pullId), "diff");
   },
 
   openFullFile: (path, review) => {

@@ -7,6 +7,7 @@ import { MOCK_LOOP_ITEMS, MOCK_LOOP_STREAM } from "../../lib/mockFleet.js";
 import { AgentMark } from "../../components/AgentMark.js";
 import {
   BranchIcon,
+  CheckIcon,
   ChevronLeftIcon,
   PauseIcon,
   PlayIcon,
@@ -392,6 +393,7 @@ export function LoopMonitor() {
   const togglePause = useStore((s) => s.togglePause);
   const stopLoop = useStore((s) => s.stopLoop);
   const reopenPlan = useStore((s) => s.reopenPlan);
+  const reviewLoopChanges = useStore((s) => s.reviewLoopChanges);
 
   const storeItems = useStore((s) => (selectedLoop ? s.loopItems[selectedLoop] : undefined));
   const storeStream = useStore((s) => (selectedLoop ? s.loopStream[selectedLoop] : undefined));
@@ -404,8 +406,16 @@ export function LoopMonitor() {
   if (!loop) return null;
 
   const seg = loopSegments(loop);
-  const stateColor = loopPaused ? color.red : color.teal;
-  const stateLabel = loopPaused ? "Paused" : "Building";
+  // Status reflects the loop's actual lifecycle, not just the pause flag: a finished
+  // run (`done`) reads "Complete"/"Needs review", a stopped run "Stopped" — and the
+  // live controls (Pause/Stop) only make sense while it's actually running.
+  const stopped = loop.state === "paused";
+  const finished = loop.state === "done";
+  const terminal = stopped || finished;
+  const needsReview = finished && (loop.review > 0 || loop.failed > 0);
+  const stateLabel = stopped ? "Stopped" : finished ? (needsReview ? "Needs review" : "Complete") : loopPaused ? "Paused" : "Building";
+  const stateColor = stopped ? color.red : finished ? (needsReview ? color.amber : color.green) : loopPaused ? color.red : color.teal;
+  const livePulse = !terminal && !loopPaused;
   const counts: { st: LoopItemState; n: number }[] = [
     { st: "done", n: loop.done },
     { st: "running", n: loop.running },
@@ -446,7 +456,11 @@ export function LoopMonitor() {
               border: `1px solid ${tint(stateColor, "4d")}`,
             }}
           >
-            <span style={{ width: 7, height: 7, borderRadius: "50%", background: "currentColor", animation: loopPaused ? undefined : "lkpulse 1.6s infinite" }} />
+            {finished && !needsReview ? (
+              <CheckIcon size={11} stroke={2} />
+            ) : (
+              <span style={{ width: 7, height: 7, borderRadius: "50%", background: "currentColor", animation: livePulse ? "lkpulse 1.6s infinite" : undefined }} />
+            )}
             {stateLabel}
           </span>
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 9 }}>
@@ -459,22 +473,41 @@ export function LoopMonitor() {
               <ChevronLeftIcon size={11} stroke={1.8} />
               Re-plan
             </HoverButton>
-            <HoverButton
-              onClick={togglePause}
-              style={{ display: "flex", alignItems: "center", gap: 7, padding: "8px 13px", background: "transparent", border: `1px solid ${color.borderChip2}`, borderRadius: 8, color: color.textFaint, fontFamily: font.sans, fontSize: 12, fontWeight: 600, cursor: "pointer" }}
-              hoverStyle={{ borderColor: "var(--lk-borderInput)" }}
-            >
-              {loopPaused ? <PlayIcon size={11} stroke={1.7} /> : <PauseIcon size={11} stroke={1.8} />}
-              {loopPaused ? "Resume" : "Pause"}
-            </HoverButton>
-            <HoverButton
-              onClick={stopLoop}
-              style={{ display: "flex", alignItems: "center", gap: 7, padding: "8px 13px", background: "transparent", border: `1px solid ${tint(color.red, "4d")}`, borderRadius: 8, color: color.red, fontFamily: font.sans, fontSize: 12, fontWeight: 600, cursor: "pointer" }}
-              hoverStyle={{ background: tint(color.red, "16") }}
-            >
-              <StopIcon size={11} stroke={1.8} />
-              Stop loop
-            </HoverButton>
+            {/* Pause/Stop only while the run is live — a finished or stopped loop
+                offers Re-plan instead. */}
+            {!terminal && (
+              <>
+                <HoverButton
+                  onClick={togglePause}
+                  style={{ display: "flex", alignItems: "center", gap: 7, padding: "8px 13px", background: "transparent", border: `1px solid ${color.borderChip2}`, borderRadius: 8, color: color.textFaint, fontFamily: font.sans, fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+                  hoverStyle={{ borderColor: "var(--lk-borderInput)" }}
+                >
+                  {loopPaused ? <PlayIcon size={11} stroke={1.7} /> : <PauseIcon size={11} stroke={1.8} />}
+                  {loopPaused ? "Resume" : "Pause"}
+                </HoverButton>
+                <HoverButton
+                  onClick={stopLoop}
+                  style={{ display: "flex", alignItems: "center", gap: 7, padding: "8px 13px", background: "transparent", border: `1px solid ${tint(color.red, "4d")}`, borderRadius: 8, color: color.red, fontFamily: font.sans, fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+                  hoverStyle={{ background: tint(color.red, "16") }}
+                >
+                  <StopIcon size={11} stroke={1.8} />
+                  Stop loop
+                </HoverButton>
+              </>
+            )}
+            {/* Finished run: open (or create) the review of the loop's aggregate
+                output. Labels by the linked review id when one already exists. */}
+            {finished && (
+              <HoverButton
+                onClick={() => void reviewLoopChanges(loop.id)}
+                title="Open a review of this loop's changes"
+                style={{ display: "flex", alignItems: "center", gap: 7, padding: "8px 13px", background: color.violet, border: `1px solid ${color.violet}`, borderRadius: 8, color: "#fff", fontFamily: font.sans, fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+                hoverStyle={{ background: color.violetHover }}
+              >
+                <ReviewsIcon size={11} stroke={1.8} />
+                {loop.pullId ? `Review #${loop.pullId}` : "Open review"}
+              </HoverButton>
+            )}
           </div>
         </div>
 

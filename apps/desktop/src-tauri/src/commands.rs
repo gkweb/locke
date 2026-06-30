@@ -217,12 +217,14 @@ pub fn start_loop(
     branch: String,
     base: String,
     pattern: String,
+    title: String,
     template: String,
     targets: Vec<String>,
     concurrency: u64,
     checks: Vec<actions::CheckSpec>,
+    review_on_done: bool,
 ) -> Result<(), String> {
-    loops::start_loop(app.clone(), &registry, loop_id, repo, branch, base, pattern, template, targets, concurrency, checks)
+    loops::start_loop(app.clone(), &registry, loop_id, repo, branch, base, pattern, title, template, targets, concurrency, checks, review_on_done)
 }
 
 #[tauri::command]
@@ -235,12 +237,21 @@ pub fn start_plan(
     branch: String,
     base: String,
     pattern: String,
+    title: String,
     template: String,
     targets: Vec<String>,
     concurrency: u64,
     checks: Vec<actions::CheckSpec>,
+    review_on_done: bool,
 ) -> Result<(), String> {
-    loops::start_plan(app.clone(), &registry, loop_id, repo, branch, base, pattern, template, targets, concurrency, checks)
+    loops::start_plan(app.clone(), &registry, loop_id, repo, branch, base, pattern, title, template, targets, concurrency, checks, review_on_done)
+}
+
+/// Get-or-create the review for a loop's branch and return its id (stamps the loop's
+/// `pull_id`). Backs the completed loop's "Open review" button; deduped server-side.
+#[tauri::command]
+pub fn open_loop_review(repo: String, loop_id: String) -> Result<u64, String> {
+    store::ensure_loop_review(&repo, &loop_id)
 }
 
 #[tauri::command]

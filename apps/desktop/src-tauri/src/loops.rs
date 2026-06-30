@@ -107,6 +107,8 @@ struct StreamPayload {
 struct DonePayload {
     loop_id: String,
     state: String,
+    /// The review opened for the loop's output on completion (0 = none).
+    pull_id: u64,
 }
 
 /// A live plan-interview question the strategist raised via `loop_ask` (the agent is
@@ -1433,18 +1435,28 @@ pub fn start_loop(
     branch: String,
     base: String,
     pattern: String,
+    title: String,
     template: String,
     targets: Vec<String>,
     concurrency: u64,
     checks: Vec<CheckSpec>,
+    review_on_done: bool,
 ) -> R<()> {
-    // Fall back to the loop's persisted template when none is passed — approve→build
-    // reuses the planning loop's record and may not re-send the original prompt.
+    // Fall back to the loop's persisted record where approve→build reuses the
+    // planning loop and may not re-send everything: the original prompt, the loop's
+    // name, and the creator's "open a review when done" choice (set on the plan).
+    let prior = locke_store::read_loop(&repo, &loop_id).ok().flatten();
     let template = if template.trim().is_empty() {
-        locke_store::read_loop(&repo, &loop_id).ok().flatten().map(|l| l.template).filter(|t| !t.trim().is_empty()).unwrap_or(template)
+        prior.as_ref().map(|l| l.template.clone()).filter(|t| !t.trim().is_empty()).unwrap_or(template)
     } else {
         template
     };
+    let title = if title.trim().is_empty() {
+        prior.as_ref().map(|l| l.title.clone()).filter(|t| !t.trim().is_empty()).unwrap_or_else(|| pattern.clone())
+    } else {
+        title
+    };
+    let review_on_done = prior.as_ref().map(|l| l.review_on_done).unwrap_or(review_on_done);
     // Seed worktree on the loop branch (create it from base if new). A branch can
     // only be checked out once, so a brand-new chore branch is expected.
     let seed = std::env::temp_dir()
@@ -1481,7 +1493,7 @@ pub fn start_loop(
         &repo,
         locke_store::Loop {
             id: loop_id.clone(),
-            title: pattern.clone(),
+            title: title.clone(),
             branch: branch.clone(),
             base: base.clone(),
             mode: "build".into(),
@@ -1491,6 +1503,8 @@ pub fn start_loop(
             queued: total,
             template: template.clone(),
             concurrency,
+            review_on_done,
+            pull_id: prior.as_ref().map(|l| l.pull_id).unwrap_or(0),
             ..Default::default()
         },
     )?;
@@ -1552,7 +1566,14 @@ pub fn start_loop(
         let _ = run_git(&ctx.repo, &["worktree", "remove", "--force", &ctx.seed]);
         let _ = std::fs::remove_dir_all(&ctx.seed);
         let _ = run_git(&ctx.repo, &["worktree", "prune"]);
-        let _ = ctx.app.emit("loop:done", DonePayload { loop_id: ctx.loop_id.clone(), state: state.into() });
+        // Open a review of the loop's branch for the creator's attention (opt-out).
+        // A stopped run produced no settled output, so only on a real finish.
+        let pull_id = if state != "stopped" && review_on_done {
+            locke_store::ensure_loop_review(&ctx.repo, &ctx.loop_id).unwrap_or(0)
+        } else {
+            0
+        };
+        let _ = ctx.app.emit("loop:done", DonePayload { loop_id: ctx.loop_id.clone(), state: state.into(), pull_id });
     });
 
     Ok(())
@@ -1573,18 +1594,27 @@ pub fn start_plan(
     branch: String,
     base: String,
     pattern: String,
+    title: String,
     template: String,
     targets: Vec<String>,
     concurrency: u64,
     checks: Vec<CheckSpec>,
+    review_on_done: bool,
 ) -> R<()> {
-    // Fall back to the loop's persisted template — a resume reuses the loop record
-    // and may not re-send the original prompt.
+    // Fall back to the loop's persisted record — a resume reuses the loop record and
+    // may not re-send the prompt, the loop's name, or the review-on-done choice.
+    let prior = locke_store::read_loop(&repo, &loop_id).ok().flatten();
     let template = if template.trim().is_empty() {
-        locke_store::read_loop(&repo, &loop_id).ok().flatten().map(|l| l.template).filter(|t| !t.trim().is_empty()).unwrap_or(template)
+        prior.as_ref().map(|l| l.template.clone()).filter(|t| !t.trim().is_empty()).unwrap_or(template)
     } else {
         template
     };
+    let title = if title.trim().is_empty() {
+        prior.as_ref().map(|l| l.title.clone()).filter(|t| !t.trim().is_empty()).unwrap_or_else(|| pattern.clone())
+    } else {
+        title
+    };
+    let review_on_done = prior.as_ref().map(|l| l.review_on_done).unwrap_or(review_on_done);
     // A throwaway read worktree detached at `base` — the strategist analyses files
     // here and per-item workers cut their sandboxes from its tip. No branch, no
     // commits: a planning pass never touches the user's tree.
@@ -1665,7 +1695,7 @@ pub fn start_plan(
         &repo,
         locke_store::Loop {
             id: loop_id.clone(),
-            title: pattern.clone(),
+            title: title.clone(),
             branch: branch.clone(),
             base: base.clone(),
             mode: "plan".into(),
@@ -1675,6 +1705,8 @@ pub fn start_plan(
             queued: total,
             template: template.clone(),
             concurrency,
+            review_on_done,
+            pull_id: prior.as_ref().map(|l| l.pull_id).unwrap_or(0),
             ..Default::default()
         },
     )?;
@@ -1755,7 +1787,9 @@ pub fn start_plan(
         let _ = run_git(&ctx.repo, &["worktree", "remove", "--force", &ctx.seed]);
         let _ = std::fs::remove_dir_all(&ctx.seed);
         let _ = run_git(&ctx.repo, &["worktree", "prune"]);
-        let _ = ctx.app.emit("loop:done", DonePayload { loop_id: ctx.loop_id.clone(), state: done_state.into() });
+        // A planning pass settles to `planning` and opens no review (that happens on
+        // the build that follows approval).
+        let _ = ctx.app.emit("loop:done", DonePayload { loop_id: ctx.loop_id.clone(), state: done_state.into(), pull_id: 0 });
     });
 
     Ok(())

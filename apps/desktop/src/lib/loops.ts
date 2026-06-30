@@ -91,6 +91,8 @@ export function manifestToSpecs(entries: ManifestEntry[]): LoopSpec[] {
     .map((e) => ({
     id: e.id || e.path,
     path: e.path,
+    kind: e.kind,
+    title: e.title,
     risk: (["low", "med", "high"].includes(e.risk ?? "") ? e.risk : "low") as LoopRisk,
     status: (SPEC_STATUSES.includes(e.status as SpecStatus) ? e.status : "queued") as SpecStatus,
     approach: e.approach ?? "",
@@ -99,6 +101,12 @@ export function manifestToSpecs(entries: ManifestEntry[]): LoopSpec[] {
     tests: e.tests ?? [],
     note: e.note ?? "",
   }));
+}
+
+/** Display label for a spec row: a task shows its title, a file shows its basename
+ *  (task nodes have no `path`, so falling back to `baseName("")` would be blank). */
+export function specLabel(sp: Pick<LoopSpec, "kind" | "title" | "path" | "id">): string {
+  return sp.kind === "task" ? sp.title || sp.id : baseName(sp.path);
 }
 
 /** Node provenance → short badge label + accent (Work-graph editor). */

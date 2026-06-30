@@ -229,6 +229,9 @@ export interface Loop {
   rate: string;
   /** Elapsed/heading time, e.g. "1h 12m" / "planning". */
   elapsed: string;
+  /** The review (pull) opened for this loop's output, once one exists (0/undefined =
+   *  none). Lets a finished loop deep-link back to its review. */
+  pullId?: number;
 }
 
 /** One file a loop iterates over (board cards, stream rows, grid focus). */
@@ -338,10 +341,14 @@ export interface LoopSpecStep {
   text: string;
 }
 
-/** Plan-mode per-item spec: what the loop will do to one file. */
+/** Plan-mode per-item spec: what the loop will do to one file (or task). */
 export interface LoopSpec {
   id: string;
   path: string;
+  /** "file" (edit a path) | "task" (a prerequisite job with no single path). */
+  kind?: string;
+  /** Display title for task specs (file specs use the path). */
+  title?: string;
   risk: LoopRisk;
   status: SpecStatus;
   /** Strategy id, e.g. "script-setup" | "options-api" (labels live in the view). */

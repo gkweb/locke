@@ -23,6 +23,8 @@ export interface LoopDraft {
   mode: LoopMode;
   resolver: ResolverSpec;
   targetSel: Record<string, boolean>;
+  /** Open a review when the loop finishes (opt-out). Absent on legacy drafts. */
+  reviewOnDone?: boolean;
 }
 
 // Typed wrappers over the Rust git commands. `isTauri` lets the app run under
@@ -382,6 +384,8 @@ export interface LoopEventPayload {
 export interface LoopDonePayload {
   loopId: string;
   state: string;
+  /** The review opened for the loop's output on completion (0 = none). */
+  pullId: number;
 }
 
 /** A live plan-interview question the strategist raised via `loop_ask` (`loop:interview`).
@@ -429,10 +433,12 @@ export const startLoop = (args: {
   branch: string;
   base: string;
   pattern: string;
+  title: string;
   template: string;
   targets: string[];
   concurrency: number;
   checks: { label: string; command: string }[];
+  reviewOnDone: boolean;
 }): Promise<void> => (isTauri ? invoke<void>("start_loop", args) : Promise.resolve());
 
 /** Start a Plan-mode (strategist) run: a scope pass writes the loop's plan, then a
@@ -444,11 +450,18 @@ export const startPlan = (args: {
   branch: string;
   base: string;
   pattern: string;
+  title: string;
   template: string;
   targets: string[];
   concurrency: number;
   checks: { label: string; command: string }[];
+  reviewOnDone: boolean;
 }): Promise<void> => (isTauri ? invoke<void>("start_plan", args) : Promise.resolve());
+
+/** Get-or-create the review for a finished loop's branch and return its id (the
+ *  backend dedups + stamps the loop's `pull_id`). 0 / no-op outside Tauri. */
+export const openLoopReview = (repo: string, loopId: string): Promise<number> =>
+  isTauri ? invoke<number>("open_loop_review", { repo, loopId }) : Promise.resolve(0);
 
 /** Read a loop's scope metadata (`{ summary, assumptions }`) for the Plan view's
  *  Scope tab. Null in mock mode / before the scope pass runs. */

@@ -3,7 +3,7 @@ import type { LoopSpec, SpecStatus } from "@locke/core";
 import { useStore } from "../../state/store.js";
 import { isTauri } from "../../api/git.js";
 import { color, font, tint } from "../../theme/tokens.js";
-import { riskColor, specStatusMeta, baseName, manifestToSpecs, manifestToGraph, originMeta, isConsidered } from "../../lib/loops.js";
+import { riskColor, specStatusMeta, baseName, specLabel, manifestToSpecs, manifestToGraph, originMeta, isConsidered } from "../../lib/loops.js";
 import {
   MOCK_LOOP_INTERVIEW,
   MOCK_LOOP_PENDING_Q,
@@ -433,7 +433,7 @@ function PlanSpecs() {
                     onClick={() => selectSpec(sp.id)}
                     style={{ flex: 1, minWidth: 0, textAlign: "left", background: "transparent", border: "none", cursor: "pointer", padding: 0, fontFamily: font.mono }}
                   >
-                    <span style={{ fontSize: 11.5, color: color.textCode }}>{baseName(sp.path)}</span>
+                    <span style={{ fontSize: 11.5, color: color.textCode }}>{specLabel(sp)}</span>
                     <span style={{ fontSize: 10.5, color: color.textFainter, display: "block", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                       {liveAction.get(sp.path) ?? "analysing…"}
                     </span>
@@ -494,7 +494,7 @@ function PlanSpecs() {
                       textDecoration: excluded ? "line-through" : undefined,
                     }}
                   >
-                    {baseName(sp.path)}
+                    {specLabel(sp)}
                   </span>
                   <span style={{ fontSize: 10, flex: "none", color: m.color }}>{m.label}</span>
                 </button>
@@ -508,7 +508,7 @@ function PlanSpecs() {
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 18, marginBottom: 20 }}>
             <div style={{ minWidth: 0 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <span style={{ fontFamily: font.mono, fontSize: 14, color: color.textBright }}>{sel.path}</span>
+                <span style={{ fontFamily: font.mono, fontSize: 14, color: color.textBright }}>{specLabel(sel)}</span>
                 <span
                   style={{
                     fontSize: 10,

@@ -490,6 +490,14 @@ pub struct Loop {
     pub template: String,
     #[serde(default)]
     pub concurrency: u64,
+    /// Open a review of the loop's branch when it finishes (the creator's opt-out
+    /// choice). Default false for legacy records; the builder sets it explicitly.
+    #[serde(default)]
+    pub review_on_done: bool,
+    /// The review (pull) opened for this loop's output, once one exists (0 = none).
+    /// Lets the completed loop deep-link back to its review and dedup creation.
+    #[serde(default)]
+    pub pull_id: u64,
     #[serde(default)]
     pub created_at: String,
     #[serde(default)]
@@ -580,6 +588,31 @@ pub fn update_loop<F: FnOnce(&mut Loop)>(repo: &str, id: &str, f: F) -> R<()> {
         write_json(&loops_index_path(repo), &value)?;
     }
     Ok(())
+}
+
+/// Get-or-create the review (pull) for a loop's branch+base, stamping `pull_id` on
+/// the loop record. Idempotent and the single point of dedup: reuses the loop's
+/// linked pull if it still exists, else any pull already on this branch+base, else
+/// creates one (title = the loop title). So a loop never spawns two reviews, whether
+/// opened automatically on completion or on demand from the UI.
+pub fn ensure_loop_review(repo: &str, loop_id: &str) -> R<u64> {
+    let lp = read_loop(repo, loop_id)?.ok_or_else(|| format!("loop {loop_id} not found"))?;
+    let pulls = read_pulls(repo)?;
+    if lp.pull_id != 0 && pulls.pulls.iter().any(|p| p.id == lp.pull_id) {
+        return Ok(lp.pull_id);
+    }
+    if lp.branch.trim().is_empty() {
+        return Err("loop has no branch to review".into());
+    }
+    let id = match pulls.pulls.iter().find(|p| p.branch == lp.branch && p.base == lp.base) {
+        Some(p) => p.id,
+        None => {
+            let title = if lp.title.trim().is_empty() { lp.branch.clone() } else { lp.title.clone() };
+            create_pull(repo, &lp.branch, &lp.base, &title, "Locke loop", true)?.id
+        }
+    };
+    update_loop(repo, loop_id, |l| l.pull_id = id)?;
+    Ok(id)
 }
 
 /// Remove a loop from the registry and delete its `.locke/loops/<id>/` tree.
