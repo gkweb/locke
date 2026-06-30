@@ -276,6 +276,76 @@ function ModeButton({
   );
 }
 
+// A lightweight inline disclosure: a clickable section header (chevron + label,
+// plus an optional one-line summary when collapsed) over a body that renders only
+// when open. `collapsible={false}` pins it open and hides the chevron (used for the
+// scope section in build mode, where targets are mandatory).
+function Disclosure({
+  open,
+  onToggle,
+  title,
+  summary,
+  collapsible = true,
+  children,
+}: {
+  open: boolean;
+  onToggle: () => void;
+  title: string;
+  summary?: React.ReactNode;
+  collapsible?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <button
+        onClick={collapsible ? onToggle : undefined}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 7,
+          width: "100%",
+          textAlign: "left",
+          background: "transparent",
+          border: "none",
+          padding: 0,
+          cursor: collapsible ? "pointer" : "default",
+          fontFamily: font.sans,
+        }}
+      >
+        {collapsible && (
+          <ChevronDownIcon
+            size={12}
+            color={color.textGhost}
+            stroke={1.7}
+            style={{
+              flex: "none",
+              transform: open ? "none" : "rotate(-90deg)",
+              transition: "transform .12s ease",
+            }}
+          />
+        )}
+        <span style={{ ...label, marginBottom: 0 }}>{title}</span>
+        {!open && summary != null && (
+          <span
+            style={{
+              fontSize: 11,
+              color: color.textGhost,
+              fontFamily: font.mono,
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {summary}
+          </span>
+        )}
+      </button>
+      {open && <div style={{ marginTop: 11 }}>{children}</div>}
+    </div>
+  );
+}
+
 export function LoopBuilder() {
   const draftTitle = useStore((s) => s.draftTitle);
   const draftBranch = useStore((s) => s.draftBranch);
@@ -297,6 +367,8 @@ export function LoopBuilder() {
   const setDraftReviewOnDone = useStore((s) => s.setDraftReviewOnDone);
   const draftBlockPolicy = useStore((s) => s.draftBlockPolicy);
   const setDraftBlockPolicy = useStore((s) => s.setDraftBlockPolicy);
+  const draftReviewScope = useStore((s) => s.draftReviewScope);
+  const setDraftReviewScope = useStore((s) => s.setDraftReviewScope);
   const setDraftPrompt = useStore((s) => s.setDraftPrompt);
   const toggleTarget = useStore((s) => s.toggleTarget);
   const startLoop = useStore((s) => s.startLoop);
@@ -307,6 +379,10 @@ export function LoopBuilder() {
 
   // Until the user edits the seed branch, keep suggesting one from the title.
   const [branchTouched, setBranchTouched] = useState(false);
+  // Collapsible sections: the scope hint (optional in plan mode) and the rail's
+  // checkpoint settings both start closed to keep the builder uncluttered.
+  const [scopeOpen, setScopeOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Load the open repo's branches once for the base picker.
   useEffect(() => {
@@ -538,8 +614,19 @@ export function LoopBuilder() {
           />
         </div>
 
-        {/* targets / scope hint */}
-        <div style={{ ...label, marginBottom: 5 }}>{plan ? "SCOPE HINT (OPTIONAL)" : "AUDIT & SELECT TARGETS"}</div>
+        {/* targets / scope hint — collapsed by default in plan mode (where it's
+            optional), pinned open in build mode which needs an explicit target set */}
+        <Disclosure
+          open={plan ? scopeOpen : true}
+          collapsible={plan}
+          onToggle={() => setScopeOpen((o) => !o)}
+          title={plan ? "SCOPE HINT (OPTIONAL)" : "AUDIT & SELECT TARGETS"}
+          summary={
+            resolverEmpty(draftResolver)
+              ? "whole repo"
+              : `${loopMatched.toLocaleString()} files · ${selected} candidate${selected === 1 ? "" : "s"}`
+          }
+        >
         {plan && (
           <div style={{ fontSize: 11.5, color: color.textFainter, marginBottom: 8, lineHeight: 1.5 }}>
             Where should the strategist look? It curates these as <em>candidates</em> — including, excluding, and
@@ -662,6 +749,7 @@ export function LoopBuilder() {
             </span>
           </button>
         ))}
+        </Disclosure>
       </div>
 
       {/* summary rail */}
@@ -725,6 +813,8 @@ export function LoopBuilder() {
             gap: 9,
           }}
         >
+          <Disclosure open={settingsOpen} onToggle={() => setSettingsOpen((o) => !o)} title="SETTINGS">
+            <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
           {/* opt-out: open a review of the loop's branch when it finishes */}
           <button
             onClick={() => setDraftReviewOnDone(!draftReviewOnDone)}
@@ -760,6 +850,57 @@ export function LoopBuilder() {
               Open a review when the loop finishes
             </span>
           </button>
+          {/* review granularity — only meaningful when a review is opened at all.
+              "loop": one review for the whole run. "wave": one per wave, opened as
+              each wave finishes (independent items all land in wave 0 → one review). */}
+          {draftReviewOnDone && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 7, marginLeft: 25, marginTop: -2, marginBottom: 2 }}>
+              {(
+                [
+                  { v: "loop", label: "One review for the whole loop" },
+                  { v: "wave", label: "A review for each wave" },
+                ] as const
+              ).map((o) => {
+                const active = draftReviewScope === o.v;
+                return (
+                  <button
+                    key={o.v}
+                    onClick={() => setDraftReviewScope(o.v)}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      width: "100%",
+                      textAlign: "left",
+                      background: "transparent",
+                      border: "none",
+                      padding: 0,
+                      cursor: "pointer",
+                      fontFamily: font.sans,
+                    }}
+                  >
+                    <span
+                      style={{
+                        width: 13,
+                        height: 13,
+                        flex: "none",
+                        borderRadius: "50%",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        border: `1px solid ${active ? color.violet : color.borderChip2}`,
+                      }}
+                    >
+                      {active && <span style={{ width: 7, height: 7, borderRadius: "50%", background: color.violet }} />}
+                    </span>
+                    <span style={{ fontSize: 11.5, color: active ? color.textSoft : color.textFaint, lineHeight: 1.4 }}>
+                      {o.label}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
           {/* opt-in: auto-run prerequisites a build agent discovers (else they wait for
               approval in the tray). Off by default — injected work spends extra tokens. */}
           <button
@@ -796,6 +937,8 @@ export function LoopBuilder() {
               Auto-run prerequisites agents discover (else approve each in the tray)
             </span>
           </button>
+            </div>
+          </Disclosure>
           {!canStart && (
             <div
               style={{

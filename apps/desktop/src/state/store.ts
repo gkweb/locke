@@ -377,6 +377,9 @@ interface LockeState {
   draftReviewOnDone: boolean;
   /** How a build agent's loop_block_on_task is handled: "approve" (default) | "auto". */
   draftBlockPolicy: "approve" | "auto";
+  /** Review granularity: "loop" (one review for the whole run, default) | "wave"
+   *  (one review per wave, opened as each wave finishes). */
+  draftReviewScope: "loop" | "wave";
   /** The open repo's local branches, for the builder's base-branch picker. */
   repoBranches: string[];
 
@@ -535,6 +538,7 @@ interface LockeState {
   setDraftResolver: (r: ResolverSpec) => void;
   setDraftReviewOnDone: (v: boolean) => void;
   setDraftBlockPolicy: (v: "approve" | "auto") => void;
+  setDraftReviewScope: (v: "loop" | "wave") => void;
   /** Re-read the repo's pulls into the reviews queue (after a loop opens one). */
   loadReviews: () => Promise<void>;
   /** Open (creating if needed) the review for a finished loop's branch, then show it. */
@@ -855,6 +859,7 @@ export const useStore = create<LockeState>((set, get) => ({
   draftResolver: { kind: "glob", pattern: MOCK ? MOCK_LOOP_DRAFT.pattern : "" },
   draftReviewOnDone: true,
   draftBlockPolicy: "approve",
+  draftReviewScope: "loop",
   draftLoopId: null,
   draftPrompt: MOCK ? MOCK_LOOP_DRAFT.prompt : "",
   draftMode: "plan",
@@ -1555,6 +1560,7 @@ export const useStore = create<LockeState>((set, get) => ({
             draftResolver: d.resolver ?? { kind: "glob", pattern: "" },
             targetSel: d.targetSel ?? {},
             draftReviewOnDone: d.reviewOnDone ?? true,
+            draftReviewScope: d.reviewScope ?? "loop",
             draftLoopId: id,
           });
         }
@@ -1637,6 +1643,7 @@ export const useStore = create<LockeState>((set, get) => ({
   setDraftResolver: (r) => set({ draftResolver: r }),
   setDraftReviewOnDone: (v) => set({ draftReviewOnDone: v }),
   setDraftBlockPolicy: (v) => set({ draftBlockPolicy: v }),
+  setDraftReviewScope: (v) => set({ draftReviewScope: v }),
   // Autosave the draft loop. Creates it (and a registry row) the moment it has a
   // title, then keeps it current; the full builder state lives in draft.json so it
   // reopens exactly. No-op in mock / without a repo / before it's named.
@@ -1675,6 +1682,7 @@ export const useStore = create<LockeState>((set, get) => ({
       resolver: s.draftResolver,
       targetSel: s.targetSel,
       reviewOnDone: s.draftReviewOnDone,
+      reviewScope: s.draftReviewScope,
     });
   },
   setDraftPrompt: (v) => set({ draftPrompt: v }),
@@ -1769,6 +1777,7 @@ export const useStore = create<LockeState>((set, get) => ({
       concurrency: plan ? 1 : 2,
       checks: s.checkSpecs,
       reviewOnDone: s.draftReviewOnDone,
+      reviewScope: s.draftReviewScope,
     };
     // block_policy only applies to the Build runner; the plan run carries it forward
     // on its record so approve→build inherits the choice.
@@ -1809,6 +1818,8 @@ export const useStore = create<LockeState>((set, get) => ({
       reviewOnDone: true,
       // Empty → backend keeps the policy persisted on the plan record (or defaults approve).
       blockPolicy: "",
+      // Empty → backend keeps the review scope persisted on the plan record (or defaults "loop").
+      reviewScope: "",
     });
   },
   // Return a (possibly already-approved/building) loop to Plan mode: halt any run,
@@ -1860,6 +1871,8 @@ export const useStore = create<LockeState>((set, get) => ({
       checks: s.checkSpecs,
       // Backend prefers the value persisted on the loop; this is just a fallback.
       reviewOnDone: true,
+      // Empty → backend keeps the review scope persisted on the loop record.
+      reviewScope: "",
     });
   },
   stopLoop: () => {

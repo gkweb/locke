@@ -25,6 +25,9 @@ export interface LoopDraft {
   targetSel: Record<string, boolean>;
   /** Open a review when the loop finishes (opt-out). Absent on legacy drafts. */
   reviewOnDone?: boolean;
+  /** Review granularity: "loop" (one review for the whole run) | "wave" (one per
+   *  wave, opened as each wave finishes). Absent on legacy drafts → "loop". */
+  reviewScope?: "loop" | "wave";
 }
 
 // Typed wrappers over the Rust git commands. `isTauri` lets the app run under
@@ -484,6 +487,8 @@ export const startLoop = (args: {
   reviewOnDone: boolean;
   /** "auto" | "approve" — how loop_block_on_task proposals are handled. "" → approve. */
   blockPolicy: string;
+  /** "loop" | "wave" review granularity. "" → keep the value persisted on the record. */
+  reviewScope: string;
 }): Promise<void> => (isTauri ? invoke<void>("start_loop", args) : Promise.resolve());
 
 /** Start a Plan-mode (strategist) run: a scope pass writes the loop's plan, then a
@@ -501,6 +506,8 @@ export const startPlan = (args: {
   concurrency: number;
   checks: { label: string; command: string }[];
   reviewOnDone: boolean;
+  /** "loop" | "wave" review granularity, persisted on the plan record so approve→build inherits it. */
+  reviewScope: string;
 }): Promise<void> => (isTauri ? invoke<void>("start_plan", args) : Promise.resolve());
 
 /** Get-or-create the review for a finished loop's branch and return its id (the

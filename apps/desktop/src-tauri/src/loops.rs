@@ -490,6 +490,12 @@ struct Ctx {
     /// The loop's block-on-task policy: "auto" (inject + run at once) or "approve"
     /// (gate behind human approval). Empty/unknown → treated as "approve".
     block_policy: String,
+    /// Review granularity: "wave" opens a stacked review as each wave seals; anything
+    /// else opens one review for the whole loop at completion (per `review_on_done`).
+    review_scope: String,
+    /// Wave numbers already sealed-and-reviewed this process, so the seal hook fires a
+    /// per-wave review exactly once even as many items in the wave settle concurrently.
+    sealed_waves: Mutex<HashSet<u32>>,
     /// Per-item start time (epoch ms), keyed by item key — seeded when an item first
     /// runs, read back into every `loop:item` emit for the Inspect view's live elapsed.
     item_starts: Mutex<HashMap<String, u64>>,
@@ -1768,6 +1774,7 @@ pub fn start_loop(
     checks: Vec<CheckSpec>,
     review_on_done: bool,
     block_policy: String,
+    review_scope: String,
 ) -> R<()> {
     // Fall back to the loop's persisted record where approve→build reuses the
     // planning loop and may not re-send everything: the original prompt, the loop's
@@ -1789,6 +1796,12 @@ pub fn start_loop(
         prior.as_ref().map(|l| l.block_policy.clone()).filter(|p| !p.is_empty()).unwrap_or_else(|| "approve".into())
     } else {
         block_policy
+    };
+    // Review scope: the build arg wins; else the plan's saved choice; else "loop".
+    let review_scope = if review_scope.trim().is_empty() {
+        prior.as_ref().map(|l| l.review_scope.clone()).filter(|s| !s.is_empty()).unwrap_or_else(|| "loop".into())
+    } else {
+        review_scope
     };
     // Seed worktree on the loop branch (create it from base if new). A branch can
     // only be checked out once, so a brand-new chore branch is expected.
@@ -1838,6 +1851,10 @@ pub fn start_loop(
             concurrency,
             review_on_done,
             block_policy: block_policy.clone(),
+            review_scope: review_scope.clone(),
+            // Carry the per-wave review ledger across resume so a re-run never
+            // re-opens a review for a wave it already sealed.
+            wave_pulls: prior.as_ref().map(|l| l.wave_pulls.clone()).unwrap_or_default(),
             pull_id: prior.as_ref().map(|l| l.pull_id).unwrap_or(0),
             ..Default::default()
         },
@@ -1880,6 +1897,8 @@ pub fn start_loop(
         nudges,
         block_decisions,
         block_policy: block_policy.clone(),
+        review_scope: review_scope.clone(),
+        sealed_waves: Mutex::new(HashSet::new()),
         item_starts: Mutex::new(HashMap::new()),
         start: Instant::now(),
     });
@@ -1947,6 +1966,7 @@ pub fn start_plan(
     concurrency: u64,
     checks: Vec<CheckSpec>,
     review_on_done: bool,
+    review_scope: String,
 ) -> R<()> {
     // Fall back to the loop's persisted record — a resume reuses the loop record and
     // may not re-send the prompt, the loop's name, or the review-on-done choice.
@@ -1962,6 +1982,12 @@ pub fn start_plan(
         title
     };
     let review_on_done = prior.as_ref().map(|l| l.review_on_done).unwrap_or(review_on_done);
+    // Persist the review scope on the plan record so approve→build inherits it.
+    let review_scope = if review_scope.trim().is_empty() {
+        prior.as_ref().map(|l| l.review_scope.clone()).filter(|s| !s.is_empty()).unwrap_or_else(|| "loop".into())
+    } else {
+        review_scope
+    };
     // A throwaway read worktree detached at `base` — the strategist analyses files
     // here and per-item workers cut their sandboxes from its tip. No branch, no
     // commits: a planning pass never touches the user's tree.
@@ -2053,6 +2079,8 @@ pub fn start_plan(
             template: template.clone(),
             concurrency,
             review_on_done,
+            review_scope: review_scope.clone(),
+            wave_pulls: prior.as_ref().map(|l| l.wave_pulls.clone()).unwrap_or_default(),
             pull_id: prior.as_ref().map(|l| l.pull_id).unwrap_or(0),
             ..Default::default()
         },
@@ -2096,6 +2124,9 @@ pub fn start_plan(
         block_decisions,
         // Plan mode never injects build prerequisites — block-on-task is Build-only.
         block_policy: String::new(),
+        // Plan mode commits nothing, so per-wave reviews never fire here.
+        review_scope: review_scope.clone(),
+        sealed_waves: Mutex::new(HashSet::new()),
         item_starts: Mutex::new(HashMap::new()),
         start: Instant::now(),
     });

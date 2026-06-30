@@ -224,8 +224,9 @@ pub fn start_loop(
     checks: Vec<actions::CheckSpec>,
     review_on_done: bool,
     block_policy: String,
+    review_scope: String,
 ) -> Result<(), String> {
-    loops::start_loop(app.clone(), &registry, loop_id, repo, branch, base, pattern, title, template, targets, concurrency, checks, review_on_done, block_policy)
+    loops::start_loop(app.clone(), &registry, loop_id, repo, branch, base, pattern, title, template, targets, concurrency, checks, review_on_done, block_policy, review_scope)
 }
 
 #[tauri::command]
@@ -244,8 +245,9 @@ pub fn start_plan(
     concurrency: u64,
     checks: Vec<actions::CheckSpec>,
     review_on_done: bool,
+    review_scope: String,
 ) -> Result<(), String> {
-    loops::start_plan(app.clone(), &registry, loop_id, repo, branch, base, pattern, title, template, targets, concurrency, checks, review_on_done)
+    loops::start_plan(app.clone(), &registry, loop_id, repo, branch, base, pattern, title, template, targets, concurrency, checks, review_on_done, review_scope)
 }
 
 /// Get-or-create the review for a loop's branch and return its id (stamps the loop's

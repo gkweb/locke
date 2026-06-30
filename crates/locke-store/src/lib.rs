@@ -502,6 +502,15 @@ pub struct Loop {
     /// and wait for the human) or "auto" (inject + run the prerequisite immediately).
     #[serde(default)]
     pub block_policy: String,
+    /// Review granularity: "wave" opens one review per wave as each wave finishes;
+    /// anything else (incl. empty, the legacy/default) opens one review for the whole
+    /// loop on completion (governed by `review_on_done`).
+    #[serde(default)]
+    pub review_scope: String,
+    /// Per-wave reviews already opened, as `(wave, pull_id)` — the dedup ledger so a
+    /// resumed run never opens a second review for a wave it already sealed.
+    #[serde(default)]
+    pub wave_pulls: Vec<(u32, u64)>,
     #[serde(default)]
     pub created_at: String,
     #[serde(default)]
