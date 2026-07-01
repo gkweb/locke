@@ -55,7 +55,7 @@ function itemLine(it: LoopItem): { text: string; color: string } {
 }
 
 function ItemCard({ it, paused, selected }: { it: LoopItem; paused: boolean; selected?: boolean }) {
-  const col = itemStateColor[it.status];
+  const col = itemStateColor[it.status] ?? color.textGhost;
   const line = itemLine(it);
   const openLoopReview = useStore((s) => s.openLoopReview);
   const openInspect = useStore((s) => s.openInspect);
@@ -492,8 +492,11 @@ function InspectDetail({
   stalled: boolean;
   paused: boolean;
 }) {
-  const col = itemStateColor[item.status];
-  const meta = itemStateMeta[item.status];
+  // Tolerate a status outside the monitor's own lifecycle (e.g. a "specced" record
+  // left by the plan phase before the build item re-runs) — an unknown status must
+  // degrade to a neutral chip, never crash the panel and black-screen the app.
+  const col = itemStateColor[item.status] ?? color.textGhost;
+  const meta = itemStateMeta[item.status] ?? { label: item.status, color: col };
   const line = itemLine(item);
   const requeueLoopItem = useStore((s) => s.requeueLoopItem);
   const nudgeLoopItem = useStore((s) => s.nudgeLoopItem);

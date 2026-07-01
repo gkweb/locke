@@ -20,6 +20,7 @@ import { color, font } from "./theme/tokens.js";
 import { ActionBar } from "./components/ActionBar.js";
 import { SidePanel } from "./components/SidePanel.js";
 import { StatusBar } from "./components/StatusBar.js";
+import { ErrorBoundary } from "./components/ErrorBoundary.js";
 import { ActivityView } from "./views/ActivityView.js";
 import { LoopsView } from "./views/loops/LoopsView.js";
 import { ReviewsView } from "./views/ReviewsView.js";
@@ -77,6 +78,11 @@ export function App() {
   const panelOpen = useStore((s) => s.panelOpen);
   const panelSide = useStore((s) => s.panelSide);
   const view = useStore((s) => s.view);
+  // Navigation signature — changing it clears a crashed view's error boundary so the
+  // user recovers by moving away (loops carry sub-views, hence loopView/selectedLoop).
+  const selectedLoop = useStore((s) => s.selectedLoop);
+  const loopView = useStore((s) => s.loopView);
+  const selectedPR = useStore((s) => s.selectedPR);
   const newReviewOpen = useStore((s) => s.newReviewOpen);
   const deletePullPending = useStore((s) => s.deletePullPending);
   const runApprovalOpen = useStore((s) => s.runApprovalOpen);
@@ -169,7 +175,9 @@ export function App() {
         {/* Files carries its own explorer and Loops its own rails/navigation, so
             the review quick-switch panel hides on both. */}
         {panelOpen && view !== "files" && view !== "loops" && <SidePanel />}
-        <Main />
+        <ErrorBoundary resetKey={`${view}|${selectedPR}|${selectedLoop}|${loopView}`}>
+          <Main />
+        </ErrorBoundary>
       </div>
 
       <StatusBar />
