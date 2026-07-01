@@ -1,6 +1,6 @@
 [package]
 name = "locke"
-version = "2.2.0"
+version = "2.2.1"
 description = "Locke — Local PR Review"
 authors = ["Locke"]
 edition = "2021"
