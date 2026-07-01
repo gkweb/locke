@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { LoopSpec, SpecStatus, LoopStreamEvent } from "@locke/core";
+import type { Loop, LoopSpec, SpecStatus, LoopStreamEvent } from "@locke/core";
 import { useStore } from "../../state/store.js";
 import { isTauri } from "../../api/git.js";
 import { color, font, tint } from "../../theme/tokens.js";
@@ -91,13 +91,22 @@ function ScopeActivity({ events, live }: { events: LoopStreamEvent[]; live: bool
             </div>
           );
         }
+        // Glyph/colour by outcome so a settled item reads at a glance.
+        const g =
+          e.st === "done"
+            ? { ch: "✓", col: color.green }
+            : e.st === "review"
+              ? { ch: "❚❚", col: color.amber }
+              : e.st === "failed"
+                ? { ch: "✕", col: color.red }
+                : { ch: "◦", col: color.textGhost };
         return (
           <div key={i} style={{ display: "flex", gap: 10, padding: "3px 0", alignItems: "baseline" }}>
-            <span style={{ width: 12, flex: "none", textAlign: "center", fontSize: 11, color: color.textGhost }}>
-              {isLast && live ? (
+            <span style={{ width: 12, flex: "none", textAlign: "center", fontSize: 11, color: g.col }}>
+              {isLast && live && g.ch === "◦" ? (
                 <span style={{ display: "inline-block", width: 5, height: 5, borderRadius: "50%", background: color.teal, animation: "lkpulse 1.6s infinite" }} />
               ) : (
-                "◦"
+                g.ch
               )}
             </span>
             <span style={{ flex: 1, minWidth: 0, fontFamily: font.mono, fontSize: 11.5, color: color.textDim, overflowWrap: "anywhere" }}>
@@ -109,6 +118,64 @@ function ScopeActivity({ events, live }: { events: LoopStreamEvent[]; live: bool
       })}
       <div ref={endRef} />
     </div>
+  );
+}
+
+/** Live, phase-aware status for the Plan header — so a slow scope/spec pass reads as
+ *  working, not frozen. Names the phase + progress (scoping… / speccing N of M ·
+ *  elapsed) and, when the agent goes quiet, a heartbeat counting the silence with
+ *  escalating copy. Owns its own 1s ticker so only this line re-renders per second. */
+function PlanStatus({ loop, count, active }: { loop?: Loop; count: number; active: boolean }) {
+  const lastActivity = useStore((s) => {
+    const m = loop ? s.loopItemActivity[loop.id] : undefined;
+    if (!m) return 0;
+    let mx = 0;
+    for (const v of Object.values(m)) if (v > mx) mx = v;
+    return mx;
+  });
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [active]);
+
+  const done = loop?.done ?? 0;
+  const total = loop?.total ?? 0;
+  const elapsed = loop?.elapsed ?? "";
+  const subtitle = active
+    ? total > 0
+      ? `speccing ${done} of ${total}`
+      : "scoping the repository…"
+    : `planning ${count.toLocaleString()} targets`;
+  const showElapsed = active && !!elapsed && elapsed !== "planning";
+
+  // Heartbeat: how long since the agent last produced anything. Silence past a few
+  // seconds gets a visible, escalating "still working" note (covers slow models/links).
+  const staleSecs = active && lastActivity ? Math.max(0, Math.floor((nowMs - lastActivity) / 1000)) : 0;
+  const fmt = (s: number) => (s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`);
+  const showStale = staleSecs >= 8;
+  const staleText =
+    staleSecs < 30
+      ? `${fmt(staleSecs)} since update`
+      : staleSecs < 90
+        ? `still working · ${fmt(staleSecs)}`
+        : `still working — the agent or model may be slow · ${fmt(staleSecs)}`;
+  const staleCol = staleSecs < 30 ? color.textGhost : color.amber;
+
+  return (
+    <span style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0, overflow: "hidden" }}>
+      <span style={{ fontSize: 12, color: color.textFainter, whiteSpace: "nowrap", flex: "none" }}>
+        · {subtitle}
+        {showElapsed ? ` · ${elapsed}` : ""}
+      </span>
+      {showStale && (
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, color: staleCol, whiteSpace: "nowrap", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
+          <span style={{ width: 5, height: 5, flex: "none", borderRadius: "50%", background: staleCol, animation: "lkpulse 1.6s infinite" }} />
+          {staleText}
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -211,7 +278,7 @@ function PlanScope() {
   // until it changes) and filter to the scope lanes in render, so unrelated store
   // updates don't re-run this component.
   const rawStream = useStore((s) => (selectedLoop ? s.loopStream[selectedLoop] : undefined));
-  const scopeStream = (rawStream ?? []).filter((e) => e.path === "plan" || e.path === "plan:text");
+  const scopeStream = (rawStream ?? []).filter((e) => e.path === "plan" || e.path === "plan:text" || e.path === "spec");
   const answerLoopQuestion = useStore((s) => s.answerLoopQuestion);
   const active = useStore((s) => (selectedLoop ? !!s.activeLoops[selectedLoop] : false));
   const specCount = useStore((s) => (s.loops.find((l) => l.id === s.selectedLoop)?.total ?? 318));
@@ -1060,6 +1127,7 @@ export function LoopPlan() {
   // is still all-candidates reads as "0 targets" rather than the raw pool size.
   const manifestLen = useStore((s) => s.loopManifest.filter((e) => e.status !== "candidate").length);
 
+  const active = useStore((s) => (selectedLoop ? !!s.activeLoops[selectedLoop] : false));
   const loop = loops.find((l) => l.id === selectedLoop) ?? loops[0];
   const title = loop?.title ?? "Loop";
   const count = isTauri ? loop?.total || manifestLen : loop?.total || 318;
@@ -1120,8 +1188,8 @@ export function LoopPlan() {
         <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: ".5px", color: color.violetLight, background: tint(color.violet, "24"), border: `1px solid ${tint(color.violet, "57")}`, borderRadius: 6, padding: "3px 9px", flex: "none" }}>
           PLAN MODE
         </span>
-        <span style={{ fontSize: 14, fontWeight: 600, color: color.textBright, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{title}</span>
-        <span style={{ fontSize: 12, color: color.textFainter, flex: "none" }}>· planning {count.toLocaleString()} targets</span>
+        <span style={{ fontSize: 14, fontWeight: 600, color: color.textBright, flex: "none", maxWidth: 280, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{title}</span>
+        <PlanStatus loop={loop} count={count} active={active} />
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, flex: "none" }}>
           <div style={{ display: "flex", gap: 2, padding: 3, background: color.navPillBg, border: `1px solid ${color.borderRow}`, borderRadius: 9 }}>
             {tabBtn("scope", "Scope")}

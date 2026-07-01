@@ -1214,6 +1214,11 @@ fn process_item(ctx: &Arc<Ctx>, p: &Picked) {
     // Inspect view's live elapsed; insert-if-absent keeps a re-run's first start.
     ctx.item_starts.lock().unwrap().entry(p.key.clone()).or_insert_with(now_epoch_ms);
     emit_item(ctx, &p.id, &p.key, ctx.phase.in_flight(), Some(start_line.into()), Some(2), p.wave, p.priority, vec![]);
+    // Keep the Scope tab's activity feed flowing through the per-item spec phase (the
+    // "spec" lane) so it doesn't freeze at "plan ready" while items are still specced.
+    if ctx.phase == Phase::Plan {
+        emit_stream(ctx, "running", "spec", &format!("speccing {}", p.target));
+    }
     emit_progress(ctx);
 
     // Run the item on its own thread. If its agent enters a human interview (blocks on
@@ -1314,6 +1319,16 @@ fn finish_item(ctx: &Arc<Ctx>, p: &Picked, outcome: Outcome) {
     }
     emit_item(ctx, &p.id, &p.key, emit_status, Some(line.clone()), Some(100), p.wave, p.priority, vec![]);
     emit_stream(ctx, st_glyph, &p.key, &line);
+    // Mirror the item's outcome onto the Scope feed's "spec" lane during planning, so
+    // the transcript shows each item settling (specced / needs review / failed).
+    if ctx.phase == Phase::Plan && !matches!(outcome, Outcome::Cancelled) {
+        let verb = match &outcome {
+            Outcome::Review(_) => "needs review",
+            Outcome::Failed(_) => "failed",
+            _ => "specced",
+        };
+        emit_stream(ctx, st.as_str(), "spec", &format!("{verb} {}", p.target));
+    }
     emit_progress(ctx);
     // Per-wave review scope: a settled item may have just closed out its wave.
     check_wave_seals(ctx);
