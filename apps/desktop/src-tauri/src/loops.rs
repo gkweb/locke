@@ -1768,18 +1768,21 @@ fn run_scope_agent(ctx: &Arc<Ctx>) {
     );
     emit_stream(ctx, "running", "plan", "reading the codebase…");
     let _ = stream_claude(ctx, &ctx.seed, &prompt, "", |kind, payload, input| {
+        // Surface everything the strategist does so a long exploration streams live
+        // instead of looking frozen. The `path` lane distinguishes narration text
+        // ("plan:text") from tool/status actions ("plan") so the UI can style them.
         if kind == "text" {
-            emit_stream(ctx, "running", "plan", &payload.chars().take(80).collect::<String>());
+            let t = payload.trim();
+            if !t.is_empty() {
+                emit_stream(ctx, "running", "plan:text", &t.chars().take(200).collect::<String>());
+            }
         } else if kind == "tool" {
-            // Surface what the strategist is doing so a long exploration shows live
-            // progress instead of looking frozen.
             match payload {
                 "loop_ask" => {
                     // Scope-level question — surface it on the Scope tab. The scope pass
                     // runs sequentially in the coordinator, so it blocks until answered.
                     surface_interview(ctx, None, input);
                 }
-                "Read" | "Grep" | "Glob" => emit_stream(ctx, "running", "plan", "exploring the repository…"),
                 "loop_list_candidates" => emit_stream(ctx, "running", "plan", "reviewing the candidate pool…"),
                 "loop_add_item" => {
                     let p = input.get("path").and_then(|v| v.as_str()).unwrap_or("a file");
@@ -1794,7 +1797,23 @@ fn run_scope_agent(ctx: &Arc<Ctx>) {
                     emit_stream(ctx, "running", "plan", &format!("adding task: {t}"));
                 }
                 "loop_write_plan" => emit_stream(ctx, "running", "plan", "writing the plan…"),
-                _ => {}
+                // Literal dev-tool lines with their target, like the build trail — so the
+                // feed reads as the agent actually working (reading X, searching Y, …).
+                "Read" | "Grep" | "Glob" | "Bash" | "Edit" | "Write" | "MultiEdit" | "LS" => {
+                    let verb = match payload {
+                        "Read" => "reading",
+                        "Grep" | "Glob" => "searching",
+                        "Bash" => "running",
+                        "LS" => "listing",
+                        _ => "editing",
+                    };
+                    match trail_target(payload, input) {
+                        Some(tgt) => emit_stream(ctx, "running", "plan", &format!("{verb} {tgt}")),
+                        None => emit_stream(ctx, "running", "plan", &format!("{verb}…")),
+                    }
+                }
+                // Catch-all so an unrecognised or custom tool still shows a line.
+                other => emit_stream(ctx, "running", "plan", &format!("using {other}…")),
             }
         }
     });

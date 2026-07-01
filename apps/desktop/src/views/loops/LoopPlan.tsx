@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import type { LoopSpec, SpecStatus } from "@locke/core";
+import { useEffect, useRef, useState } from "react";
+import type { LoopSpec, SpecStatus, LoopStreamEvent } from "@locke/core";
 import { useStore } from "../../state/store.js";
 import { isTauri } from "../../api/git.js";
 import { color, font, tint } from "../../theme/tokens.js";
@@ -62,6 +62,52 @@ function Bubble({ role, text, pre }: { role: "agent" | "you"; text: string; pre?
           {text}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Live "what the strategist is doing" feed for the Scope tab — so the minutes it
+ *  spends reading the repo and deciding the set stream as a transcript instead of a
+ *  blank panel. Fed by scope `loop:event`s: `path === "plan:text"` is the agent's own
+ *  narration; anything else is a tool/status action. `events` arrive newest-first. */
+function ScopeActivity({ events, live }: { events: LoopStreamEvent[]; live: boolean }) {
+  const endRef = useRef<HTMLDivElement>(null);
+  const rows = [...events].reverse(); // oldest → newest, so it reads as a transcript
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: "nearest" });
+  }, [rows.length]);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+      <div style={{ ...microLabel, marginBottom: 6 }}>ACTIVITY</div>
+      {rows.map((e, i) => {
+        const isLast = i === rows.length - 1;
+        if (e.path === "plan:text") {
+          return (
+            <div key={i} style={{ display: "flex", gap: 10, padding: "3px 0" }}>
+              <span style={{ width: 12, flex: "none" }} />
+              <span style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: 1.5, color: color.textFaint, overflowWrap: "anywhere" }}>
+                {e.text}
+              </span>
+            </div>
+          );
+        }
+        return (
+          <div key={i} style={{ display: "flex", gap: 10, padding: "3px 0", alignItems: "baseline" }}>
+            <span style={{ width: 12, flex: "none", textAlign: "center", fontSize: 11, color: color.textGhost }}>
+              {isLast && live ? (
+                <span style={{ display: "inline-block", width: 5, height: 5, borderRadius: "50%", background: color.teal, animation: "lkpulse 1.6s infinite" }} />
+              ) : (
+                "◦"
+              )}
+            </span>
+            <span style={{ flex: 1, minWidth: 0, fontFamily: font.mono, fontSize: 11.5, color: color.textDim, overflowWrap: "anywhere" }}>
+              {e.text}
+            </span>
+            <span style={{ flex: "none", fontSize: 10, color: color.lineNo, fontFamily: font.mono }}>{e.t}</span>
+          </div>
+        );
+      })}
+      <div ref={endRef} />
     </div>
   );
 }
@@ -161,6 +207,11 @@ function PlanScope() {
     return (lp?.template ?? s.draftPrompt ?? "").trim();
   });
   const scopeThread = useStore((s) => (selectedLoop ? s.loopInterview[selectedLoop]?.__scope__ : undefined));
+  // The scope agent's live activity feed. Select the raw per-loop stream (stable ref
+  // until it changes) and filter to the scope lanes in render, so unrelated store
+  // updates don't re-run this component.
+  const rawStream = useStore((s) => (selectedLoop ? s.loopStream[selectedLoop] : undefined));
+  const scopeStream = (rawStream ?? []).filter((e) => e.path === "plan" || e.path === "plan:text");
   const answerLoopQuestion = useStore((s) => s.answerLoopQuestion);
   const active = useStore((s) => (selectedLoop ? !!s.activeLoops[selectedLoop] : false));
   const specCount = useStore((s) => (s.loops.find((l) => l.id === s.selectedLoop)?.total ?? 318));
@@ -223,6 +274,9 @@ function PlanScope() {
                   }
                 />
                 <InterviewThread thread={scopeThread} onAnswer={(t) => answerLoopQuestion("__scope__", t)} />
+                {/* Live "agent working" feed — fills the long scope pass with what the
+                    strategist is actually doing (reads, searches, includes, narration). */}
+                {live && scopeStream.length > 0 && <ScopeActivity events={scopeStream} live={live} />}
               </>
             ) : (
               <>
