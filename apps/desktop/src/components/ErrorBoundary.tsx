@@ -1,6 +1,7 @@
 import { Component, type ReactNode } from "react";
 import { color, font } from "../theme/tokens.js";
 import { HoverButton } from "./primitives.js";
+import { reportError } from "../lib/report.js";
 
 interface Props {
   children: ReactNode;
@@ -30,8 +31,8 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: { componentStack?: string }) {
-    // Surface it so console tooling captures it rather than failing silently.
-    console.error("[locke] UI error boundary caught:", error, info?.componentStack);
+    // Durable capture so the crash is diagnosable after the fact, not just logged.
+    reportError("react", error, { componentStack: info?.componentStack ?? null });
   }
 
   render() {

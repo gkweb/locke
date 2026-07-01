@@ -124,6 +124,32 @@ pub fn write_agent_settings(app: tauri::AppHandle, settings: Value) -> Result<()
     store::write_agent_settings(&dir, settings)
 }
 
+/// Append one UI error record (a JSON line) to a durable, bounded log so a crash can be
+/// diagnosed after the fact — the frontend's global handlers and error boundary call
+/// this. Returns the log path so the UI can point the user at it. Bounded to the last
+/// ~200 lines once it grows past ~1MB so it never fills the disk.
+#[tauri::command]
+pub fn log_ui_error(app: tauri::AppHandle, entry: String) -> Result<String, String> {
+    use std::io::Write;
+    let dir = app.path().app_config_dir().map_err(|e| format!("config dir: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create config dir: {e}"))?;
+    let path = dir.join("ui-errors.jsonl");
+    if std::fs::metadata(&path).map(|m| m.len() > 1_000_000).unwrap_or(false) {
+        if let Ok(existing) = std::fs::read_to_string(&path) {
+            let mut lines: Vec<&str> = existing.lines().collect();
+            let keep = lines.split_off(lines.len().saturating_sub(200));
+            let _ = std::fs::write(&path, format!("{}\n", keep.join("\n")));
+        }
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("open error log: {e}"))?;
+    writeln!(f, "{}", entry.trim()).map_err(|e| format!("write error log: {e}"))?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 #[tauri::command]
 pub fn run_checks(
     repo: String,

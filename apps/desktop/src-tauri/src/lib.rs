@@ -43,6 +43,7 @@ pub fn run() {
         .manage(watch::WatchState::default())
         .manage(cli::InitialRepo(std::sync::Mutex::new(initial_repo)))
         .invoke_handler(tauri::generate_handler![
+            commands::log_ui_error,
             commands::review_summary,
             commands::list_branches,
             commands::detect_base,

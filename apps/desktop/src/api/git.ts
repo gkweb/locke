@@ -34,6 +34,11 @@ export interface LoopDraft {
 // plain Vite (mock mode) without throwing when the bridge is absent.
 export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+/** Append a UI error record (JSON line) to the durable on-disk error log for later
+ *  diagnosis. Resolves to the log path (empty outside Tauri). */
+export const logUiError = (entry: string): Promise<string> =>
+  isTauri ? invoke<string>("log_ui_error", { entry }) : Promise.resolve("");
+
 export interface GitReview {
   id: string;
   branch: string;

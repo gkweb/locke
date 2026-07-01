@@ -21,6 +21,7 @@ import { ActionBar } from "./components/ActionBar.js";
 import { SidePanel } from "./components/SidePanel.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { ErrorBoundary } from "./components/ErrorBoundary.js";
+import { installGlobalErrorCapture } from "./lib/report.js";
 import { ActivityView } from "./views/ActivityView.js";
 import { LoopsView } from "./views/loops/LoopsView.js";
 import { ReviewsView } from "./views/ReviewsView.js";
@@ -90,6 +91,15 @@ export function App() {
   const loadAgentSettings = useStore((s) => s.loadAgentSettings);
   const loadMcpStatus = useStore((s) => s.loadMcpStatus);
   const loadCliStatus = useStore((s) => s.loadCliStatus);
+
+  // Capture uncaught errors + unhandled promise rejections to the durable log, with a
+  // snapshot of where the user was, so a crash is diagnosable after the fact.
+  useEffect(() => {
+    installGlobalErrorCapture(() => {
+      const st = useStore.getState();
+      return { view: st.view, selectedLoop: st.selectedLoop, loopView: st.loopView, selectedPR: st.selectedPR };
+    });
+  }, []);
 
   // Probe installed agent CLIs and load app-global opt-outs + mode once on launch
   // (repo-independent — the agents directory is reachable with no repo open). Also
