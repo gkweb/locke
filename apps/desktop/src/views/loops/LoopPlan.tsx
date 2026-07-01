@@ -690,20 +690,39 @@ function PlanSpecs() {
             </div>
           </div>
 
-          <div style={{ ...microLabel, marginBottom: 9 }}>WHAT LOCKE DETECTED</div>
-          <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 22 }}>
-            {sel.detected.map((d) => (
-              <span key={d} style={{ fontSize: 11, color: color.textFaint, background: color.panelBg, border: `1px solid ${color.borderRail}`, borderRadius: 7, padding: "4px 10px", fontFamily: font.mono }}>
-                {d}
-              </span>
-            ))}
-          </div>
+          {sel.detected.length > 0 && (
+            <>
+              <div style={{ ...microLabel, marginBottom: 9 }}>WHAT LOCKE DETECTED</div>
+              <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 22 }}>
+                {sel.detected.map((d) => (
+                  <span key={d} style={{ fontSize: 11, color: color.textFaint, background: color.panelBg, border: `1px solid ${color.borderRail}`, borderRadius: 7, padding: "4px 10px", fontFamily: font.mono }}>
+                    {d}
+                  </span>
+                ))}
+              </div>
+            </>
+          )}
 
-          <div style={{ ...microLabel, marginBottom: 9 }}>APPROACH</div>
-          <div style={{ display: "flex", gap: 9, marginBottom: 22, maxWidth: 520 }}>
-            {approachBtn("script-setup", "script setup", "Composition API, single-file", color.teal)}
-            {approachBtn("options-api", "Options API", "Keep structure, fix breaks only", color.violetLight)}
-          </div>
+          {/* APPROACH — the two-way toggle (Vue script-setup vs Options API) is a demo
+              affordance. Real specs carry a single free-text approach or none, so show
+              it read-only when present and drop the section entirely when it's empty
+              rather than rendering inapplicable placeholder cards. */}
+          {!isTauri ? (
+            <>
+              <div style={{ ...microLabel, marginBottom: 9 }}>APPROACH</div>
+              <div style={{ display: "flex", gap: 9, marginBottom: 22, maxWidth: 520 }}>
+                {approachBtn("script-setup", "script setup", "Composition API, single-file", color.teal)}
+                {approachBtn("options-api", "Options API", "Keep structure, fix breaks only", color.violetLight)}
+              </div>
+            </>
+          ) : approach ? (
+            <>
+              <div style={{ ...microLabel, marginBottom: 9 }}>APPROACH</div>
+              <div style={{ fontSize: 12.5, color: color.textSoft, lineHeight: 1.55, marginBottom: 22, maxWidth: 640, padding: "11px 13px", borderRadius: 10, background: color.panelBg, border: `1px solid ${color.borderRail}` }}>
+                {approach}
+              </div>
+            </>
+          ) : null}
 
           <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 10 }}>
             <span style={microLabel}>PLANNED EDITS</span>
@@ -845,15 +864,19 @@ function PlanSpecs() {
             </div>
           </div>
 
-          <div style={{ ...microLabel, marginBottom: 9 }}>TESTS THAT MUST PASS</div>
-          <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
-            {sel.tests.map((t) => (
-              <span key={t} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: color.textFaint, background: color.panelBg, border: `1px solid ${color.borderRail}`, borderRadius: 7, padding: "4px 10px", fontFamily: font.mono }}>
-                <CheckIcon size={11} color={color.green} stroke={1.6} />
-                {t}
-              </span>
-            ))}
-          </div>
+          {sel.tests.length > 0 && (
+            <>
+              <div style={{ ...microLabel, marginBottom: 9 }}>TESTS THAT MUST PASS</div>
+              <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+                {sel.tests.map((t) => (
+                  <span key={t} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: color.textFaint, background: color.panelBg, border: `1px solid ${color.borderRail}`, borderRadius: 7, padding: "4px 10px", fontFamily: font.mono }}>
+                    <CheckIcon size={11} color={color.green} stroke={1.6} />
+                    {t}
+                  </span>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       </div>
 
