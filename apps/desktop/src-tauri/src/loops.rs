@@ -1832,7 +1832,10 @@ fn run_scope_agent(ctx: &Arc<Ctx>) {
             }
         }
     });
-    emit_stream(ctx, "done", "plan", "plan ready");
+    // Scope pass done: the work set + dry-run plan are authored (this marker also cues
+    // the UI to load the dry-run spec). Per-item specs are written next, so say that
+    // rather than "plan ready", which reads as if the whole plan were finished.
+    emit_stream(ctx, "done", "plan", "work set ready — writing per-item specs");
 }
 
 fn allow(stdin: &Arc<Mutex<Option<std::process::ChildStdin>>>, request_id: &str, input: Value) {

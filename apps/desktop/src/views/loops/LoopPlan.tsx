@@ -443,7 +443,10 @@ function PlanScope() {
             Review {realCount.toLocaleString()} per-item specs →
           </HoverButton>
           <p style={{ margin: "9px 0 0", fontSize: 10.5, color: color.textGhost, textAlign: "center" }}>
-            {planning ? "Still speccing — you can start anyway and Locke will fill gaps in-loop." : "Review the per-item specs, or approve to start the build."}
+            {/* `live` (runner attached) covers BOTH the scope pass and the per-item spec
+                pass — the dry-run spec loads when scope ends, so keep the "start anyway"
+                copy until the whole run settles, not just until scope finishes. */}
+            {live ? "Still working — you can start anyway and Locke will fill gaps in-loop." : "Review the per-item specs, or approve to start the build."}
           </p>
         </div>
       </div>
