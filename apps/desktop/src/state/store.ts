@@ -2247,12 +2247,20 @@ export const useStore = create<LockeState>((set, get) => ({
           : l,
       ),
     })),
-  onLoopEvent: (e) =>
+  onLoopEvent: (e) => {
     set((s) => {
       const arr = [{ st: e.st, path: e.path, text: e.text, t: e.t }, ...(s.loopStream[e.loopId] ?? [])].slice(0, 200);
       // `e.path` is the item key (== itemId), so a stream line counts as activity too.
       return { loopStream: { ...s.loopStream, [e.loopId]: arr }, loopItemActivity: stampActivity(s.loopItemActivity, e.loopId, e.path) };
-    }),
+    });
+    // The scope pass just finished writing the plan (the "plan" lane's terminal "done"
+    // marker). Load the dry-run spec + work set into the Plan view NOW, rather than
+    // leaving the aside on "Drafting…" until the whole per-item spec phase completes
+    // (loop:done). The metadata is already on disk from loop_write_plan.
+    if (e.path === "plan" && e.st === "done" && get().selectedLoop === e.loopId) {
+      void get().loadLoopPlan(e.loopId);
+    }
+  },
   onLoopTrail: (e) =>
     set((s) => {
       const byItem = s.loopItemTrail[e.loopId] ?? {};
