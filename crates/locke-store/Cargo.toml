@@ -3,7 +3,7 @@
 # standalone MCP server (`locke-mcp`) so the on-disk format has one owner.
 [package]
 name = "locke-store"
-version = "2.2.1"
+version = "2.2.2"
 edition = "2021"
 rust-version = "1.77.2"
 
