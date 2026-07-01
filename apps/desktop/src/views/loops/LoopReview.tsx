@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { LoopDiffLine } from "@locke/core";
 import { useStore } from "../../state/store.js";
 import { isTauri } from "../../api/git.js";
@@ -19,15 +19,23 @@ export function LoopReview() {
   const loopReviewItem = useStore((s) => s.loopReviewItem);
   const loopReviewBack = useStore((s) => s.loopReviewBack);
   const resolveLoopReview = useStore((s) => s.resolveLoopReview);
+  const loadLoopItems = useStore((s) => s.loadLoopItems);
   const [feedback, setFeedback] = useState("");
 
   const storeItems = useStore((s) => (selectedLoop ? s.loopItems[selectedLoop] : undefined));
   const storeRecords = useStore((s) => (selectedLoop ? s.loopItemRecords[selectedLoop] : undefined));
 
+  // Refresh the item records on open so the captured diff + review reason are present
+  // (they may have been written after the loop was last loaded, or never loaded if the
+  // review was reached without visiting the monitor).
+  useEffect(() => {
+    if (isTauri && selectedLoop) void loadLoopItems(selectedLoop);
+  }, [selectedLoop, loadLoopItems]);
+
   const loop = loops.find((l) => l.id === selectedLoop) ?? loops[0];
   const branch = loop?.branch ?? "";
 
-  // Live session: resolve the item + its captured diff/note from the backend
+  // Live session: resolve the item + its captured diff/reason from the backend
   // records. Demo: the seeded mock review item.
   const realItem = (storeItems ?? []).find((i) => i.id === loopReviewItem);
   const realRecord = (storeRecords ?? []).find((r) => (realItem ? r.path === realItem.path : false));
@@ -37,7 +45,15 @@ export function LoopReview() {
     MOCK_LOOP_ITEMS.find((i) => i.status === "review") ||
     MOCK_LOOP_ITEMS[0];
   const diff: LoopDiffLine[] = isTauri ? (realRecord?.diff as LoopDiffLine[] | undefined) ?? [] : MOCK_LOOP_DIFF;
-  const note = isTauri ? realRecord?.reason ?? realItem?.note ?? "" : MOCK_LOOP_REVIEW_NOTE;
+  // Why the item is paused (the build/agent reason, e.g. "declared complete but
+  // produced no changes" or the agent's needs-review note) — `line` carries it on both
+  // the record and the live item; fall back to the spec reason.
+  const reason = isTauri
+    ? realRecord?.line || realItem?.action || realRecord?.reason || realItem?.note || "Flagged for review."
+    : MOCK_LOOP_REVIEW_NOTE;
+  const adds = diff.filter((d) => d.t === "add").length;
+  const dels = diff.filter((d) => d.t === "del").length;
+  const hasDiff = diff.length > 0;
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
@@ -103,9 +119,25 @@ export function LoopReview() {
             <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 14px", background: "#0d1016", borderBottom: `1px solid ${color.borderRow}` }}>
               <FileSimpleIcon size={13} color={color.textFaint} stroke={1.3} />
               <span style={{ fontSize: 12.5, color: color.textDim, fontFamily: font.mono }}>{baseName(item.path)}</span>
-              <span style={{ fontFamily: font.mono, fontSize: 11.5, color: color.green, marginLeft: "auto" }}>+8</span>
-              <span style={{ fontFamily: font.mono, fontSize: 11.5, color: color.red }}>−9</span>
+              {hasDiff && (
+                <>
+                  <span style={{ fontFamily: font.mono, fontSize: 11.5, color: color.green, marginLeft: "auto" }}>+{adds}</span>
+                  <span style={{ fontFamily: font.mono, fontSize: 11.5, color: color.red }}>−{dels}</span>
+                </>
+              )}
             </div>
+            {!hasDiff && (
+              // A real, legitimate state: the agent flagged the item without leaving a
+              // diff (e.g. "declared complete but produced no changes"). Say so plainly
+              // and surface the reason so Approve / Request-changes still make sense.
+              <div style={{ padding: "22px 16px", display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-start" }}>
+                <span style={{ fontSize: 12.5, color: color.textFaint }}>No file changes were captured for this item.</span>
+                <span style={{ fontSize: 12, color: "#caa46a", lineHeight: 1.55 }}>{reason}</span>
+                <span style={{ fontSize: 11.5, color: color.textGhost, lineHeight: 1.55 }}>
+                  Approve to accept the item as-is, or Request changes to re-queue it with feedback.
+                </span>
+              </div>
+            )}
             <div style={{ fontFamily: font.mono, fontSize: 12.5, lineHeight: "21px" }}>
               {diff.map((ln, i) => {
                 if (ln.h) {
@@ -173,7 +205,7 @@ export function LoopReview() {
               </span>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 12, fontWeight: 600, color: color.textSoft, marginBottom: 4 }}>Claude</div>
-                <div style={{ fontSize: 12.5, color: color.textDim, lineHeight: 1.55 }}>{note}</div>
+                <div style={{ fontSize: 12.5, color: color.textDim, lineHeight: 1.55 }}>{reason}</div>
               </div>
             </div>
           </div>
