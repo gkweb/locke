@@ -5,7 +5,7 @@
 
 import type { ComponentType } from "react";
 import type { NavKey } from "@locke/core";
-import { ActivityIcon, ReviewsIcon, RunsIcon, FilesIcon, AgentsIcon } from "../components/icons.js";
+import { ActivityIcon, LoopsIcon, ReviewsIcon, RunsIcon, FilesIcon, AgentsIcon } from "../components/icons.js";
 
 interface IconProps {
   size?: number;
@@ -26,6 +26,12 @@ export interface NavItem {
 
 export const NAV_ITEMS: NavItem[] = [
   { key: "activity", label: "Activity", Icon: ActivityIcon, glyph: "M1.5 9h3l2-5 3 9 2-4h3" },
+  {
+    key: "loops",
+    label: "Loops",
+    Icon: LoopsIcon,
+    glyph: "M2.6 8a5.4 5.4 0 0 1 9.2-3.8M11.8 2v2.4h-2.4M13.4 8a5.4 5.4 0 0 1-9.2 3.8M4.2 14v-2.4h2.4",
+  },
   { key: "reviews", label: "Reviews", Icon: ReviewsIcon, glyph: "M3 2.5h7l2 2V13H3z" },
   { key: "runs", label: "Runs", Icon: RunsIcon, glyph: "M3 3l5 3.5L3 10M8.5 11h4.5" },
   { key: "files", label: "Files", Icon: FilesIcon, glyph: "M2.5 3.5h3l1.2 1.5H13.5v7.5H2.5z" },

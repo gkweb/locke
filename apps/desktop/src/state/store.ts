@@ -5,12 +5,23 @@ import type {
   DiffMode,
   FileNode,
   HistoryEntry,
+  InterviewMsg,
+  Loop,
+  LoopItem,
+  LoopMode,
+  LoopPlanMeta,
+  LoopState,
+  LoopStreamEvent,
+  LoopView,
+  ManifestEntry,
+  ResolverSpec,
   NavKey,
   NavPlacement,
   Review,
   ReviewDetail,
   RunEvent,
   RunRow,
+  SpecStatus,
   Thread,
   Verdict,
   View,
@@ -54,6 +65,44 @@ import {
   setPermissionMode,
   watchLocke,
   readRuns,
+  startLoop as startLoopApi,
+  startPlan as startPlanApi,
+  openLoopReview as openLoopReviewApi,
+  readLoopPlanMeta as readLoopPlanMetaApi,
+  setLoopMode as setLoopModeApi,
+  pauseLoop as pauseLoopApi,
+  stopLoop as stopLoopApi,
+  stopLoopItem as stopLoopItemApi,
+  requeueLoopItem as requeueLoopItemApi,
+  nudgeLoopItem as nudgeLoopItemApi,
+  resolveLoopItem as resolveLoopItemApi,
+  readLoops as readLoopsApi,
+  readLoopItems as readLoopItemsApi,
+  readLoopManifest as readLoopManifestApi,
+  resolveTargets as resolveTargetsApi,
+  writeLoopManifest as writeLoopManifestApi,
+  addLoopTask as addLoopTaskApi,
+  removeLoopNode as removeLoopNodeApi,
+  setLoopDeps as setLoopDepsApi,
+  answerLoopQuestion as answerLoopQuestionApi,
+  readLoopInterview as readLoopInterviewApi,
+  mergeLoopSpecEdit as mergeLoopSpecEditApi,
+  saveLoopDraft as saveLoopDraftApi,
+  readLoopDraft as readLoopDraftApi,
+  deleteLoop as deleteLoopApi,
+  listBranches as listBranchesApi,
+  type LoopItemEvent,
+  type LoopProgress,
+  type LoopEventPayload,
+  type LoopTrailEvent,
+  type LoopTrailEntry,
+  type LoopBlockEvent,
+  type LoopDonePayload,
+  type LoopReviewEvent,
+  type LoopInterviewEvent,
+  type LoopItemRecord,
+  resolveLoopBlock as resolveLoopBlockApi,
+  readLoopBlocks as readLoopBlocksApi,
   isTauri,
   type CheckSpec,
   type LockeConfig,
@@ -76,9 +125,15 @@ import {
   MOCK_RUN_EVENTS_BY_ID,
   MOCK_FILE_TREE,
   MOCK_FILE_CONTENTS,
+  MOCK_LOOPS,
+  MOCK_LOOP_DRAFT,
+  MOCK_LOOP_TARGETS,
+  MOCK_LOOP_MATCHED,
+  MOCK_LOOP_AUTO_INCLUDED,
 } from "../lib/mockFleet.js";
 import { buildAgentPrompt } from "../lib/agentPrompt.js";
 import { lockeLang } from "../lib/lockeLang.js";
+import { resolverSummary } from "../lib/loops.js";
 import { applyTheme, isThemeId, DEFAULT_THEME, type ThemeId } from "../theme/themes.js";
 import { readPulls, createPull, updatePull, deletePull } from "../api/pulls.js";
 import {
@@ -97,6 +152,13 @@ const EMPTY_DETAIL: ReviewDetail = { prompt: "", summary: "", bullets: [], note:
  * run's event stream, pending plan, and lifecycle survive navigating away — and
  * several reviews can have runs in flight at once, each checked on independently.
  */
+/** One item's (or the scope's) live plan-interview: the running transcript plus the
+ *  open question, if the strategist is currently blocked awaiting an answer. */
+interface LoopInterviewThread {
+  transcript: InterviewMsg[];
+  pending?: { question: string; choices?: string[]; file?: string };
+}
+
 interface RunSurface {
   /** Streamed run events, oldest first. */
   events: RunEvent[];
@@ -132,6 +194,16 @@ function relTime(epochSecs: number): string {
   if (diff < 3600) return `${Math.floor(diff / 60)} min ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)} hours ago`;
   return `${Math.floor(diff / 86400)} days ago`;
+}
+
+// Stamp now() as an item's last-activity time (keyed by loopId → itemId). The Inspect
+// view diffs this against now to flag a stalled item without any backend timer.
+function stampActivity(
+  cur: Record<string, Record<string, number>>,
+  loopId: string,
+  itemId: string,
+): Record<string, Record<string, number>> {
+  return { ...cur, [loopId]: { ...(cur[loopId] ?? {}), [itemId]: Date.now() } };
 }
 
 // First file in a tree (depth-first), so the explorer can open with something
@@ -216,6 +288,8 @@ interface LockeState {
   /** "Files changed" rail (diff tab) visibility + width (clamped 240–560). */
   filesRailOpen: boolean;
   filesRailWidth: number;
+  /** Plan view's dry-run spec rail width (clamped 300–760). */
+  planRailWidth: number;
   /** Action-bar approvals tray open. */
   approvalsOpen: boolean;
   /** Global search query (action bar + side panel). */
@@ -226,6 +300,90 @@ interface LockeState {
   theme: ThemeId;
   /** Where each nav destination is surfaced: top bar / bottom bar / hidden. */
   navPlace: Record<NavKey, NavPlacement>;
+
+  // ---- loops (v2.0.0; front-end + mock — a real loop-runner is a later phase) ----
+  /** All loops in the repo (mock-seeded; empty until a real runner exists). */
+  loops: Loop[];
+  /** Which Loops sub-screen is showing (the Loops view's internal router). */
+  loopView: LoopView;
+  /** The loop the builder/plan/monitor/review act on. */
+  selectedLoop: string | null;
+  /** Monitor layout: kanban board / live stream / tile grid / inspect drill-in. */
+  monitorLayout: "board" | "stream" | "grid" | "waves" | "inspect";
+  /** The layout to restore when leaving Inspect — set when entering it from another
+   *  layout so the back-chevron returns to the exact prior view. */
+  prevMonitorLayout: "board" | "stream" | "grid" | "waves";
+  /** The item focused in the Inspect drill-in, or null. */
+  inspectItem: string | null;
+  /** Plan-mode tab: scope interview vs per-item specs. */
+  planTab: "scope" | "specs" | "graph";
+  /** Selected per-item spec in the plan Item-specs tab. */
+  selectedSpec: string;
+  /** The item open in the loop-item review, or null. */
+  loopReviewItem: string | null;
+  /** Whether the monitored loop is paused. */
+  loopPaused: boolean;
+  /** Builder per-target include override (path → included), layered over `LoopTarget.inc`. */
+  targetSel: Record<string, boolean>;
+  /** Builder audit rows — resolved manifest entries (real in Tauri, mock in plain Vite). */
+  loopTargets: ManifestEntry[];
+  /** Total files the draft's pattern matched. */
+  loopMatched: number;
+  /** Files auto-included off the audit list (mock aggregate; 0 in Tauri). */
+  loopAutoIncluded: number;
+  /** Plan-spec overrides: per-spec approach id, per-step on/off, status. */
+  specApproach: Record<string, string>;
+  specSteps: Record<string, Record<string, boolean>>;
+  specStatus: Record<string, SpecStatus>;
+  /** The open plan loop's manifest rows — the strategist's per-item specs (real in
+   *  Tauri; the Plan view derives its spec list from this). */
+  loopManifest: ManifestEntry[];
+  /** The open plan loop's scope metadata (summary + assumptions) for the Scope tab. */
+  loopPlanMeta: LoopPlanMeta | null;
+  /** Live plan interview, keyed by loopId then by raw item key (`__scope__` for the
+   *  Scope tab). Each entry is the running transcript plus the open question, if any —
+   *  so concurrent per-item interviews and the scope chat coexist. */
+  loopInterview: Record<string, Record<string, LoopInterviewThread>>;
+  /** Loops with a live runner THIS session (set on start/resume, cleared on done).
+   *  A planning loop that isn't here is stalled (e.g. Locke was restarted). */
+  activeLoops: Record<string, boolean>;
+  /** Feedback the user added in the item review this session (re-queue composer). */
+  loopFeedback: string[];
+  /** Live per-item state, keyed by loopId (driven by `loop:item` events / reads). */
+  loopItems: Record<string, LoopItem[]>;
+  /** Live stream log, keyed by loopId (newest first; driven by `loop:event`). */
+  loopStream: Record<string, LoopStreamEvent[]>;
+  /** Raw per-item records (incl. captured review diffs), keyed by loopId. */
+  loopItemRecords: Record<string, LoopItemRecord[]>;
+  /** Live tool trail, keyed by loopId then itemId (newest last; driven by `loop:trail`
+   *  and seeded from the persisted item record on load). Powers the Inspect timeline. */
+  loopItemTrail: Record<string, Record<string, LoopTrailEntry[]>>;
+  /** Last-activity epoch ms, keyed by loopId then itemId — stamped on every item/
+   *  trail/stream event. The Inspect view flags an item stalled when this goes stale. */
+  loopItemActivity: Record<string, Record<string, number>>;
+  /** Open block-on-task proposals keyed by loopId (build agents' discovered
+   *  prerequisites). Gated ones await approval in the tray; cleared once decided. */
+  loopBlocks: Record<string, LoopBlockEvent[]>;
+  /** New-loop draft (seeded; mode + target selection are the interactive parts). */
+  draftTitle: string;
+  draftBranch: string;
+  draftBase: string;
+  /** How the draft's targets are resolved (glob / globs / list / command / custom). */
+  draftResolver: ResolverSpec;
+  /** Id of the persisted draft loop (set once the draft is first saved), else null. */
+  draftLoopId: string | null;
+  draftPrompt: string;
+  draftMode: LoopMode;
+  /** Open a review of the loop's branch when it finishes (opt-out, default on). */
+  draftReviewOnDone: boolean;
+  /** How a build agent's loop_block_on_task is handled: "approve" (default) | "auto". */
+  draftBlockPolicy: "approve" | "auto";
+  /** Review granularity: "loop" (one review for the whole run, default) | "wave"
+   *  (one review per wave, opened as each wave finishes). */
+  draftReviewScope: "loop" | "wave";
+  /** The open repo's local branches, for the builder's base-branch picker. */
+  repoBranches: string[];
+
   selectedPR: string;
   selectedFile: number;
   diffMode: DiffMode;
@@ -352,10 +510,121 @@ interface LockeState {
   setPanelWidth: (w: number) => void;
   toggleFilesRail: () => void;
   setFilesRailWidth: (w: number) => void;
+  setPlanRailWidth: (w: number) => void;
   toggleApprovals: () => void;
   setQuery: (q: string) => void;
   /** Set where a nav destination is surfaced (top / bottom / off). */
   setNavPlace: (key: NavKey, place: NavPlacement) => void;
+
+  // ---- loops (v2.0.0) ----
+  /** Open a loop, routing to builder/plan/monitor by its state. */
+  openLoop: (id: string) => void;
+  /** Start a new loop in the builder. */
+  newLoop: () => void;
+  /** Return to the loops list. */
+  loopToList: () => void;
+  setLoopView: (v: LoopView) => void;
+  setMonitorLayout: (l: "board" | "stream" | "grid" | "waves" | "inspect") => void;
+  /** Focus an item in the Inspect drill-in, entering Inspect from the current layout
+   *  (stashed so the back-chevron restores it). */
+  openInspect: (itemId: string) => void;
+  /** Leave Inspect, restoring the layout active before it was opened. */
+  closeInspect: () => void;
+  setPlanTab: (t: "scope" | "specs" | "graph") => void;
+  selectSpec: (id: string) => void;
+  setDraftMode: (m: LoopMode) => void;
+  setDraftTitle: (v: string) => void;
+  setDraftBranch: (v: string) => void;
+  setDraftBase: (v: string) => void;
+  setDraftResolver: (r: ResolverSpec) => void;
+  setDraftReviewOnDone: (v: boolean) => void;
+  setDraftBlockPolicy: (v: "approve" | "auto") => void;
+  setDraftReviewScope: (v: "loop" | "wave") => void;
+  /** Re-read the repo's pulls into the reviews queue (after a loop opens one). */
+  loadReviews: () => Promise<void>;
+  /** Open (creating if needed) the review for a finished loop's branch, then show it. */
+  reviewLoopChanges: (loopId: string) => Promise<void>;
+  /** Persist the draft loop (creates it on first save once it has a title). */
+  saveDraft: () => void;
+  /** Delete a loop (registry + .locke tree; git untouched). */
+  deleteLoop: (id: string) => void;
+  setDraftPrompt: (v: string) => void;
+  /** Load the open repo's branches for the base picker (Tauri; no-op in mock). */
+  loadRepoBranches: () => Promise<void>;
+  /** Builder: include/exclude a matched target. */
+  toggleTarget: (path: string, on: boolean) => void;
+  /** Builder Start: Build → monitor, Plan → scope interview. */
+  startLoop: () => void;
+  /** Plan: approve and begin building (→ monitor). */
+  approveLoopPlan: () => void;
+  /** Return a loop to Plan mode (halts any run; → plan view) to review/re-run specs. */
+  reopenPlan: (id?: string) => void;
+  /** Resume a stalled planning loop (e.g. after a restart): re-spec the unfinished
+   *  items. No-op in mock. */
+  resumePlan: () => void;
+  /** Stop/cancel the loop (→ list). */
+  stopLoop: () => void;
+  /** Cancel a single in-flight item by path (kills its agent; run continues). */
+  stopLoopItem: (path: string) => void;
+  /** Cancel a stalled item's agent and re-queue it (retry from scratch). */
+  requeueLoopItem: (key: string) => void;
+  /** Nudge an item's live agent with a follow-up message (best-effort). */
+  nudgeLoopItem: (key: string, text: string) => void;
+  /** Pause/resume the monitored loop. */
+  togglePause: () => void;
+  /** Open one item's review. */
+  openLoopReview: (itemId: string) => void;
+  /** Back from the item review to the monitor. */
+  loopReviewBack: () => void;
+  /** Resolve the item review (approve or re-queue) → back to the monitor. */
+  resolveLoopReview: (decision: "approve" | "request", feedback?: string) => void;
+  setSpecApproach: (id: string, approach: string) => void;
+  toggleSpecStep: (id: string, k: string) => void;
+  /** Add a planned-edit step to one item's spec (rendered now, persisted on accept). */
+  addSpecStep: (id: string, text: string) => void;
+  /** Append a free-text instruction to one item's spec (persisted to its note + md). */
+  addSpecInstruction: (id: string, text: string) => void;
+  acceptSpec: (id: string) => void;
+  excludeSpec: (id: string) => void;
+  /** Re-include a candidate / excluded item the strategist skipped (→ queued). */
+  reincludeLoopItem: (id: string) => void;
+  /** Add a human-authored task node to the plan's work graph, then reload it. */
+  addLoopTask: (task: { id: string; title: string; spec?: string; requires?: string[]; priority?: number }) => Promise<void>;
+  /** Spin off a prerequisite task from a blocked/review item: create the task and add
+   *  a `requires` edge from this item to it (the human's quick-add of what the model asked). */
+  addPrereqTask: (itemId: string, task: { id: string; title: string; spec?: string }) => Promise<void>;
+  /** Remove a work-graph node (file or task) by id-or-path, then reload. */
+  removeLoopNode: (node: string) => Promise<void>;
+  /** Set a node's dependency edges / ordering, then reload. */
+  setLoopDeps: (node: string, requires: string[], priority?: number) => Promise<void>;
+  /** Fold a live `loop:interview` question into the interview slice (+ Plan view). */
+  onLoopInterview: (e: LoopInterviewEvent) => void;
+  /** Re-read the durable interview files and surface any open question — the fallback
+   *  when a live event is missed or the agent was orphaned by an app restart. */
+  refreshLoopInterview: (loopId: string) => Promise<void>;
+  /** Answer an open interview question for `key` (raw item key or `__scope__`). */
+  answerLoopQuestion: (key: string, text: string) => Promise<void>;
+  /** Navigate to a loop's plan and the item/scope an interview question is about (the
+   *  Approvals-tray "Answer →" deep-link). */
+  openLoopQuestion: (loopId: string, key: string) => void;
+  /** Load real loops from the backend (Tauri mode; no-op in mock). */
+  loadLoops: () => Promise<void>;
+  /** Load a loop's per-item records from the backend into `loopItems`. */
+  loadLoopItems: (loopId: string) => Promise<void>;
+  /** Load a planning loop's manifest + scope metadata into `loopManifest`/`loopPlanMeta`. */
+  loadLoopPlan: (loopId: string) => Promise<void>;
+  /** Match the draft pattern into real audit rows (Tauri mode; no-op in mock). */
+  loadLoopTargets: () => Promise<void>;
+  /** Backend `loop:*` stream handlers (routed from App.tsx listeners). */
+  onLoopItem: (e: LoopItemEvent) => void;
+  onLoopProgress: (e: LoopProgress) => void;
+  onLoopEvent: (e: LoopEventPayload) => void;
+  onLoopTrail: (e: LoopTrailEvent) => void;
+  onLoopBlock: (e: LoopBlockEvent) => void;
+  onLoopDone: (e: LoopDonePayload) => void;
+  onLoopReview: (e: LoopReviewEvent) => void;
+  /** Approve or reject a gated block-on-task proposal. */
+  resolveLoopBlock: (loopId: string, taskId: string, approve: boolean) => void;
 
   // ---- files explorer + extensions navigation ----
   /** Open the Files screen on a full file, optionally from a review's diff. */
@@ -514,6 +783,27 @@ interface LockeState {
 // matches the design with no repo open; a real Tauri session loads live git data.
 const MOCK = !isTauri;
 
+// A memorable, collision-resistant id: a random adjective-noun pair (the human
+// handle people use to refer to a loop) plus a short random suffix. The id keys
+// the loop's `.locke/loops/<id>/` tree and its seed worktree folder, so the
+// suffix — not the words — is what guarantees two created in the same instant
+// never share a folder. e.g. `loop-amber-otter-k3f`.
+const SLUG_ADJECTIVES = [
+  "amber", "brave", "calm", "crisp", "deft", "dusky", "fleet", "gentle",
+  "keen", "lucid", "lunar", "mossy", "nimble", "noble", "plucky", "quiet",
+  "rapid", "sage", "snappy", "solar", "steady", "sunny", "swift", "teal",
+  "vivid", "warm", "bold", "bright", "jolly", "merry", "royal", "zesty",
+] as const;
+const SLUG_NOUNS = [
+  "otter", "finch", "cedar", "heron", "maple", "falcon", "willow", "badger",
+  "marten", "comet", "harbor", "meadow", "ridge", "ember", "brook", "sparrow",
+  "lynx", "walrus", "ferret", "beacon", "cypress", "juniper", "lantern", "summit",
+  "thistle", "quartz", "basalt", "drift", "fjord", "pippin", "cobra", "raven",
+] as const;
+const pick = (xs: readonly string[]): string => xs[Math.floor(Math.random() * xs.length)];
+const slugId = (prefix: string): string =>
+  `${prefix}-${pick(SLUG_ADJECTIVES)}-${pick(SLUG_NOUNS)}-${Math.random().toString(36).slice(2, 5)}`;
+
 export const useStore = create<LockeState>((set, get) => ({
   reviews: MOCK ? MOCK_REVIEWS : [],
   pulls: {},
@@ -528,11 +818,55 @@ export const useStore = create<LockeState>((set, get) => ({
   panelWidth: 300,
   filesRailOpen: true,
   filesRailWidth: 240,
+  planRailWidth: 360,
   approvalsOpen: false,
   query: "",
   agentMode: true,
   theme: DEFAULT_THEME,
-  navPlace: { activity: "top", reviews: "top", runs: "bottom", files: "bottom", agents: "bottom" },
+  navPlace: { activity: "top", loops: "top", reviews: "top", runs: "bottom", files: "bottom", agents: "bottom" },
+
+  loops: MOCK ? MOCK_LOOPS : [],
+  loopView: "list",
+  selectedLoop: MOCK ? "vue3" : null,
+  monitorLayout: "board",
+  prevMonitorLayout: "board",
+  inspectItem: null,
+  planTab: "scope",
+  selectedSpec: "s1",
+  loopReviewItem: null,
+  loopPaused: false,
+  targetSel: {},
+  loopTargets: MOCK ? MOCK_LOOP_TARGETS : [],
+  loopMatched: MOCK ? MOCK_LOOP_MATCHED : 0,
+  loopAutoIncluded: MOCK ? MOCK_LOOP_AUTO_INCLUDED : 0,
+  specApproach: {},
+  specSteps: {},
+  specStatus: {},
+  loopManifest: [],
+  loopPlanMeta: null,
+  loopInterview: {},
+  activeLoops: {},
+  loopFeedback: [],
+  loopItems: {},
+  loopStream: {},
+  loopItemRecords: {},
+  loopItemTrail: {},
+  loopItemActivity: {},
+  loopBlocks: {},
+  // The seeded example draft is mock-only (the design preview); a real session
+  // opens a blank builder the user fills in.
+  draftTitle: MOCK ? MOCK_LOOP_DRAFT.title : "",
+  draftBranch: MOCK ? MOCK_LOOP_DRAFT.branch : "",
+  draftBase: MOCK ? MOCK_LOOP_DRAFT.base : "main",
+  draftResolver: { kind: "glob", pattern: MOCK ? MOCK_LOOP_DRAFT.pattern : "" },
+  draftReviewOnDone: true,
+  draftBlockPolicy: "approve",
+  draftReviewScope: "loop",
+  draftLoopId: null,
+  draftPrompt: MOCK ? MOCK_LOOP_DRAFT.prompt : "",
+  draftMode: "plan",
+  repoBranches: MOCK ? ["main", "develop", "release/2.4"] : [],
+
   selectedPR: "",
   selectedFile: 0,
   diffMode: "unified",
@@ -867,7 +1201,7 @@ export const useStore = create<LockeState>((set, get) => ({
     // agents don't take the flag, so they always run directly.
     const planFirst = runPlanFirst && agent.id === "claude";
     const prompt = buildAgentPrompt({ repoPath, selectedPR, reviews, files, threads, planFirst });
-    const runId = `run-${Date.now()}`;
+    const runId = slugId("run");
     set((s) => ({
       runs: mergeRun(s.runs, review.id, { events: [], done: false, paused: false, planReview: null, phase: planFirst ? "plan" : "build", runId }),
       runReviewMap: { ...s.runReviewMap, [runId]: review.id },
@@ -1122,8 +1456,20 @@ export const useStore = create<LockeState>((set, get) => ({
     set((s) => ({ runs: mergeRun(s.runs, reviewId, { planReview: null }) }));
   },
 
-  go: (view) =>
-    set({ view, approvalsOpen: false, settingsOpen: false, fileFromReview: null, langMenuOpen: false }),
+  go: (view) => {
+    set({
+      view,
+      approvalsOpen: false,
+      settingsOpen: false,
+      fileFromReview: null,
+      langMenuOpen: false,
+      // Entering Loops from the nav always lands on the list (its own router
+      // resets), so a stale sub-view never shows.
+      ...(view === "loops" ? { loopView: "list" as LoopView, loopReviewItem: null } : {}),
+    });
+    // Pull the real loop registry when opening Loops in a live session.
+    if (view === "loops" && !MOCK) void get().loadLoops();
+  },
   openReview: (id, tab = "diff") => {
     const { repoPath, reviews, pulls } = get();
     // The run surface is per-review (`runs[id]`), so it persists across navigation
@@ -1187,9 +1533,824 @@ export const useStore = create<LockeState>((set, get) => ({
   setPanelWidth: (w) => set({ panelWidth: Math.max(240, Math.min(560, Math.round(w))) }),
   toggleFilesRail: () => set({ filesRailOpen: !get().filesRailOpen }),
   setFilesRailWidth: (w) => set({ filesRailWidth: Math.max(240, Math.min(560, Math.round(w))) }),
+  setPlanRailWidth: (w) => set({ planRailWidth: Math.max(300, Math.min(760, Math.round(w))) }),
   toggleApprovals: () => set({ approvalsOpen: !get().approvalsOpen, settingsOpen: false }),
   setQuery: (q) => set({ query: q }),
   setNavPlace: (key, place) => set((s) => ({ navPlace: { ...s.navPlace, [key]: place } })),
+
+  // ---- loops (v2.0.0; mock-driven in front-end-only phase) ----
+  openLoop: (id) => {
+    const loop = get().loops.find((l) => l.id === id);
+    // Route by lifecycle: a draft resumes its builder, a planning loop opens its
+    // scope interview, anything live/done goes straight to the monitor.
+    const v: LoopView = loop?.state === "draft" ? "builder" : loop?.state === "planning" ? "plan" : "monitor";
+    set({ selectedLoop: id, loopView: v, loopReviewItem: null });
+    if (MOCK) return;
+    if (v === "builder") {
+      // Restore the saved draft into the builder, then re-resolve its targets.
+      void (async () => {
+        const { repoPath } = get();
+        if (!repoPath) return;
+        const d = await readLoopDraftApi(repoPath, id).catch(() => null);
+        if (d) {
+          set({
+            draftTitle: d.title ?? "",
+            draftBranch: d.branch ?? "",
+            draftBase: d.base ?? get().base,
+            draftPrompt: d.prompt ?? "",
+            draftMode: d.mode ?? "plan",
+            draftResolver: d.resolver ?? { kind: "glob", pattern: "" },
+            targetSel: d.targetSel ?? {},
+            draftReviewOnDone: d.reviewOnDone ?? true,
+            draftReviewScope: d.reviewScope ?? "loop",
+            draftLoopId: id,
+          });
+        }
+        void get().loadLoopTargets();
+        void get().loadRepoBranches();
+      })();
+    } else if (v === "plan") {
+      // Resume a planning loop: restore its draft (for the prompt approve→build
+      // needs) and load the strategist's specs + scope metadata.
+      void (async () => {
+        const { repoPath } = get();
+        if (!repoPath) return;
+        const d = await readLoopDraftApi(repoPath, id).catch(() => null);
+        if (d) set({ draftPrompt: d.prompt ?? "", draftBranch: d.branch ?? "", draftBase: d.base ?? get().base });
+      })();
+      set({ planTab: "scope" });
+      void get().loadLoopPlan(id);
+    } else {
+      void get().loadLoopItems(id);
+    }
+  },
+  newLoop: () =>
+    set({
+      loopView: "builder",
+      loopReviewItem: null,
+      targetSel: {},
+      draftMode: "plan",
+      // Real sessions start from a blank draft (the seeded example is mock-only);
+      // the builder's inputs fill these in and re-match the pattern as it's typed.
+      ...(MOCK
+        ? {}
+        : {
+            draftTitle: "",
+            draftBranch: "",
+            draftBase: get().base,
+            draftResolver: { kind: "glob" as const, pattern: "" },
+            draftPrompt: "",
+            draftLoopId: null,
+            loopTargets: [],
+            loopMatched: 0,
+            loopAutoIncluded: 0,
+          }),
+    }),
+  loopToList: () => set({ loopView: "list", loopReviewItem: null }),
+  deleteLoop: (id) => {
+    const s = get();
+    const loop = s.loops.find((l) => l.id === id);
+    set((st) => ({
+      loops: st.loops.filter((l) => l.id !== id),
+      ...(st.selectedLoop === id ? { selectedLoop: null } : {}),
+      ...(st.draftLoopId === id ? { draftLoopId: null } : {}),
+    }));
+    if (MOCK || !s.repoPath) return;
+    // Stop it first if it's live, then remove its persisted state.
+    if (loop && (loop.state === "building" || loop.state === "paused")) void stopLoopApi(id);
+    void deleteLoopApi(s.repoPath, id);
+  },
+  setLoopView: (v) => set({ loopView: v }),
+  setMonitorLayout: (l) =>
+    set((st) =>
+      // Entering Inspect from a real layout: remember it so the back-chevron returns
+      // there. Leaving it: nothing to stash. (Re-selecting Inspect keeps the old prev.)
+      l === "inspect" && st.monitorLayout !== "inspect"
+        ? { monitorLayout: l, prevMonitorLayout: st.monitorLayout }
+        : { monitorLayout: l },
+    ),
+  openInspect: (itemId) =>
+    set((st) => ({
+      inspectItem: itemId,
+      monitorLayout: "inspect",
+      ...(st.monitorLayout !== "inspect" ? { prevMonitorLayout: st.monitorLayout } : {}),
+    })),
+  closeInspect: () => set((st) => ({ monitorLayout: st.prevMonitorLayout, inspectItem: null })),
+  setPlanTab: (t) => set({ planTab: t }),
+  selectSpec: (id) => set({ selectedSpec: id }),
+  setDraftMode: (m) => set({ draftMode: m }),
+  setDraftTitle: (v) => set({ draftTitle: v }),
+  setDraftBranch: (v) => set({ draftBranch: v }),
+  setDraftBase: (v) => set({ draftBase: v }),
+  setDraftResolver: (r) => set({ draftResolver: r }),
+  setDraftReviewOnDone: (v) => set({ draftReviewOnDone: v }),
+  setDraftBlockPolicy: (v) => set({ draftBlockPolicy: v }),
+  setDraftReviewScope: (v) => set({ draftReviewScope: v }),
+  // Autosave the draft loop. Creates it (and a registry row) the moment it has a
+  // title, then keeps it current; the full builder state lives in draft.json so it
+  // reopens exactly. No-op in mock / without a repo / before it's named.
+  saveDraft: () => {
+    const s = get();
+    if (MOCK || !s.repoPath || s.draftTitle.trim() === "") return;
+    const id = s.draftLoopId ?? slugId("loop");
+    if (!s.draftLoopId) set({ draftLoopId: id });
+    const loop: Loop = {
+      id,
+      title: s.draftTitle,
+      branch: s.draftBranch,
+      base: s.draftBase,
+      mode: s.draftMode,
+      state: "draft",
+      pattern: resolverSummary(s.draftResolver),
+      total: 0,
+      done: 0,
+      running: 0,
+      review: 0,
+      failed: 0,
+      queued: 0,
+      blocked: 0,
+      rate: "—",
+      elapsed: "draft",
+    };
+    set((st) => ({
+      loops: st.loops.some((l) => l.id === id) ? st.loops.map((l) => (l.id === id ? loop : l)) : [loop, ...st.loops],
+    }));
+    void saveLoopDraftApi(s.repoPath, loop, {
+      title: s.draftTitle,
+      branch: s.draftBranch,
+      base: s.draftBase,
+      prompt: s.draftPrompt,
+      mode: s.draftMode,
+      resolver: s.draftResolver,
+      targetSel: s.targetSel,
+      reviewOnDone: s.draftReviewOnDone,
+      reviewScope: s.draftReviewScope,
+    });
+  },
+  setDraftPrompt: (v) => set({ draftPrompt: v }),
+  loadRepoBranches: async () => {
+    const { repoPath } = get();
+    if (MOCK || !repoPath) return;
+    try {
+      set({ repoBranches: await listBranchesApi(repoPath) });
+    } catch {
+      // A failed read just leaves the prior branch list in place.
+    }
+  },
+  toggleTarget: (path, on) => set((s) => ({ targetSel: { ...s.targetSel, [path]: on } })),
+  // Mock: drives the scripted "vue3" loop. Tauri: creates a real loop from the
+  // draft and kicks off the backend runner — Build mode → monitor, Plan mode →
+  // the strategist (scope pass + per-item specs) then the Plan view.
+  startLoop: () => {
+    const s = get();
+    const plan = s.draftMode !== "build";
+    if (MOCK || !s.repoPath) {
+      set(
+        plan
+          ? { loopView: "plan", selectedLoop: "vue3", planTab: "scope" }
+          : { loopView: "monitor", selectedLoop: "vue3", loopPaused: false },
+      );
+      return;
+    }
+    // Reuse the saved draft's id so the draft becomes the running loop (no dupe).
+    const loopId = s.draftLoopId ?? slugId("loop");
+    // The resolver only seeds a scope hint. In PLAN mode the prompt is the source
+    // of truth: write the resolved rows as a CANDIDATE POOL (`inc:false`,
+    // status:"candidate") and let the strategist author the real set (include/drop/
+    // add). A pre-flight exclude in the audit drops a row from the pool entirely.
+    // In BUILD mode there's no strategist, so keep today's verbatim behaviour: the
+    // audit's included rows ARE the work set.
+    const included = (t: ManifestEntry) =>
+      Object.prototype.hasOwnProperty.call(s.targetSel, t.path) ? s.targetSel[t.path] : t.inc;
+    const entries: ManifestEntry[] = plan
+      ? s.loopTargets
+          .filter((t) => included(t)) // a pre-flight exclude removes it from the pool
+          .map((t) => ({ ...t, inc: false, status: "candidate" }))
+      : s.loopTargets.map((t) => ({ ...t, inc: included(t) }));
+    // Build mode hands the runner the explicit set; plan mode lets the model decide.
+    const targets = plan ? [] : entries.filter((t) => t.inc).map((t) => t.path);
+    const pattern = resolverSummary(s.draftResolver);
+    const placeholder: Loop = {
+      id: loopId,
+      title: s.draftTitle,
+      branch: s.draftBranch,
+      base: s.draftBase,
+      mode: plan ? "plan" : "build",
+      state: plan ? "planning" : "building",
+      pattern,
+      total: 0,
+      done: 0,
+      running: 0,
+      review: 0,
+      failed: 0,
+      queued: 0,
+      blocked: 0,
+      rate: "—",
+      elapsed: plan ? "planning" : "0m 0s",
+      // Carry the seed prompt onto the optimistic placeholder so the Plan view's Scope
+      // tab can show it immediately, before the first read_loops refresh from disk.
+      template: s.draftPrompt,
+    };
+    set((st) => ({
+      loops: [placeholder, ...st.loops.filter((l) => l.id !== loopId)],
+      loopView: plan ? "plan" : "monitor",
+      selectedLoop: loopId,
+      planTab: plan ? "scope" : st.planTab,
+      loopPaused: false,
+      draftLoopId: null,
+      // Seed the Plan view with the candidate pool so it shows at once; the
+      // strategist then promotes/drops/adds and fills in approach/steps/status.
+      loopManifest: plan ? entries : st.loopManifest,
+      loopPlanMeta: plan ? null : st.loopPlanMeta,
+      activeLoops: { ...st.activeLoops, [loopId]: true },
+      loopItems: { ...st.loopItems, [loopId]: [] },
+      loopStream: { ...st.loopStream, [loopId]: [] },
+    }));
+    void writeLoopManifestApi(s.repoPath, loopId, entries);
+    const args = {
+      loopId,
+      repo: s.repoPath,
+      branch: s.draftBranch,
+      base: s.draftBase,
+      pattern,
+      title: s.draftTitle,
+      template: s.draftPrompt,
+      targets,
+      // DEV: dialed right down while we finesse the flows + stop controls, so a
+      // run burns minimal tokens and is easy to halt. Raise (plan ~4, build ~6)
+      // once the controls are settled.
+      concurrency: plan ? 1 : 2,
+      checks: s.checkSpecs,
+      reviewOnDone: s.draftReviewOnDone,
+      reviewScope: s.draftReviewScope,
+    };
+    // block_policy only applies to the Build runner; the plan run carries it forward
+    // on its record so approve→build inherits the choice.
+    void (plan ? startPlanApi(args) : startLoopApi({ ...args, blockPolicy: s.draftBlockPolicy }));
+  },
+  // Approve the strategist's plan and start the build over the same loop. The
+  // (enriched, audited) manifest is already persisted, so start_loop consumes it
+  // unchanged; the loop flips plan → build in place.
+  approveLoopPlan: () => {
+    const s = get();
+    const loopId = s.selectedLoop;
+    const loop = s.loops.find((l) => l.id === loopId);
+    if (MOCK || !s.repoPath || !loopId || !loop) {
+      set({ loopView: "monitor", selectedLoop: MOCK ? "vue3" : loopId, loopPaused: false });
+      return;
+    }
+    set((st) => ({
+      loops: st.loops.map((l) => (l.id === loopId ? { ...l, mode: "build", state: "building", elapsed: "0m 0s" } : l)),
+      loopView: "monitor",
+      loopPaused: false,
+      activeLoops: { ...st.activeLoops, [loopId]: true },
+      loopItems: { ...st.loopItems, [loopId]: [] },
+      loopStream: { ...st.loopStream, [loopId]: [] },
+    }));
+    void startLoopApi({
+      loopId,
+      repo: s.repoPath,
+      branch: loop.branch,
+      base: loop.base,
+      pattern: loop.pattern,
+      title: loop.title,
+      // Empty: the runner reads the loop's persisted template + enriched manifest.
+      template: s.draftPrompt,
+      targets: [],
+      concurrency: 2, // DEV: see startLoop note
+      checks: s.checkSpecs,
+      // The backend prefers the value persisted on the plan; this is just a fallback.
+      reviewOnDone: true,
+      // Empty → backend keeps the policy persisted on the plan record (or defaults approve).
+      blockPolicy: "",
+      // Empty → backend keeps the review scope persisted on the plan record (or defaults "loop").
+      reviewScope: "",
+    });
+  },
+  // Return a (possibly already-approved/building) loop to Plan mode: halt any run,
+  // flip the record back to plan/planning on disk, and reopen the Plan view on the
+  // strategist's existing specs. Lets you re-review or re-run after an accidental
+  // approve — no re-spec happens until you choose to.
+  reopenPlan: (id) => {
+    const s = get();
+    const loopId = id ?? s.selectedLoop;
+    if (!loopId) return;
+    if (MOCK) {
+      set({ loopView: "plan", selectedLoop: loopId, planTab: "scope", loopPaused: false });
+      return;
+    }
+    if (s.repoPath) {
+      void stopLoopApi(loopId);
+      void setLoopModeApi(s.repoPath, loopId, "plan", "planning");
+    }
+    set((st) => ({
+      loops: st.loops.map((l) => (l.id === loopId ? { ...l, mode: "plan", state: "planning" } : l)),
+      selectedLoop: loopId,
+      loopView: "plan",
+      planTab: "scope",
+      loopPaused: false,
+    }));
+    void get().loadLoopPlan(loopId);
+  },
+  resumePlan: () => {
+    const s = get();
+    const loopId = s.selectedLoop;
+    const loop = s.loops.find((l) => l.id === loopId);
+    if (MOCK || !s.repoPath || !loopId || !loop) return;
+    set((st) => ({
+      loops: st.loops.map((l) => (l.id === loopId ? { ...l, state: "planning" } : l)),
+      activeLoops: { ...st.activeLoops, [loopId]: true },
+      loopPaused: false,
+    }));
+    // Backend re-specs only the unfinished (queued) items; finished specs are kept.
+    void startPlanApi({
+      loopId,
+      repo: s.repoPath,
+      branch: loop.branch,
+      base: loop.base,
+      pattern: loop.pattern,
+      title: loop.title,
+      template: s.draftPrompt, // empty falls back to the loop's persisted template
+      targets: [],
+      concurrency: 1, // DEV: see startLoop note
+      checks: s.checkSpecs,
+      // Backend prefers the value persisted on the loop; this is just a fallback.
+      reviewOnDone: true,
+      // Empty → backend keeps the review scope persisted on the loop record.
+      reviewScope: "",
+    });
+  },
+  stopLoop: () => {
+    const s = get();
+    if (!MOCK && s.selectedLoop) void stopLoopApi(s.selectedLoop);
+    set({ loopView: "list", loopReviewItem: null });
+  },
+  stopLoopItem: (path) => {
+    const s = get();
+    if (!MOCK && s.selectedLoop) void stopLoopItemApi(s.selectedLoop, path);
+    // Stop speccing it, but keep it in scope (queued/unspecced) — the runner confirms
+    // via loop:item. Not excluded: it can be re-planned or built without a spec.
+    set((st) => ({
+      loopManifest: st.loopManifest.map((e) => (e.path === path ? { ...e, status: "queued" } : e)),
+    }));
+  },
+  requeueLoopItem: (key) => {
+    const s = get();
+    if (!MOCK && s.selectedLoop) void requeueLoopItemApi(s.selectedLoop, key);
+    // The runner confirms via loop:item (queued → running again); no optimistic edit.
+  },
+  nudgeLoopItem: (key, text) => {
+    const s = get();
+    if (!MOCK && s.selectedLoop) void nudgeLoopItemApi(s.selectedLoop, key, text);
+  },
+  togglePause: () => {
+    const next = !get().loopPaused;
+    set({ loopPaused: next });
+    const s = get();
+    if (!MOCK && s.selectedLoop) void pauseLoopApi(s.selectedLoop, next);
+  },
+  openLoopReview: (itemId) => set({ loopView: "review", loopReviewItem: itemId }),
+  loopReviewBack: () => set({ loopView: "monitor", loopReviewItem: null }),
+  resolveLoopReview: (decision, feedback) => {
+    const s = get();
+    // The review composer passes its text directly; fall back to any session-collected
+    // feedback for callers that don't (kept for compatibility).
+    const note = (feedback ?? s.loopFeedback.join("\n")).trim();
+    if (!MOCK && s.selectedLoop && s.repoPath) {
+      const file = (s.loopItems[s.selectedLoop] ?? []).find((i) => i.id === s.loopReviewItem)?.path;
+      if (file) {
+        void resolveLoopItemApi(s.repoPath, s.selectedLoop, file, decision === "approve" ? "approve" : "request", note);
+      }
+    }
+    set({ loopView: "monitor", loopReviewItem: null, loopFeedback: [] });
+  },
+  // approach + step toggles tune the spec in-session (instant, restore-able); they're
+  // committed to the manifest when the creator accepts the spec (below).
+  setSpecApproach: (id, approach) => set((s) => ({ specApproach: { ...s.specApproach, [id]: approach } })),
+  toggleSpecStep: (id, k) =>
+    set((s) => {
+      // Steps default to on; the override map flips them off (and back).
+      const cur = { ...(s.specSteps[id] ?? {}) };
+      const eff = cur[k] === undefined ? true : cur[k];
+      cur[k] = !eff;
+      return { specSteps: { ...s.specSteps, [id]: cur } };
+    }),
+  // "Add a step" appends to the rendered spec now; it persists with the rest on accept.
+  addSpecStep: (id, text) =>
+    set((s) => ({
+      loopManifest: s.loopManifest.map((e) =>
+        (e.id ?? e.path) === id ? { ...e, steps: [...(e.steps ?? []), text] } : e,
+      ),
+    })),
+  // The per-item instruction changes what the build worker reads, so it persists
+  // immediately — appended to the row's note AND the per-item spec markdown.
+  addSpecInstruction: (id, text) => {
+    const body = text.trim();
+    if (!body) return;
+    const s = get();
+    const loopManifest = s.loopManifest.map((e) =>
+      (e.id ?? e.path) === id ? { ...e, note: e.note ? `${e.note}\n${body}` : body } : e,
+    );
+    set({ loopManifest });
+    if (!MOCK && s.repoPath && s.selectedLoop) void mergeLoopSpecEditApi(s.repoPath, s.selectedLoop, id, { instruction: body });
+  },
+  // Accept/exclude mutate the persisted manifest (the build's source of truth) so
+  // the creator's calls carry into the build: an excluded item drops out (inc=false).
+  // Accept also folds in the in-session approach override + pruned step toggles.
+  acceptSpec: (id) => {
+    const s = get();
+    const approachOverride = s.specApproach[id];
+    const toggles = s.specSteps[id];
+    const loopManifest = s.loopManifest.map((e) => {
+      if ((e.id ?? e.path) !== id) return e;
+      const steps = toggles ? (e.steps ?? []).filter((_, i) => toggles[String(i)] !== false) : e.steps;
+      return { ...e, status: "specced", inc: true, ...(approachOverride ? { approach: approachOverride } : {}), steps };
+    });
+    set({ loopManifest, specStatus: { ...s.specStatus, [id]: "specced" } });
+    if (!MOCK && s.repoPath && s.selectedLoop) void writeLoopManifestApi(s.repoPath, s.selectedLoop, loopManifest);
+  },
+  excludeSpec: (id) => {
+    const s = get();
+    const cur = s.loopManifest.find((e) => (e.id ?? e.path) === id);
+    const nowExcluded = cur?.status !== "excluded";
+    const loopManifest = s.loopManifest.map((e) =>
+      (e.id ?? e.path) === id ? { ...e, status: nowExcluded ? "excluded" : "review", inc: !nowExcluded } : e,
+    );
+    set({ loopManifest, specStatus: { ...s.specStatus, [id]: nowExcluded ? "excluded" : "review" } });
+    if (!MOCK && s.repoPath && s.selectedLoop) void writeLoopManifestApi(s.repoPath, s.selectedLoop, loopManifest);
+  },
+  // Pull a candidate (or excluded item) back into the work set the strategist
+  // proposed — the human overriding what the model chose to skip. Clears the
+  // exclusion reason and queues it for speccing.
+  reincludeLoopItem: (id) => {
+    const s = get();
+    const loopManifest = s.loopManifest.map((e) =>
+      (e.id ?? e.path) === id ? { ...e, status: "queued", inc: true, reason: undefined } : e,
+    );
+    set({ loopManifest, specStatus: { ...s.specStatus, [id]: "queued" } });
+    if (!MOCK && s.repoPath && s.selectedLoop) void writeLoopManifestApi(s.repoPath, s.selectedLoop, loopManifest);
+  },
+
+  // Work-graph edits (the human's lightweight editor in the Plan view). Each writes
+  // through the backend's `update_loop_manifest` primitive, then reloads the manifest
+  // so derived waves/ordering stay authoritative.
+  addLoopTask: async (task) => {
+    const s = get();
+    if (MOCK || !s.repoPath || !s.selectedLoop) return;
+    await addLoopTaskApi(s.repoPath, s.selectedLoop, task);
+    await get().loadLoopPlan(s.selectedLoop);
+  },
+  removeLoopNode: async (node) => {
+    const s = get();
+    if (MOCK || !s.repoPath || !s.selectedLoop) return;
+    await removeLoopNodeApi(s.repoPath, s.selectedLoop, node);
+    await get().loadLoopPlan(s.selectedLoop);
+  },
+  setLoopDeps: async (node, requires, priority) => {
+    const s = get();
+    if (MOCK || !s.repoPath || !s.selectedLoop) return;
+    await setLoopDepsApi(s.repoPath, s.selectedLoop, node, requires, priority);
+    await get().loadLoopPlan(s.selectedLoop);
+  },
+  // Quick-add the prerequisite the model asked about: create the task, then gate this
+  // item on it (a `requires` edge), then reload so waves/ordering stay authoritative.
+  addPrereqTask: async (itemId, task) => {
+    const s = get();
+    if (MOCK || !s.repoPath || !s.selectedLoop) return;
+    await addLoopTaskApi(s.repoPath, s.selectedLoop, task);
+    const cur = s.loopManifest.find((e) => (e.id ?? e.path) === itemId);
+    const requires = [...(cur?.requires ?? []), task.id];
+    await setLoopDepsApi(s.repoPath, s.selectedLoop, itemId, requires, cur?.priority);
+    await get().loadLoopPlan(s.selectedLoop);
+  },
+
+  // A live `loop:interview` question: append the agent turn and open the question on
+  // its thread (keyed by raw item key; `__scope__` for the Scope tab).
+  onLoopInterview: (e) =>
+    set((s) => {
+      const loop = { ...(s.loopInterview[e.loopId] ?? {}) };
+      const thread = loop[e.key] ?? { transcript: [] };
+      // Don't double-append if the same question replays (live event + a reload).
+      const last = thread.transcript[thread.transcript.length - 1];
+      const transcript =
+        last && last.role === "agent" && last.text === e.question
+          ? thread.transcript
+          : [...thread.transcript, { role: "agent" as const, text: e.question }];
+      loop[e.key] = { transcript, pending: { question: e.question, choices: e.choices, file: e.file } };
+      return { loopInterview: { ...s.loopInterview, [e.loopId]: loop } };
+    }),
+  // Durable fallback for the live `loop:interview` event: re-read the on-disk
+  // transcript + pending questions and merge them in. The blocking interview writes
+  // a durable `interview/<key>.q.json` per question; if the live event is missed —
+  // or the agent was orphaned by an app restart so no runner is streaming it — this
+  // poll still surfaces the open question so the human can answer and unblock it.
+  refreshLoopInterview: async (loopId) => {
+    const { repoPath } = get();
+    if (MOCK || !repoPath) return;
+    let interview: Awaited<ReturnType<typeof readLoopInterviewApi>>;
+    try {
+      interview = await readLoopInterviewApi(repoPath, loopId);
+    } catch {
+      return; // a failed read just leaves the prior interview state in place
+    }
+    set((s) => {
+      const prev = s.loopInterview[loopId] ?? {};
+      // Durable transcript is the source of truth for completed turns.
+      const threads: Record<string, LoopInterviewThread> = {};
+      for (const m of interview.transcript) {
+        (threads[m.key] ??= { transcript: [] }).transcript.push({ role: m.role, text: m.text });
+      }
+      for (const [key, q] of Object.entries(interview.pending)) {
+        const t = (threads[key] ??= { transcript: [] });
+        // Suppress a question the human just answered in-session: the durable
+        // `q.json` lingers for up to one MCP poll until the agent consumes the
+        // answer, so don't re-open it (and keep their optimistic reply visible).
+        const pl = prev[key]?.transcript ?? [];
+        const justAnswered =
+          prev[key]?.pending === undefined &&
+          pl[pl.length - 1]?.role === "you" &&
+          pl[pl.length - 2]?.role === "agent" &&
+          pl[pl.length - 2]?.text === q.question;
+        if (justAnswered) {
+          if (t.transcript[t.transcript.length - 1]?.role !== "you") t.transcript.push(pl[pl.length - 1]);
+          continue;
+        }
+        const last = t.transcript[t.transcript.length - 1];
+        if (last?.role === "you") continue; // answered durably; await the agent's next ask
+        if (!(last?.role === "agent" && last.text === q.question)) {
+          t.transcript.push({ role: "agent", text: q.question });
+        }
+        t.pending = { question: q.question, choices: q.choices, file: q.file };
+      }
+      return { loopInterview: { ...s.loopInterview, [loopId]: threads } };
+    });
+  },
+  // Answer an open question: optimistically append the human turn and clear the
+  // pending question, then write the answer (the blocked strategist picks it up).
+  answerLoopQuestion: async (key, text) => {
+    const body = text.trim();
+    const s = get();
+    const loopId = s.selectedLoop;
+    if (!body || !loopId) return;
+    set((st) => {
+      const loop = { ...(st.loopInterview[loopId] ?? {}) };
+      const thread = loop[key] ?? { transcript: [] };
+      loop[key] = { transcript: [...thread.transcript, { role: "you", text: body }], pending: undefined };
+      return { loopInterview: { ...st.loopInterview, [loopId]: loop } };
+    });
+    if (!MOCK && s.repoPath) await answerLoopQuestionApi(s.repoPath, loopId, key, body);
+  },
+  openLoopQuestion: (loopId, key) => {
+    const isScope = key === "__scope__";
+    set({
+      view: "loops",
+      selectedLoop: loopId,
+      loopView: "plan",
+      planTab: isScope ? "scope" : "specs",
+      ...(isScope ? {} : { selectedSpec: key }),
+      approvalsOpen: false,
+    });
+    if (!MOCK) void get().loadLoopPlan(loopId);
+  },
+
+  loadLoops: async () => {
+    const { repoPath } = get();
+    if (MOCK || !repoPath) return;
+    try {
+      set({ loops: await readLoopsApi(repoPath) });
+    } catch {
+      // A failed read just leaves the prior list in place.
+    }
+  },
+  loadLoopItems: async (loopId) => {
+    const { repoPath } = get();
+    if (MOCK || !repoPath) return;
+    try {
+      const recs = await readLoopItemsApi(repoPath, loopId);
+      const items: LoopItem[] = recs.map((r) => ({
+        id: r.id ?? r.path,
+        path: r.path,
+        status: r.status ?? "queued",
+        agent: r.agent ?? "CL",
+        action: r.line,
+        note: r.reason,
+        wave: r.wave,
+        priority: r.priority,
+        blockedBy: r.blockedBy,
+      }));
+      // Seed the Inspect tool trail from the persisted ring so a reopened loop shows
+      // each item's history; live `loop:trail` events append from there.
+      const trail: Record<string, LoopTrailEntry[]> = {};
+      for (const r of recs) {
+        if (r.trail?.length) trail[r.id ?? r.path] = r.trail;
+      }
+      // Pending block-on-task proposals so a reopened run still shows them in the tray.
+      const blocks = await readLoopBlocksApi(repoPath, loopId);
+      const loopBlocksForId: LoopBlockEvent[] = blocks.map((b) => ({
+        loopId,
+        taskId: b.taskId,
+        fromItem: "",
+        title: b.title,
+        spec: b.spec,
+        gated: true,
+        t: b.ts ?? "",
+      }));
+      set((s) => ({
+        loopItems: { ...s.loopItems, [loopId]: items },
+        loopItemRecords: { ...s.loopItemRecords, [loopId]: recs },
+        loopItemTrail: { ...s.loopItemTrail, [loopId]: trail },
+        loopBlocks: { ...s.loopBlocks, [loopId]: loopBlocksForId },
+      }));
+    } catch {
+      // Leave prior items in place on a failed read.
+    }
+  },
+  loadLoopPlan: async (loopId) => {
+    const { repoPath } = get();
+    if (MOCK || !repoPath) return;
+    try {
+      const [manifest, meta, interview] = await Promise.all([
+        readLoopManifestApi(repoPath, loopId),
+        readLoopPlanMetaApi(repoPath, loopId),
+        readLoopInterviewApi(repoPath, loopId),
+      ]);
+      const inc = manifest.filter((e) => e.inc);
+      // Rebuild the interview slice from the durable transcript + pending questions so
+      // a reopened or stalled plan shows the open questions (keyed by raw item key).
+      const threads: Record<string, LoopInterviewThread> = {};
+      for (const m of interview.transcript) {
+        (threads[m.key] ??= { transcript: [] }).transcript.push({ role: m.role, text: m.text });
+      }
+      for (const [key, q] of Object.entries(interview.pending)) {
+        (threads[key] ??= { transcript: [] }).pending = { question: q.question, choices: q.choices, file: q.file };
+      }
+      set((s) => ({
+        // Keep the WHOLE manifest — candidate-pool and excluded rows included — so
+        // the Work-graph "Considered" view survives a reload/poll. The specs list and
+        // counts filter out `candidate` rows (they're not work items yet).
+        loopManifest: manifest,
+        loopPlanMeta: meta,
+        loopInterview: { ...s.loopInterview, [loopId]: threads },
+        selectedSpec: inc[0]?.id ?? inc[0]?.path ?? s.selectedSpec,
+      }));
+    } catch {
+      // Leave any prior plan data in place on a failed read.
+    }
+  },
+  loadLoopTargets: async () => {
+    const { repoPath, draftResolver } = get();
+    if (MOCK || !repoPath) return;
+    try {
+      const list = await resolveTargetsApi(repoPath, draftResolver);
+      // A real resolve surfaces every file in the audit list, so nothing is
+      // auto-included off-list (that aggregate is a mock-only nicety).
+      set({ loopTargets: list, loopMatched: list.length, loopAutoIncluded: 0 });
+    } catch {
+      // A failed resolve just leaves the prior audit list in place.
+    }
+  },
+  // Upsert one item (by id, else path) into the loop's live item list.
+  onLoopItem: (e) =>
+    set((s) => {
+      const items = [...(s.loopItems[e.loopId] ?? [])];
+      const idx = items.findIndex((it) => it.id === e.itemId || it.path === e.path);
+      const next: LoopItem = {
+        id: e.itemId,
+        path: e.path,
+        status: e.status,
+        agent: e.agent,
+        action: e.line,
+        pct: e.pct,
+        t: e.t,
+        wave: e.wave,
+        priority: e.priority,
+        blockedBy: e.blockedBy,
+        // Carried on every emit, but absent for items that never started (blocked) —
+        // don't let a later event without it wipe a start we already recorded.
+        startedAt: e.startedAt ?? (idx >= 0 ? items[idx].startedAt : undefined),
+      };
+      if (idx >= 0) items[idx] = { ...items[idx], ...next };
+      else items.push(next);
+      // While the Plan view is open on this loop, mirror the item's status onto its
+      // manifest row so spec dots go speccing → specced/review live.
+      const loopManifest =
+        s.loopView === "plan" && s.selectedLoop === e.loopId
+          ? s.loopManifest.map((m) => ((m.id ?? m.path) === e.itemId || m.path === e.path ? { ...m, status: e.status } : m))
+          : s.loopManifest;
+      return { loopItems: { ...s.loopItems, [e.loopId]: items }, loopManifest, loopItemActivity: stampActivity(s.loopItemActivity, e.loopId, e.itemId) };
+    }),
+  onLoopProgress: (e) =>
+    set((s) => ({
+      loops: s.loops.map((l) =>
+        l.id === e.loopId
+          ? { ...l, total: e.total, done: e.done, running: e.running, review: e.review, failed: e.failed, queued: e.queued, blocked: e.blocked, rate: e.rate, elapsed: e.elapsed }
+          : l,
+      ),
+    })),
+  onLoopEvent: (e) => {
+    set((s) => {
+      const arr = [{ st: e.st, path: e.path, text: e.text, t: e.t }, ...(s.loopStream[e.loopId] ?? [])].slice(0, 200);
+      // `e.path` is the item key (== itemId), so a stream line counts as activity too.
+      return { loopStream: { ...s.loopStream, [e.loopId]: arr }, loopItemActivity: stampActivity(s.loopItemActivity, e.loopId, e.path) };
+    });
+    // The scope pass just finished writing the plan (the "plan" lane's terminal "done"
+    // marker). Load the dry-run spec + work set into the Plan view NOW, rather than
+    // leaving the aside on "Drafting…" until the whole per-item spec phase completes
+    // (loop:done). The metadata is already on disk from loop_write_plan.
+    if (e.path === "plan" && e.st === "done" && get().selectedLoop === e.loopId) {
+      void get().loadLoopPlan(e.loopId);
+    }
+  },
+  onLoopTrail: (e) =>
+    set((s) => {
+      const byItem = s.loopItemTrail[e.loopId] ?? {};
+      const entry: LoopTrailEntry = { tool: e.tool, target: e.target, t: e.t };
+      const trail = [...(byItem[e.itemId] ?? []), entry].slice(-60);
+      return {
+        loopItemTrail: { ...s.loopItemTrail, [e.loopId]: { ...byItem, [e.itemId]: trail } },
+        loopItemActivity: stampActivity(s.loopItemActivity, e.loopId, e.itemId),
+      };
+    }),
+  onLoopBlock: (e) =>
+    set((s) => {
+      // Upsert by taskId; an `auto`-policy proposal is informational (not gated).
+      const cur = (s.loopBlocks[e.loopId] ?? []).filter((b) => b.taskId !== e.taskId);
+      return { loopBlocks: { ...s.loopBlocks, [e.loopId]: [...cur, e] } };
+    }),
+  resolveLoopBlock: (loopId, taskId, approve) => {
+    if (!MOCK) void resolveLoopBlockApi(loopId, taskId, approve);
+    // Drop it from the tray immediately — the runner confirms via loop:item.
+    set((s) => ({
+      loopBlocks: { ...s.loopBlocks, [loopId]: (s.loopBlocks[loopId] ?? []).filter((b) => b.taskId !== taskId) },
+    }));
+  },
+  onLoopDone: (e) => {
+    // loop:done always means the coordinator finished, so every outcome is terminal:
+    // a "review" outcome (items need a human call) is still a finished build — map it
+    // to "done" (the header reads the review/failed counts to badge it), NOT "building".
+    const state: LoopState =
+      e.state === "stopped" ? "paused" : e.state === "planning" ? "planning" : "done";
+    set((s) => {
+      const activeLoops = { ...s.activeLoops };
+      delete activeLoops[e.loopId];
+      return {
+        loops: s.loops.map((l) => (l.id === e.loopId ? { ...l, state, ...(e.pullId ? { pullId: e.pullId } : {}) } : l)),
+        activeLoops,
+      };
+    });
+    // The backend opened a review for this loop's output — pull it into the queue so
+    // the completed Monitor's "Open review" can deep-link to it.
+    if (e.pullId) void get().loadReviews();
+    // A finished planning pass: reload the manifest + scope metadata so the Plan
+    // view shows the strategist's full specs (approach/steps/tests), not just dots.
+    if (e.state === "planning" && get().selectedLoop === e.loopId && get().loopView === "plan") {
+      void get().loadLoopPlan(e.loopId);
+    }
+  },
+  onLoopReview: (e) => {
+    // A wave just sealed its own review (review_scope === "wave"): pull it into the
+    // reviews queue and stamp the loop's pullId so the Monitor can deep-link to the
+    // most recent wave review while later waves keep building.
+    set((s) => ({
+      loops: s.loops.map((l) => (l.id === e.loopId && e.pullId ? { ...l, pullId: e.pullId } : l)),
+    }));
+    if (e.pullId) void get().loadReviews();
+  },
+  // Re-read the repo's pulls into the reviews queue (mirrors openRepo's load) — so a
+  // review a loop just opened out-of-band shows up without reopening the repo.
+  loadReviews: async () => {
+    const { repoPath } = get();
+    if (MOCK || !repoPath) return;
+    try {
+      const store = await readPulls(repoPath);
+      const merged = await Promise.all(
+        store.pulls.map(async (pull) => {
+          const [g, comments] = await Promise.all([
+            reviewSummary(repoPath, pull.branch, pull.base).catch(() => null),
+            loadComments(repoPath, pull.id).catch(() => null),
+          ]);
+          const open = comments?.threads.filter((t) => !t.resolved).length ?? 0;
+          return toReview(pull, g, open);
+        }),
+      );
+      const pulls: Record<string, PullRecord> = {};
+      for (const pull of store.pulls) pulls[String(pull.id)] = pull;
+      set({ reviews: merged.slice().reverse(), pulls });
+    } catch {
+      // A failed read just leaves the prior reviews in place.
+    }
+  },
+  // Open the review for a finished loop's branch: the backend get-or-creates it
+  // (deduped, stamps the loop's pull_id), then we surface it and navigate.
+  reviewLoopChanges: async (loopId) => {
+    const { repoPath } = get();
+    if (MOCK || !repoPath) return;
+    const pullId = await openLoopReviewApi(repoPath, loopId).catch(() => 0);
+    if (!pullId) return;
+    set((s) => ({ loops: s.loops.map((l) => (l.id === loopId ? { ...l, pullId } : l)) }));
+    await get().loadReviews();
+    get().openReview(String(pullId), "diff");
+  },
 
   openFullFile: (path, review) => {
     set({

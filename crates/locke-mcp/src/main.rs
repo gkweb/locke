@@ -187,6 +187,178 @@ fn tools_list() -> Value {
                 "type": "object",
                 "properties": { "pull_id": { "type": "integer", "description": "Optional pull id to scope history to its branch." } }
             }
+        },
+        {
+            "name": "loop_item_complete",
+            "description": "Declare THIS loop item done. Call this only once the change is finished and its tests pass. Locke gates committing the item on this call plus its checks passing; without it the item is routed to human review. Persists a structured result record carried to the next step.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "loop_id": { "type": "string", "description": "The loop id (given in your task prompt)." },
+                    "file": { "type": "string", "description": "The repo-relative file this item is migrating (given in your task prompt)." },
+                    "summary": { "type": "string", "description": "One-line summary of what you changed." },
+                    "artifacts": { "type": "array", "items": { "type": "string" }, "description": "Optional files/tests touched." }
+                },
+                "required": ["loop_id", "file", "summary"]
+            }
+        },
+        {
+            "name": "loop_item_needs_review",
+            "description": "Flag THIS loop item for human review instead of completing it. Use when you are uncertain, a decision needs the human, or the change can't be made safely. The item will NOT be committed; your reason is shown to the reviewer.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "loop_id": { "type": "string", "description": "The loop id (given in your task prompt)." },
+                    "file": { "type": "string", "description": "The repo-relative file this item is migrating." },
+                    "reason": { "type": "string", "description": "Why this needs a human's call." }
+                },
+                "required": ["loop_id", "file", "reason"]
+            }
+        },
+        {
+            "name": "loop_write_note",
+            "description": "Persist a durable note/decision on THIS loop item that carries forward to a re-queue or the next loop (e.g. an assumption you made or a follow-up).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "loop_id": { "type": "string", "description": "The loop id." },
+                    "file": { "type": "string", "description": "The repo-relative file." },
+                    "note": { "type": "string", "description": "The note to persist." }
+                },
+                "required": ["loop_id", "file", "note"]
+            }
+        },
+        {
+            "name": "loop_read_spec",
+            "description": "Read the pre-written spec for THIS loop item (objective, planned steps, tests), if the loop creator produced one. Returns the spec markdown or a note that none exists.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "loop_id": { "type": "string", "description": "The loop id." },
+                    "file": { "type": "string", "description": "The repo-relative file." }
+                },
+                "required": ["loop_id", "file"]
+            }
+        },
+        {
+            "name": "loop_write_spec",
+            "description": "Plan mode (strategist): write the per-item spec for THIS loop item. Call this exactly once, after analysing the file, with how the build worker should change it. Persists the spec (so the later build reads it) and marks the item specced. If a human decision is needed before the build can proceed, set needs_review=true with a reason instead of guessing — the item is shown for the creator's call.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "loop_id": { "type": "string", "description": "The loop id (given in your task prompt)." },
+                    "file": { "type": "string", "description": "The repo-relative file this spec is for (given in your task prompt)." },
+                    "spec": { "type": "string", "description": "The full per-item spec as markdown — objective, the concrete edits, and how to verify. This is handed verbatim to the build worker." },
+                    "approach": { "type": "string", "description": "Optional short id for the chosen strategy (e.g. \"script-setup\")." },
+                    "detected": { "type": "array", "items": { "type": "string" }, "description": "Optional short tags for what you found in the file (e.g. \"Options API\", \"Vuex getter\")." },
+                    "steps": { "type": "array", "items": { "type": "string" }, "description": "Optional ordered list of the concrete edits the build will make." },
+                    "tests": { "type": "array", "items": { "type": "string" }, "description": "Optional tests/checks that must pass for this item." },
+                    "note": { "type": "string", "description": "Optional caveat/decision for the reviewer or build worker." },
+                    "needs_review": { "type": "boolean", "description": "Set true when a human must decide before this item can be built; pair with `note` as the reason." },
+                    "requires": { "type": "array", "items": { "type": "string" }, "description": "Optional ids of work-graph nodes (file paths or task ids) that must finish before this item runs. Use to pin a prerequisite for this specific file." },
+                    "priority": { "type": "integer", "description": "Optional ordering within the ready set (higher runs first). Default 0." }
+                },
+                "required": ["loop_id", "file", "spec"]
+            }
+        },
+        {
+            "name": "loop_add_task",
+            "description": "Plan mode (strategist): add a prerequisite or custom TASK to the loop's work graph — a unit of work that isn't one of the resolver's files (e.g. \"create the shared composable\", \"add the dependency\", \"write the codemod\"). The task runs as its own agent job in dependency order. Use `blocks` to make the resolver files that depend on it wait until it's done. The human reviews the graph before the build runs.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "loop_id": { "type": "string", "description": "The loop id (given in your task prompt)." },
+                    "id": { "type": "string", "description": "Stable slug id for this task node (e.g. \"add-use-cart\"). Other nodes reference it in `requires`." },
+                    "title": { "type": "string", "description": "Short human-readable title for the task." },
+                    "spec": { "type": "string", "description": "The task spec as markdown — objective, the concrete work, and how to verify. Handed verbatim to the agent that runs the task." },
+                    "requires": { "type": "array", "items": { "type": "string" }, "description": "Optional ids of other tasks that must finish before this one runs." },
+                    "blocks": { "description": "Optional: the file items that depend on this task — a glob (e.g. \"src/components/**/*.vue\") or an array of repo-relative paths. Each matching in-scope file gains a `requires` edge to this task.", "anyOf": [ { "type": "string" }, { "type": "array", "items": { "type": "string" } } ] },
+                    "priority": { "type": "integer", "description": "Optional ordering within the ready set (higher runs first). Default 0." },
+                    "note": { "type": "string", "description": "Optional caveat/decision for the reviewer." }
+                },
+                "required": ["loop_id", "id", "title", "spec"]
+            }
+        },
+        {
+            "name": "loop_write_plan",
+            "description": "Plan mode (strategist): write the loop's GLOBAL plan once, before/while speccing items. `plan` is markdown conventions handed to every build worker (objective, shared rules). `assumptions` and `summary` populate the Plan view's Scope tab. Call this once for the whole loop, not per item.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "loop_id": { "type": "string", "description": "The loop id (given in your task prompt)." },
+                    "plan": { "type": "string", "description": "Global plan / conventions as markdown — injected into every build worker's prompt." },
+                    "assumptions": { "type": "array", "items": { "type": "string" }, "description": "Assumptions the loop is making, shown to the creator before they approve." },
+                    "summary": { "type": "array", "items": { "type": "object", "properties": { "label": { "type": "string" }, "detail": { "type": "string" }, "pend": { "type": "boolean" } }, "required": ["label", "detail"] }, "description": "Optional dry-run summary rows (what the loop will do across the set). `pend=true` flags a row still awaiting a decision." }
+                },
+                "required": ["loop_id", "plan"]
+            }
+        },
+        {
+            "name": "loop_ask",
+            "description": "Plan mode (strategist): ask the human ONE clarifying question and BLOCK until they answer, then continue. Use this whenever a decision would materially change the plan or a spec — prefer asking over guessing. Ask one focused question at a time; after each answer you may ask the next. For a question about a specific item, pass `file` (the item key from your task prompt) so it surfaces on that item; omit `file` for a scope-level question. Returns the human's answer as text. If no answer arrives in time it returns a note telling you to proceed with best judgment — only then fall back to loop_write_spec(needs_review=true). You may also call loop_add_task mid-conversation to spin off a prerequisite the human confirms.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "loop_id": { "type": "string", "description": "The loop id (given in your task prompt)." },
+                    "question": { "type": "string", "description": "The single, focused question for the human. Be concrete; reference the file/decision at stake." },
+                    "choices": { "type": "array", "items": { "type": "string" }, "description": "Optional suggested answers, shown as one-click chips. The human may still type their own." },
+                    "file": { "type": "string", "description": "Optional: the item key (repo-relative file path or task id from your task prompt) this question is about. Omit for a scope-level question." }
+                },
+                "required": ["loop_id", "question"]
+            }
+        },
+        {
+            "name": "loop_block_on_task",
+            "description": "Build mode: call this when, partway through your item, you discover it needs a PREREQUISITE done first (a shared util, a migration, a fix in another file) — work that should land before yours. Declare the prerequisite as a task and this BLOCKS until it has run, then returns its status so you can continue on top of it. Provide a unique `id` (kebab-case slug), a short `title`, and a `spec` describing exactly what the prerequisite must do. Depending on the loop's policy it either runs immediately or waits for the human to approve it first. There's a per-run cap on injected work; if you hit it (status \"capped\") or it times out, do what you safely can and otherwise call loop_item_needs_review. Don't use this for trivial in-file changes you can just make yourself.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "loop_id": { "type": "string", "description": "The loop id (given in your task prompt)." },
+                    "id": { "type": "string", "description": "A unique kebab-case id for the prerequisite task, e.g. \"extract-theme-util\"." },
+                    "title": { "type": "string", "description": "Short human label for the prerequisite, e.g. \"Extract shared theme helper\"." },
+                    "spec": { "type": "string", "description": "What the prerequisite must do — concrete enough for another agent to execute it without you." },
+                    "requires": { "type": "array", "items": { "type": "string" }, "description": "Optional ids the prerequisite itself depends on." },
+                    "priority": { "type": "number", "description": "Optional scheduling priority (higher runs first)." }
+                },
+                "required": ["loop_id", "id", "title", "spec"]
+            }
+        },
+        {
+            "name": "loop_list_candidates",
+            "description": "Plan mode (strategist): list the loop's current file set — the candidate pool the scope hint surfaced (status \"candidate\"), the files you've already included (status \"queued\"/\"specced\"), and any you've excluded (status \"excluded\", with the reason). The candidate pool is a HINT, not the work: it's your job to decide which of these files are actually in scope for the task, add files the hint missed (`loop_add_item`), and drop ones that don't belong (`loop_drop_item`). Returns each row's path, loc, risk, inc flag, status, and origin.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "loop_id": { "type": "string", "description": "The loop id (given in your task prompt)." }
+                },
+                "required": ["loop_id"]
+            }
+        },
+        {
+            "name": "loop_add_item",
+            "description": "Plan mode (strategist): INCLUDE a file as a real work item in the loop — whether or not it was in the candidate pool. Use this to promote a candidate you've decided is in scope, or to add a file the scope hint missed entirely. The file becomes a queued item the per-item spec pass will plan. You decide the work set; this is how you author it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "loop_id": { "type": "string", "description": "The loop id (given in your task prompt)." },
+                    "path": { "type": "string", "description": "Repo-relative path of the file to include (e.g. \"src/components/VBtn.vue\")." },
+                    "note": { "type": "string", "description": "Optional: why this file is in scope (shown to the reviewer)." }
+                },
+                "required": ["loop_id", "path"]
+            }
+        },
+        {
+            "name": "loop_drop_item",
+            "description": "Plan mode (strategist): EXCLUDE a file or task from the loop — a candidate from the pool you've decided is out of scope, or a previously-included item you're removing. The item is marked excluded and dropped from the build, but stays visible in the work graph WITH YOUR REASON so the human can see what you chose to skip and why (and re-include it if they disagree). Always give a clear `reason`.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "loop_id": { "type": "string", "description": "The loop id (given in your task prompt)." },
+                    "path": { "type": "string", "description": "The item to exclude: a repo-relative file path, or a task id." },
+                    "reason": { "type": "string", "description": "Why this item is out of scope — shown to the human in the work graph. Be specific." }
+                },
+                "required": ["loop_id", "path"]
+            }
         }
     ]})
 }
@@ -209,6 +381,18 @@ fn handle_tools_call(msg: &Value, id: Option<Value>, repo: Option<&str>, agent: 
         "list_comments" => tool_list_comments(repo, &args),
         "reply_to_comment" => tool_reply_to_comment(repo, agent, &args),
         "get_history" => tool_get_history(repo, &args),
+        "loop_item_complete" => tool_loop_item_complete(repo, &args),
+        "loop_item_needs_review" => tool_loop_item_needs_review(repo, &args),
+        "loop_write_note" => tool_loop_write_note(repo, &args),
+        "loop_read_spec" => tool_loop_read_spec(repo, &args),
+        "loop_write_spec" => tool_loop_write_spec(repo, &args),
+        "loop_write_plan" => tool_loop_write_plan(repo, &args),
+        "loop_add_task" => tool_loop_add_task(repo, &args),
+        "loop_list_candidates" => tool_loop_list_candidates(repo, &args),
+        "loop_add_item" => tool_loop_add_item(repo, &args),
+        "loop_drop_item" => tool_loop_drop_item(repo, &args),
+        "loop_ask" => tool_loop_ask(repo, &args),
+        "loop_block_on_task" => tool_loop_block_on_task(repo, &args),
         other => Err(format!("unknown tool: {other}")),
     };
 
@@ -348,6 +532,441 @@ fn tool_get_history(repo: &str, args: &Value) -> Result<Value, String> {
     Ok(Value::Array(scoped))
 }
 
+// ---- loop item tools (backed by the .locke/loops/<id>/ tree) ----
+
+fn tool_loop_item_complete(repo: &str, args: &Value) -> Result<Value, String> {
+    let loop_id = arg_str(args, "loop_id")?;
+    let file = arg_str(args, "file")?;
+    let summary = arg_str(args, "summary")?;
+    let artifacts = args.get("artifacts").cloned().unwrap_or_else(|| json!([]));
+    locke_store::merge_loop_item(
+        repo,
+        loop_id,
+        file,
+        json!({ "declared": "complete", "summary": summary, "artifacts": artifacts }),
+    )?;
+    Ok(json!({ "ok": true, "declared": "complete", "loopId": loop_id, "file": file }))
+}
+
+fn tool_loop_item_needs_review(repo: &str, args: &Value) -> Result<Value, String> {
+    let loop_id = arg_str(args, "loop_id")?;
+    let file = arg_str(args, "file")?;
+    let reason = arg_str(args, "reason")?;
+    locke_store::merge_loop_item(
+        repo,
+        loop_id,
+        file,
+        json!({ "declared": "needs_review", "reason": reason }),
+    )?;
+    Ok(json!({ "ok": true, "declared": "needs_review", "loopId": loop_id, "file": file }))
+}
+
+fn tool_loop_write_note(repo: &str, args: &Value) -> Result<Value, String> {
+    let loop_id = arg_str(args, "loop_id")?;
+    let file = arg_str(args, "file")?;
+    let note = arg_str(args, "note")?;
+    locke_store::append_loop_note(repo, loop_id, file, note)?;
+    Ok(json!({ "ok": true, "loopId": loop_id, "file": file }))
+}
+
+fn tool_loop_read_spec(repo: &str, args: &Value) -> Result<Value, String> {
+    let loop_id = arg_str(args, "loop_id")?;
+    let file = arg_str(args, "file")?;
+    match locke_store::read_loop_spec(repo, loop_id, file)? {
+        Some(spec) => Ok(json!({ "file": file, "spec": spec })),
+        None => Ok(json!({ "file": file, "spec": null, "note": "No spec was written for this item; use the task prompt." })),
+    }
+}
+
+/// Optional `string[]` argument → owned `Vec<String>` (missing/wrong-typed → empty).
+fn arg_str_vec(args: &Value, key: &str) -> Vec<String> {
+    args.get(key)
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default()
+}
+
+fn tool_loop_write_spec(repo: &str, args: &Value) -> Result<Value, String> {
+    let loop_id = arg_str(args, "loop_id")?;
+    let file = arg_str(args, "file")?;
+    let spec = arg_str(args, "spec")?;
+    let approach = args.get("approach").and_then(|v| v.as_str()).map(String::from);
+    let detected = arg_str_vec(args, "detected");
+    let steps = arg_str_vec(args, "steps");
+    let tests = arg_str_vec(args, "tests");
+    let note = args.get("note").and_then(|v| v.as_str()).map(String::from);
+    let needs_review = args.get("needs_review").and_then(|v| v.as_bool()).unwrap_or(false);
+    let status = if needs_review { "review" } else { "specced" };
+    // Optional dependency/order the strategist pins on this file item in the same call.
+    let requires = arg_str_vec(args, "requires");
+    let priority = args.get("priority").and_then(|v| v.as_i64());
+
+    // Persist the markdown spec the build worker reads, then enrich the manifest row
+    // (the build's source of truth) without clobbering a concurrent worker's row.
+    locke_store::write_loop_spec(repo, loop_id, file, spec)?;
+    let spec_ref = format!("spec/{}.md", locke_store::sanitize_path(file));
+    let approach_c = approach.clone();
+    let note_c = note.clone();
+    locke_store::merge_loop_manifest_entry(repo, loop_id, file, |e| {
+        e.approach = approach_c;
+        e.detected = detected;
+        e.steps = steps;
+        e.tests = tests;
+        e.note = note_c;
+        e.spec = Some(spec_ref);
+        e.status = status.to_string();
+        if !requires.is_empty() {
+            e.requires = requires;
+        }
+        if let Some(p) = priority {
+            e.priority = p;
+        }
+    })?;
+    // Record the per-item declaration the strategist runner gates on (mirrors the
+    // build worker's complete/needs_review contract).
+    locke_store::merge_loop_item(
+        repo,
+        loop_id,
+        file,
+        json!({ "declared": if needs_review { "review" } else { "specced" }, "reason": note }),
+    )?;
+    Ok(json!({ "ok": true, "status": status, "loopId": loop_id, "file": file }))
+}
+
+fn tool_loop_write_plan(repo: &str, args: &Value) -> Result<Value, String> {
+    let loop_id = arg_str(args, "loop_id")?;
+    let plan = arg_str(args, "plan")?;
+    let assumptions = arg_str_vec(args, "assumptions");
+    let summary = args.get("summary").cloned().unwrap_or_else(|| json!([]));
+    // Human-readable conventions (injected into every build worker via `{{conventions}}`)
+    // plus the structured scope metadata the Plan view's Scope tab renders.
+    locke_store::write_loop_plan(repo, loop_id, plan)?;
+    locke_store::write_loop_plan_meta(repo, loop_id, &json!({ "summary": summary, "assumptions": assumptions }))?;
+    Ok(json!({ "ok": true, "loopId": loop_id }))
+}
+
+fn tool_loop_add_task(repo: &str, args: &Value) -> Result<Value, String> {
+    let loop_id = arg_str(args, "loop_id")?;
+    let id = arg_str(args, "id")?;
+    let title = arg_str(args, "title")?;
+    let spec = arg_str(args, "spec")?;
+    let requires = arg_str_vec(args, "requires");
+    let priority = args.get("priority").and_then(|v| v.as_i64()).unwrap_or(0);
+    let note = args.get("note").and_then(|v| v.as_str()).map(String::from);
+    // `blocks` is a glob OR a list of repo-relative paths: the file items that should
+    // depend on this task. One call fans the edge across the whole matching set.
+    let blocks: Vec<String> = match args.get("blocks") {
+        Some(Value::String(s)) => vec![s.clone()],
+        Some(Value::Array(_)) => arg_str_vec(args, "blocks"),
+        _ => Vec::new(),
+    };
+
+    // The task carries its own spec (born `specced`), so the build worker's
+    // `loop_read_spec` finds it and the planning pass needn't re-spec it.
+    let spec_ref = format!("spec/{}.md", locke_store::sanitize_path(id));
+    locke_store::write_loop_spec(repo, loop_id, id, spec)?;
+
+    let id_for_node = id.to_string();
+    let title_c = title.to_string();
+    let note_c = note.clone();
+    let mut linked = 0usize;
+    locke_store::update_loop_manifest(repo, loop_id, |entries| {
+        // Upsert the task node (keyed by id).
+        if let Some(e) = entries.iter_mut().find(|e| !e.id.is_empty() && e.id == id_for_node) {
+            e.kind = "task".into();
+            e.title = Some(title_c);
+            e.requires = requires;
+            e.priority = priority;
+            e.note = note_c;
+            e.spec = Some(spec_ref);
+            e.status = "specced".into();
+            e.inc = true;
+            if e.origin.is_empty() {
+                e.origin = "model".into();
+            }
+        } else {
+            entries.push(locke_store::ManifestEntry {
+                id: id_for_node.clone(),
+                kind: "task".into(),
+                title: Some(title_c),
+                requires,
+                priority,
+                note: note_c,
+                spec: Some(spec_ref),
+                status: "specced".into(),
+                inc: true,
+                origin: "model".into(),
+                ..Default::default()
+            });
+        }
+        // Fan the `requires` edge across every in-scope file row the task blocks.
+        for e in entries.iter_mut() {
+            if e.kind == "task" {
+                continue;
+            }
+            let matches = blocks.iter().any(|b| b == &e.path || locke_store::glob_match(b, &e.path));
+            if matches && !e.requires.iter().any(|r| r == &id_for_node) {
+                e.requires.push(id_for_node.clone());
+                linked += 1;
+            }
+        }
+    })?;
+
+    Ok(json!({ "ok": true, "loopId": loop_id, "id": id, "title": title, "linked": linked }))
+}
+
+/// Count lines in a repo file, capped so a huge/binary blob can't stall the call
+/// (mirrors the desktop audit's `count_loc`). Unreadable / oversize → 0.
+fn file_loc(repo: &str, rel: &str) -> u64 {
+    const MAX_BYTES: u64 = 2 * 1024 * 1024;
+    let full = std::path::Path::new(repo).join(rel);
+    match std::fs::metadata(&full) {
+        Ok(m) if m.len() > MAX_BYTES => return 0,
+        Ok(_) => {}
+        Err(_) => return 0,
+    }
+    std::fs::read_to_string(&full).map(|s| s.lines().count() as u64).unwrap_or(0)
+}
+
+/// Coarse size-driven risk band (mirrors the desktop audit's `risk_band`).
+fn risk_band(loc: u64) -> &'static str {
+    if loc >= 300 {
+        "high"
+    } else if loc >= 120 {
+        "med"
+    } else {
+        "low"
+    }
+}
+
+/// Plan mode: list the loop's current file set so the strategist can see what the
+/// scope hint surfaced (candidates), what it has included, and what it dropped.
+/// Read-only — the candidate pool is a hint, not the authoritative work set.
+fn tool_loop_list_candidates(repo: &str, args: &Value) -> Result<Value, String> {
+    let loop_id = arg_str(args, "loop_id")?;
+    let entries = locke_store::read_loop_manifest(repo, loop_id)?;
+    let items: Vec<Value> = entries
+        .iter()
+        .filter(|e| e.kind != "task")
+        .map(|e| {
+            json!({
+                "path": e.path,
+                "loc": e.loc,
+                "risk": e.risk,
+                "inc": e.inc,
+                "status": e.status,
+                "origin": e.origin,
+                "note": e.note,
+                "reason": e.reason,
+            })
+        })
+        .collect();
+    let candidates = items.iter().filter(|i| i["status"] == "candidate").count();
+    let included = items.iter().filter(|i| i["inc"] == true).count();
+    Ok(json!({
+        "loopId": loop_id,
+        "count": items.len(),
+        "candidates": candidates,
+        "included": included,
+        "items": items,
+    }))
+}
+
+/// Plan mode: INCLUDE a file as a real work item (promote a candidate, or add a
+/// file the scope hint missed). Flips an existing row to a queued item or pushes a
+/// new model-authored one. The per-item spec pass then plans it.
+fn tool_loop_add_item(repo: &str, args: &Value) -> Result<Value, String> {
+    let loop_id = arg_str(args, "loop_id")?;
+    let path = arg_str(args, "path")?.trim().replace('\\', "/");
+    if path.is_empty() || path.starts_with('/') || path.split('/').any(|c| c == "..") {
+        return Err(format!("invalid path: {path:?}"));
+    }
+    let note = args.get("note").and_then(|v| v.as_str()).map(String::from);
+    let loc = file_loc(repo, &path);
+    let risk = risk_band(loc).to_string();
+    let path_c = path.clone();
+    let note_c = note.clone();
+    let mut created = false;
+    locke_store::update_loop_manifest(repo, loop_id, |entries| {
+        if let Some(e) = entries.iter_mut().find(|e| e.kind != "task" && e.path == path_c) {
+            // Promote: a candidate (or re-include a dropped file) becomes queued.
+            // Keep its existing origin (the pool surfaced it) when set.
+            e.inc = true;
+            e.status = "queued".into();
+            e.reason = None;
+            if let Some(n) = note_c {
+                e.note = Some(n);
+            }
+            if e.origin.is_empty() {
+                e.origin = "model".into();
+            }
+        } else {
+            // A file the scope hint never surfaced — authored from scratch.
+            created = true;
+            entries.push(locke_store::ManifestEntry {
+                id: path_c.clone(),
+                path: path_c.clone(),
+                kind: "file".into(),
+                loc,
+                risk,
+                inc: true,
+                status: "queued".into(),
+                origin: "model".into(),
+                note: note_c,
+                ..Default::default()
+            });
+        }
+    })?;
+    Ok(json!({ "ok": true, "loopId": loop_id, "path": path, "created": created }))
+}
+
+/// Plan mode: EXCLUDE a file or task — out-of-scope candidate or a previously
+/// included item. Marked excluded (dropped from the build) but kept in the manifest
+/// WITH the reason, so the work graph shows what the strategist skipped and why.
+fn tool_loop_drop_item(repo: &str, args: &Value) -> Result<Value, String> {
+    let loop_id = arg_str(args, "loop_id")?;
+    let path = arg_str(args, "path")?.trim().replace('\\', "/");
+    let reason = args.get("reason").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from);
+    let path_c = path.clone();
+    let reason_c = reason.clone();
+    let mut found = false;
+    locke_store::update_loop_manifest(repo, loop_id, |entries| {
+        // Match a file by path or a task node by id.
+        if let Some(e) = entries.iter_mut().find(|e| e.path == path_c || (!e.id.is_empty() && e.id == path_c)) {
+            found = true;
+            e.inc = false;
+            e.status = "excluded".into();
+            if reason_c.is_some() {
+                e.reason = reason_c;
+            }
+        }
+    })?;
+    if !found {
+        return Err(format!("no item matches path/id {path:?}"));
+    }
+    Ok(json!({ "ok": true, "loopId": loop_id, "path": path, "reason": reason }))
+}
+
+/// Max strategist questions per loop before the interview is capped — a blocked
+/// plan pass can't loop forever. Past this, `loop_ask` returns the proceed note.
+const INTERVIEW_TURN_CAP: usize = 6;
+/// Backstop wait for a human answer. No idle timeout kills the agent (the runner's
+/// watchdog only SIGKILLs on loop-stop/item-cancel), so this bounds a never-answered
+/// question instead of blocking the agent forever.
+const INTERVIEW_TIMEOUT_SECS: u64 = 20 * 60;
+const INTERVIEW_POLL_MS: u64 = 500;
+
+/// Plan mode: ask the human one question and BLOCK (polling the filesystem) until
+/// they answer, then return the answer text. The agent is naturally alive the whole
+/// time (mid-tool-call), so this needs no kept-open stdin or process plumbing — it
+/// works identically for the one-shot scope agent and every per-item spec agent.
+fn tool_loop_ask(repo: &str, args: &Value) -> Result<Value, String> {
+    let loop_id = arg_str(args, "loop_id")?;
+    let question = arg_str(args, "question")?;
+    let choices = arg_str_vec(args, "choices");
+    let file = args.get("file").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+    let key = locke_store::interview_key(file);
+
+    // Cap the interview so a plan pass can't ask forever — past the cap, tell the
+    // agent to proceed (it will spec with its best judgment / needs_review).
+    if locke_store::interview_agent_turns(repo, loop_id)? >= INTERVIEW_TURN_CAP {
+        return Ok(json!({
+            "answer": format!(
+                "Interview turn cap reached ({INTERVIEW_TURN_CAP} questions). Proceed with your best judgment; \
+                 if a decision is still genuinely unresolved, call loop_write_spec with needs_review=true and a note."
+            ),
+            "capped": true,
+        }));
+    }
+
+    // Post the question (durable record + transcript), then poll for the answer.
+    let nonce = locke_store::write_loop_question(repo, loop_id, &key, question, &choices, file)?;
+    locke_store::append_interview_msg(repo, loop_id, &key, "agent", question, file)?;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(INTERVIEW_TIMEOUT_SECS);
+    loop {
+        if let Some(a) = locke_store::read_loop_answer(repo, loop_id, &key)? {
+            // Only accept an answer to THIS question (guards against a stale answer
+            // under a since-replaced key).
+            if a.get("nonce").and_then(|v| v.as_str()) == Some(nonce.as_str()) {
+                let text = a.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                locke_store::append_interview_msg(repo, loop_id, &key, "you", &text, None)?;
+                locke_store::clear_loop_question(repo, loop_id, &key)?;
+                return Ok(json!({ "answer": text }));
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            // Never answered — unblock the agent with a fallback note and clear the
+            // pending question so it doesn't linger in the Plan view.
+            locke_store::clear_loop_question(repo, loop_id, &key)?;
+            return Ok(json!({
+                "answer": "No answer received in time. Proceed with your best judgment; if a decision is still \
+                           genuinely unresolved, call loop_write_spec with needs_review=true and a note.",
+                "timedOut": true,
+            }));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(INTERVIEW_POLL_MS));
+    }
+}
+
+/// Max prerequisites a single loop run may inject via `loop_block_on_task`. Bounds the
+/// token cost of agents spawning ever more work; past it the tool returns a proceed note.
+const BLOCK_TASK_CAP: usize = 4;
+/// Backstop wait for an injected prerequisite to finish (it runs a whole agent + checks,
+/// and in `approve` mode waits on a human first, so this is generous).
+const BLOCK_TIMEOUT_SECS: u64 = 45 * 60;
+const BLOCK_POLL_MS: u64 = 700;
+
+/// Build mode: the agent has discovered that this item needs a prerequisite done FIRST.
+/// Declare it as a task and BLOCK until the runner injects + runs it (or, in `approve`
+/// mode, until the human decides). Returns the prerequisite's terminal status so the
+/// agent can resume. The agent stays alive mid-tool-call, so — like `loop_ask` — this
+/// needs no extra process plumbing; the runner detects the call, releases this item's
+/// pool slot, and writes the `.done.json` this poll is waiting on.
+fn tool_loop_block_on_task(repo: &str, args: &Value) -> Result<Value, String> {
+    let loop_id = arg_str(args, "loop_id")?;
+    let id = arg_str(args, "id")?;
+    let title = arg_str(args, "title")?;
+    let spec = arg_str(args, "spec")?;
+    let requires = arg_str_vec(args, "requires");
+    let priority = args.get("priority").and_then(|v| v.as_i64()).unwrap_or(0);
+
+    // Cap injected work per run so a chain of agents can't explode token spend.
+    let injected = locke_store::read_loop_manifest(repo, loop_id)?.iter().filter(|e| e.injected).count();
+    if injected >= BLOCK_TASK_CAP {
+        return Ok(json!({
+            "status": "capped",
+            "summary": format!(
+                "Injection cap reached ({BLOCK_TASK_CAP} prerequisites this run). Don't block on more work — \
+                 do what you safely can, and if this item genuinely can't proceed call loop_item_needs_review with the reason."
+            ),
+        }));
+    }
+
+    // Post the request, then poll for the runner's (or a rejected approval's) done file.
+    let nonce = locke_store::write_loop_block_request(repo, loop_id, id, title, spec, &requires, priority)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(BLOCK_TIMEOUT_SECS);
+    loop {
+        if let Some(d) = locke_store::read_loop_block_done(repo, loop_id, id)? {
+            if d.get("nonce").and_then(|v| v.as_str()) == Some(nonce.as_str()) {
+                let status = d.get("status").and_then(|v| v.as_str()).unwrap_or("done").to_string();
+                let summary = d.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                locke_store::clear_loop_block(repo, loop_id, id)?;
+                return Ok(json!({ "status": status, "summary": summary }));
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            locke_store::clear_loop_block(repo, loop_id, id)?;
+            return Ok(json!({
+                "status": "timedOut",
+                "summary": "The prerequisite didn't complete in time. Proceed with your best judgment; if this item \
+                            genuinely can't be done without it, call loop_item_needs_review with the reason.",
+            }));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(BLOCK_POLL_MS));
+    }
+}
+
 /// Up-to-two-letter uppercase initials for the comment badge, mirroring the UI's
 /// `CommentItem.initials` convention (e.g. "You" -> "YO").
 fn initials(name: &str) -> String {
@@ -358,4 +977,65 @@ fn initials(name: &str) -> String {
         name.chars().take(2).collect()
     };
     raw.to_uppercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("locke-mcp-test-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    // The strategist authors the work set from a candidate pool: promote a
+    // candidate, drop another with a reason, and add a file the hint missed.
+    #[test]
+    fn add_and_drop_item_author_the_set() {
+        let dir = tmp("candidates");
+        let repo = dir.to_str().unwrap();
+        locke_store::write_loop_manifest(
+            repo,
+            "lp1",
+            &[
+                locke_store::ManifestEntry { path: "src/A.vue".into(), id: "src/A.vue".into(), kind: "file".into(), origin: "resolver".into(), inc: false, status: "candidate".into(), ..Default::default() },
+                locke_store::ManifestEntry { path: "src/B.vue".into(), id: "src/B.vue".into(), kind: "file".into(), origin: "resolver".into(), inc: false, status: "candidate".into(), ..Default::default() },
+            ],
+        )
+        .unwrap();
+
+        tool_loop_add_item(repo, &json!({ "loop_id": "lp1", "path": "src/A.vue" })).unwrap();
+        tool_loop_drop_item(repo, &json!({ "loop_id": "lp1", "path": "src/B.vue", "reason": "generated; out of scope" })).unwrap();
+        tool_loop_add_item(repo, &json!({ "loop_id": "lp1", "path": "src/C.vue", "note": "missed by the glob" })).unwrap();
+
+        let m = locke_store::read_loop_manifest(repo, "lp1").unwrap();
+        // A: promoted candidate keeps its resolver origin, now a queued item.
+        let a = m.iter().find(|e| e.path == "src/A.vue").unwrap();
+        assert_eq!((a.inc, a.status.as_str(), a.origin.as_str()), (true, "queued", "resolver"));
+        // B: excluded, with the reason preserved for the audit trail.
+        let b = m.iter().find(|e| e.path == "src/B.vue").unwrap();
+        assert_eq!((b.inc, b.status.as_str()), (false, "excluded"));
+        assert_eq!(b.reason.as_deref(), Some("generated; out of scope"));
+        // C: a file the pool never surfaced — authored from scratch, origin model.
+        let c = m.iter().find(|e| e.path == "src/C.vue").unwrap();
+        assert_eq!((c.inc, c.status.as_str(), c.origin.as_str()), (true, "queued", "model"));
+
+        // list_candidates reflects the authored set (2 included, pool emptied).
+        let listed = tool_loop_list_candidates(repo, &json!({ "loop_id": "lp1" })).unwrap();
+        assert_eq!(listed["included"], json!(2));
+        assert_eq!(listed["candidates"], json!(0));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn drop_item_rejects_unknown_path() {
+        let dir = tmp("drop-miss");
+        let repo = dir.to_str().unwrap();
+        locke_store::write_loop_manifest(repo, "lp1", &[]).unwrap();
+        assert!(tool_loop_drop_item(repo, &json!({ "loop_id": "lp1", "path": "nope.vue" })).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

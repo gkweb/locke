@@ -27,6 +27,7 @@ export type DiffMode = "unified" | "split";
  */
 export type View =
   | "activity"
+  | "loops"
   | "reviews"
   | "runs"
   | "agents"
@@ -38,7 +39,7 @@ export type View =
 
 /** A configurable navigation destination (excludes `workspace`/`extensions`,
  *  which are reached contextually, not from the nav). */
-export type NavKey = "activity" | "reviews" | "runs" | "files" | "agents";
+export type NavKey = "activity" | "loops" | "reviews" | "runs" | "files" | "agents";
 
 /** Where a nav destination is surfaced: the top action bar, the bottom
  *  action bar, or hidden. Configured per destination in Settings. */
@@ -179,6 +180,228 @@ export interface Review {
   lastAction?: string;
   /** Elapsed time of the active run, e.g. "1:12" (in-flight card footer). */
   elapsed?: string;
+}
+
+// ---- Loops (v2.0.0) -------------------------------------------------------
+// A "loop" runs one task across many files: Locke plans the change, you audit
+// which targets are in scope, then it iterates — committing what passes and
+// pausing for review wherever it's unsure. These shapes mirror the design's
+// Loops state model so the ported views and a future loop-runner backend agree.
+
+/** Which Loops sub-screen is showing (the Loops view's internal router). */
+export type LoopView = "list" | "builder" | "plan" | "monitor" | "review";
+
+/** A loop's lifecycle state. `building` = actively iterating. */
+export type LoopState = "draft" | "planning" | "building" | "paused" | "done";
+
+/** How a loop starts: full Plan-mode (interview + dry-run spec) or straight Build. */
+export type LoopMode = "plan" | "build";
+
+/** Per-item lifecycle within a loop (board columns, grid tiles, stream rows). */
+export type LoopItemState = "queued" | "running" | "review" | "done" | "failed" | "excluded" | "blocked";
+
+/** Per-target risk band, driving the audit pills. */
+export type LoopRisk = "low" | "med" | "high";
+
+/** Plan-mode per-item spec status. */
+export type SpecStatus = "specced" | "review" | "speccing" | "queued" | "excluded";
+
+/** One loop — a task applied across a matched set of files. Counts are carried
+ *  explicitly (cheaper than recomputing for a 1,000-item set on every render). */
+export interface Loop {
+  id: string;
+  title: string;
+  branch: string;
+  base: string;
+  mode: LoopMode;
+  state: LoopState;
+  /** Glob the targets were matched from, e.g. "src/**\/*.vue". */
+  pattern: string;
+  total: number;
+  done: number;
+  running: number;
+  review: number;
+  failed: number;
+  queued: number;
+  /** Items whose dependencies can no longer complete (runner-set; 0 if absent). */
+  blocked?: number;
+  /** Throughput readout, e.g. "5.8 / min" (or "—" when idle). */
+  rate: string;
+  /** Elapsed/heading time, e.g. "1h 12m" / "planning". */
+  elapsed: string;
+  /** The review (pull) opened for this loop's output, once one exists (0/undefined =
+   *  none). Lets a finished loop deep-link back to its review. */
+  pullId?: number;
+  /** The creator's seed task prompt (the per-item template). Surfaced in the Plan
+   *  view so the Scope tab shows what was asked while the strategist drafts. */
+  template?: string;
+}
+
+/** One file a loop iterates over (board cards, stream rows, grid focus). */
+export interface LoopItem {
+  id: string;
+  path: string;
+  status: LoopItemState;
+  /** Author initials (drives the AgentMark). */
+  agent: string;
+  /** Live action line (running items). */
+  action?: string;
+  /** Pause/fail note (review/failed items). */
+  note?: string;
+  /** Build progress 0–100 (running items). */
+  pct?: number;
+  /** Relative time, e.g. "2m" / "just now" / "—". */
+  t?: string;
+  /** Topological tier (drives the Waves view). */
+  wave?: number;
+  /** Scheduling priority within a wave. */
+  priority?: number;
+  /** Unmet dependency ids (blocked items) — drives the "blocked by …" readout. */
+  blockedBy?: string[];
+  /** Epoch ms the item first started running — drives the Inspect view's live elapsed. */
+  startedAt?: number;
+}
+
+/** A builder audit row — a matched file the user includes/excludes. */
+export interface LoopTarget {
+  path: string;
+  loc: number;
+  risk: LoopRisk;
+  /** Detected concerns, e.g. ["mixins", "filters", "$children"]. */
+  flags: string[];
+  /** Default inclusion (false when Locke auto-excludes, with a `reason`). */
+  inc: boolean;
+  reason?: string;
+}
+
+/** How a loop's target set is produced. Every kind yields a path list that
+ *  materializes into the checked-in `manifest.json`. `list` is the universal
+ *  sink — a custom resolver (Rust or a TS function) just produces paths. */
+export type ResolverSpec =
+  | { kind: "glob"; pattern: string }
+  | { kind: "globs"; include: string[]; exclude: string[] }
+  | { kind: "list"; paths: string[] }
+  | { kind: "command"; command: string }
+  | { kind: "custom"; id: string; args: string[] };
+
+/** One row of a loop's `manifest.json`: a work-graph node — a target plus its
+ *  dependency edges and (once Plan mode runs) its spec. A superset of `LoopTarget`. */
+export interface ManifestEntry extends LoopTarget {
+  /** Stable node id (file items default to `path`; task items get a slug). */
+  id?: string;
+  /** "file" (edit a path) | "task" (a shared/prerequisite job). */
+  kind?: string;
+  /** Label for task nodes (file nodes use `path`). */
+  title?: string;
+  /** Ids that must reach `done` before this item is eligible (blocked-by edges). */
+  requires?: string[];
+  /** Human-pinned ordering within the ready set (higher first). */
+  priority?: number;
+  /** Topological tier, derived from `requires` (hand-overridable). */
+  wave?: number;
+  /** Strategy id once specced, e.g. "script-setup". */
+  approach?: string;
+  detected?: string[];
+  steps?: string[];
+  tests?: string[];
+  note?: string;
+  /** Repo-relative ref to the per-item markdown spec, once written. */
+  spec?: string;
+  /** Spec lifecycle: "" | candidate | speccing | specced | review | excluded.
+   *  `candidate` = surfaced by the scope hint but not yet chosen by the strategist
+   *  (inc=false); it's promoted (→ queued) or dropped (→ excluded, with `reason`). */
+  status?: string;
+  /** Provenance: "resolver" (matched by the glob/list) | "model" (strategist-
+   *  suggested task) | "human" (user-added). Empty on legacy rows (= "resolver"). */
+  origin?: string;
+}
+
+/** Who authored a work-graph node — the normalized `ManifestEntry.origin`. */
+export type NodeOrigin = "resolver" | "model" | "human";
+
+/** A work-graph node as the Plan-view graph editor renders it — derived from a
+ *  `ManifestEntry` by `manifestToGraph()`. */
+export interface WorkGraphNode {
+  /** Stable id (file path or task slug) — the key edges reference. */
+  id: string;
+  kind: "file" | "task";
+  /** Display label (task title, or the file path). */
+  label: string;
+  /** Ids this node depends on (must finish first). */
+  requires: string[];
+  priority: number;
+  /** Topological tier (0 = no in-graph deps). */
+  wave: number;
+  origin: NodeOrigin;
+  status: string;
+  /** Why the strategist excluded this node (status "excluded") — shown so the
+   *  human can see what it chose to skip and why. */
+  reason?: string;
+}
+
+/** One planned edit step within a per-item spec. */
+export interface LoopSpecStep {
+  /** Stable key for the per-spec on/off override map. */
+  k: string;
+  text: string;
+}
+
+/** Plan-mode per-item spec: what the loop will do to one file (or task). */
+export interface LoopSpec {
+  id: string;
+  path: string;
+  /** "file" (edit a path) | "task" (a prerequisite job with no single path). */
+  kind?: string;
+  /** Display title for task specs (file specs use the path). */
+  title?: string;
+  risk: LoopRisk;
+  status: SpecStatus;
+  /** Strategy id, e.g. "script-setup" | "options-api" (labels live in the view). */
+  approach: string;
+  detected: string[];
+  steps: LoopSpecStep[];
+  tests: string[];
+  note: string;
+}
+
+/** A message in the plan-mode scope interview. */
+export interface InterviewMsg {
+  role: "agent" | "you";
+  text: string;
+}
+
+/** A dry-run spec summary line (plan scope rail). */
+export interface SpecSummary {
+  label: string;
+  detail: string;
+  /** True when this line is still awaiting the user's answer (amber). */
+  pend?: boolean;
+}
+
+/** A loop's scope metadata, written by the strategist's scope pass (`plan.json`)
+ *  and rendered on the Plan view's Scope tab. */
+export interface LoopPlanMeta {
+  summary: SpecSummary[];
+  assumptions: string[];
+}
+
+/** A live stream event in the monitor's Stream layout. */
+export interface LoopStreamEvent {
+  st: LoopItemState;
+  path: string;
+  text: string;
+  /** Clock timestamp, e.g. "12:41:08". */
+  t: string;
+}
+
+/** One line of a loop-item review diff. Exactly one shape per line:
+ *  a hunk header (`h`), a code line (`t`/`no`/`c`), or an inline thread marker. */
+export interface LoopDiffLine {
+  h?: string;
+  t?: "add" | "del";
+  no?: number;
+  c?: string;
+  thread?: boolean;
 }
 
 /** One line in a diff hunk: [kind, oldLineNo, newLineNo, text]. 0 means absent. */

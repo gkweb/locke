@@ -77,8 +77,16 @@ export function ActionBar() {
   const settingsOpen = useStore((s) => s.settingsOpen);
   const toggleSettings = useStore((s) => s.toggleSettings);
   const pending = useStore((s) => s.pending);
+  // Open plan-interview questions count toward "needs you" alongside permissions.
+  const questionCount = useStore((s) =>
+    Object.values(s.loopInterview).reduce(
+      (n, threads) => n + Object.values(threads).filter((t) => t.pending).length,
+      0,
+    ),
+  );
+  const needsYou = pending.length + questionCount;
 
-  const hasApprovals = agentMode && pending.length > 0;
+  const hasApprovals = agentMode && needsYou > 0;
   // The fleet nav highlights the matching destination; the workspace counts as
   // "reviews" so the nav still reads sensibly while drilled in.
   const navActive = (v: View) => view === v || (v === "reviews" && view === "workspace");
@@ -229,7 +237,7 @@ export function ActionBar() {
                   justifyContent: "center",
                 }}
               >
-                {pending.length}
+                {needsYou}
               </span>
             )}
           </HoverButton>

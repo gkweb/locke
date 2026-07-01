@@ -65,6 +65,7 @@ export function StatusBar() {
   const base = useStore((s) => s.base);
   const agentMode = useStore((s) => s.agentMode);
   const pending = useStore((s) => s.pending);
+  const loopInterview = useStore((s) => s.loopInterview);
   const toggleApprovals = useStore((s) => s.toggleApprovals);
   const pushed = useStore((s) => s.pushed);
   const openRepo = useStore((s) => s.openRepo);
@@ -81,7 +82,11 @@ export function StatusBar() {
   const selected = reviews.find((r) => r.id === selectedPR);
   const branch = selected?.branch ?? base;
   const working = reviews.filter((r) => r.runState === "running" || r.runState === "awaiting").length;
-  const awaiting = pending.length;
+  const questionCount = Object.values(loopInterview).reduce(
+    (n, threads) => n + Object.values(threads).filter((t) => t.pending).length,
+    0,
+  );
+  const awaiting = pending.length + questionCount;
 
   const navActive = (v: View) => view === v || (v === "reviews" && view === "workspace");
   const botItems = NAV_ITEMS.filter((item) => (!item.agentOnly || agentMode) && navPlace[item.key] === "bottom");

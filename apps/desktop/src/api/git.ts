@@ -1,9 +1,43 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ChangedFile, Commit, FileNode, Hunk, PullRecord, Review } from "@locke/core";
+import type {
+  ChangedFile,
+  Commit,
+  FileNode,
+  Hunk,
+  Loop,
+  LoopItemState,
+  LoopMode,
+  LoopPlanMeta,
+  ManifestEntry,
+  ResolverSpec,
+  PullRecord,
+  Review,
+} from "@locke/core";
+
+/** The builder's serialized draft, persisted so an unfinished loop survives. */
+export interface LoopDraft {
+  title: string;
+  branch: string;
+  base: string;
+  prompt: string;
+  mode: LoopMode;
+  resolver: ResolverSpec;
+  targetSel: Record<string, boolean>;
+  /** Open a review when the loop finishes (opt-out). Absent on legacy drafts. */
+  reviewOnDone?: boolean;
+  /** Review granularity: "loop" (one review for the whole run) | "wave" (one per
+   *  wave, opened as each wave finishes). Absent on legacy drafts → "loop". */
+  reviewScope?: "loop" | "wave";
+}
 
 // Typed wrappers over the Rust git commands. `isTauri` lets the app run under
 // plain Vite (mock mode) without throwing when the bridge is absent.
 export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+/** Append a UI error record (JSON line) to the durable on-disk error log for later
+ *  diagnosis. Resolves to the log path (empty outside Tauri). */
+export const logUiError = (entry: string): Promise<string> =>
+  isTauri ? invoke<string>("log_ui_error", { entry }) : Promise.resolve("");
 
 export interface GitReview {
   id: string;
@@ -313,6 +347,339 @@ export const watchLocke = (repo: string): Promise<void> =>
 /** Read all persisted run records (newest first). Empty in mock mode. */
 export const readRuns = (repo: string): Promise<RunRecord[]> =>
   isTauri ? invoke<RunRecord[]>("read_runs", { repo }) : Promise.resolve([]);
+
+// ---- loops (the fan-out runner; loop:* events keyed by loopId) ----
+
+/** One item's state change (`loop:item`). */
+export interface LoopItemEvent {
+  loopId: string;
+  itemId: string;
+  path: string;
+  status: LoopItemState;
+  line?: string;
+  pct?: number;
+  agent: string;
+  wave: number;
+  priority: number;
+  blockedBy?: string[];
+  /** Epoch ms the item first started running — drives the Inspect view's live elapsed. */
+  startedAt?: number;
+  t: string;
+}
+
+/** One step in an item's tool trail (`loop:trail`) — what the agent just did. */
+export interface LoopTrailEvent {
+  loopId: string;
+  itemId: string;
+  path: string;
+  tool: string;
+  target?: string;
+  t: string;
+}
+
+/** A persisted tool-trail entry on the item record. */
+export interface LoopTrailEntry {
+  tool: string;
+  target?: string;
+  t: string;
+}
+
+/** Aggregate loop progress (`loop:progress`). */
+export interface LoopProgress {
+  loopId: string;
+  total: number;
+  done: number;
+  running: number;
+  review: number;
+  failed: number;
+  queued: number;
+  blocked: number;
+  rate: string;
+  elapsed: string;
+}
+
+/** A live stream log line (`loop:event`). */
+export interface LoopEventPayload {
+  loopId: string;
+  st: LoopItemState;
+  path: string;
+  text: string;
+  t: string;
+}
+
+/** A build agent's discovered prerequisite (`loop:block`) — `loop_block_on_task`. In
+ *  `approve` policy the agent is blocked until the human decides; `gated` says so. */
+export interface LoopBlockEvent {
+  loopId: string;
+  taskId: string;
+  fromItem: string;
+  title: string;
+  spec: string;
+  gated: boolean;
+  t: string;
+}
+
+/** A persisted pending block proposal (read on reload). */
+export interface LoopBlockRequest {
+  taskId: string;
+  title: string;
+  spec: string;
+  requires?: string[];
+  priority?: number;
+  ts?: string;
+}
+
+/** A loop finishing (`loop:done`). */
+export interface LoopDonePayload {
+  loopId: string;
+  state: string;
+  /** The review opened for the loop's output on completion (0 = none). */
+  pullId: number;
+}
+
+/** A per-wave review opened mid-run under the "wave" review scope (`loop:review`):
+ *  one wave's stacked review is ready while later waves keep building. */
+export interface LoopReviewEvent {
+  loopId: string;
+  wave: number;
+  pullId: number;
+  t: string;
+}
+
+/** A live plan-interview question the strategist raised via `loop_ask` (`loop:interview`).
+ *  The agent is blocked awaiting the answer. `key` is the raw item key (file path or
+ *  task id), or `__scope__` for a scope-level question. */
+export interface LoopInterviewEvent {
+  loopId: string;
+  key: string;
+  file?: string;
+  question: string;
+  choices?: string[];
+  t: string;
+}
+
+/** The persisted interview for a loop (transcript + still-pending questions), read on
+ *  (re)load so a reopened/stalled plan shows its open questions. */
+export interface LoopInterviewState {
+  transcript: { key: string; role: "agent" | "you"; text: string; file?: string; ts?: string }[];
+  pending: Record<string, { question: string; choices?: string[]; file?: string; nonce?: string; ts?: string }>;
+}
+
+/** A persisted per-item record (`.locke/loops/<id>/items/<path>.json`). */
+export interface LoopItemRecord {
+  id?: string;
+  path: string;
+  status?: LoopItemState;
+  declared?: "complete" | "needs_review";
+  summary?: string;
+  reason?: string;
+  line?: string;
+  agent?: string;
+  wave?: number;
+  priority?: number;
+  blockedBy?: string[];
+  diff?: unknown[];
+  notes?: { note: string; time: string }[];
+  /** Bounded ring of the agent's tool calls (newest last) — shown in Inspect. */
+  trail?: LoopTrailEntry[];
+}
+
+/** Start a Build-mode loop. Returns immediately; it streams via the `loop:*`
+ *  events keyed by `loopId`. `targets` is the selected file set ([] = glob the
+ *  pattern). No-op (resolves) outside Tauri. */
+export const startLoop = (args: {
+  loopId: string;
+  repo: string;
+  branch: string;
+  base: string;
+  pattern: string;
+  title: string;
+  template: string;
+  targets: string[];
+  concurrency: number;
+  checks: { label: string; command: string }[];
+  reviewOnDone: boolean;
+  /** "auto" | "approve" — how loop_block_on_task proposals are handled. "" → approve. */
+  blockPolicy: string;
+  /** "loop" | "wave" review granularity. "" → keep the value persisted on the record. */
+  reviewScope: string;
+}): Promise<void> => (isTauri ? invoke<void>("start_loop", args) : Promise.resolve());
+
+/** Start a Plan-mode (strategist) run: a scope pass writes the loop's plan, then a
+ *  read-only spec agent fans out per item, enriching the manifest. Same args/stream
+ *  as {@link startLoop}; the loop settles to `planning`, awaiting approve→build. */
+export const startPlan = (args: {
+  loopId: string;
+  repo: string;
+  branch: string;
+  base: string;
+  pattern: string;
+  title: string;
+  template: string;
+  targets: string[];
+  concurrency: number;
+  checks: { label: string; command: string }[];
+  reviewOnDone: boolean;
+  /** "loop" | "wave" review granularity, persisted on the plan record so approve→build inherits it. */
+  reviewScope: string;
+}): Promise<void> => (isTauri ? invoke<void>("start_plan", args) : Promise.resolve());
+
+/** Get-or-create the review for a finished loop's branch and return its id (the
+ *  backend dedups + stamps the loop's `pull_id`). 0 / no-op outside Tauri. */
+export const openLoopReview = (repo: string, loopId: string): Promise<number> =>
+  isTauri ? invoke<number>("open_loop_review", { repo, loopId }) : Promise.resolve(0);
+
+/** Read a loop's scope metadata (`{ summary, assumptions }`) for the Plan view's
+ *  Scope tab. Null in mock mode / before the scope pass runs. */
+export const readLoopPlanMeta = (repo: string, loopId: string): Promise<LoopPlanMeta | null> =>
+  isTauri ? invoke<LoopPlanMeta | null>("read_loop_plan_meta", { repo, loopId }) : Promise.resolve(null);
+
+/** Flip a loop's mode/state on disk (e.g. build → plan to re-review the strategist
+ *  specs). No-op in mock mode. */
+export const setLoopMode = (repo: string, loopId: string, mode: LoopMode, state: string): Promise<void> =>
+  isTauri ? invoke<void>("set_loop_mode", { repo, loopId, mode, state }) : Promise.resolve();
+
+export const pauseLoop = (loopId: string, paused: boolean): Promise<void> =>
+  isTauri ? invoke<void>("pause_loop", { loopId, paused }) : Promise.resolve();
+
+export const stopLoop = (loopId: string): Promise<void> =>
+  isTauri ? invoke<void>("stop_loop", { loopId }) : Promise.resolve();
+
+/** Cancel a single item by key/path — kills just that agent, the run continues.
+ *  The item is dropped from the run (excluded). No-op in mock mode. */
+export const stopLoopItem = (loopId: string, key: string): Promise<void> =>
+  isTauri ? invoke<void>("stop_loop_item", { loopId, key }) : Promise.resolve();
+
+/** Cancel a single item's agent and re-queue it (retry from scratch) — the reliable
+ *  escape for a stalled item. No-op in mock mode. */
+export const requeueLoopItem = (loopId: string, key: string): Promise<void> =>
+  isTauri ? invoke<void>("requeue_loop_item", { loopId, key }) : Promise.resolve();
+
+/** Queue a nudge (follow-up user turn) for an item's live agent. Best-effort — only
+ *  lands while the agent is mid-turn. No-op in mock mode. */
+export const nudgeLoopItem = (loopId: string, key: string, text: string): Promise<void> =>
+  isTauri ? invoke<void>("nudge_loop_item", { loopId, key, text }) : Promise.resolve();
+
+/** Approve or reject a gated block-on-task proposal. No-op in mock mode. */
+export const resolveLoopBlock = (loopId: string, taskId: string, approve: boolean): Promise<void> =>
+  isTauri ? invoke<void>("resolve_loop_block", { loopId, taskId, approve }) : Promise.resolve();
+
+/** Pending block-on-task proposals (read on (re)load). */
+export const readLoopBlocks = (repo: string, loopId: string): Promise<LoopBlockRequest[]> =>
+  isTauri ? invoke<LoopBlockRequest[]>("read_loop_blocks", { repo, loopId }) : Promise.resolve([]);
+
+/** Set a loop's block-on-task policy ("auto" | "approve"). No-op in mock mode. */
+export const setLoopBlockPolicy = (repo: string, loopId: string, policy: string): Promise<void> =>
+  isTauri ? invoke<void>("set_loop_block_policy", { repo, loopId, policy }) : Promise.resolve();
+
+/** Resolve a review item: `"approve"` commits its diff onto the loop branch;
+ *  anything else re-queues it with `feedback` folded in as a note. */
+export const resolveLoopItem = (
+  repo: string,
+  loopId: string,
+  file: string,
+  decision: "approve" | "request",
+  feedback: string,
+): Promise<unknown> =>
+  isTauri ? invoke("resolve_loop_item", { repo, loopId, file, decision, feedback }) : Promise.resolve(null);
+
+/** Read the loop registry. Empty in mock mode. */
+export const readLoops = (repo: string): Promise<Loop[]> =>
+  isTauri ? invoke<Loop[]>("read_loops", { repo }) : Promise.resolve([]);
+
+/** Read a loop's per-item records. Empty in mock mode. */
+export const readLoopItems = (repo: string, loopId: string): Promise<LoopItemRecord[]> =>
+  isTauri ? invoke<LoopItemRecord[]>("read_loop_items", { repo, loopId }) : Promise.resolve([]);
+
+/** Resolve a target spec against the repo into manifest rows. Empty in mock mode. */
+export const resolveTargets = (repo: string, resolver: ResolverSpec): Promise<ManifestEntry[]> =>
+  isTauri ? invoke<ManifestEntry[]>("resolve_targets", { repo, resolver }) : Promise.resolve([]);
+
+/** Read a loop's checked-in target+spec manifest. Empty in mock mode. */
+export const readLoopManifest = (repo: string, loopId: string): Promise<ManifestEntry[]> =>
+  isTauri ? invoke<ManifestEntry[]>("read_loop_manifest", { repo, loopId }) : Promise.resolve([]);
+
+/** Persist a loop's manifest (the resolved + audited set). No-op in mock mode. */
+export const writeLoopManifest = (repo: string, loopId: string, entries: ManifestEntry[]): Promise<void> =>
+  isTauri ? invoke<void>("write_loop_manifest", { repo, loopId, entries }) : Promise.resolve();
+
+/** Add a human-authored task node to the loop's work graph. No-op in mock mode. */
+export const addLoopTask = (
+  repo: string,
+  loopId: string,
+  task: { id: string; title: string; spec?: string; requires?: string[]; priority?: number },
+): Promise<void> =>
+  isTauri
+    ? invoke<void>("add_loop_task", {
+        repo,
+        loopId,
+        id: task.id,
+        title: task.title,
+        spec: task.spec ?? "",
+        requires: task.requires ?? [],
+        priority: task.priority ?? 0,
+      })
+    : Promise.resolve();
+
+/** Remove a work-graph node (file or task) by id-or-path. No-op in mock mode. */
+export const removeLoopNode = (repo: string, loopId: string, node: string): Promise<void> =>
+  isTauri ? invoke<void>("remove_loop_node", { repo, loopId, node }) : Promise.resolve();
+
+/** Answer a live plan-interview question. `key` is the raw item key (file path / task
+ *  id) the question was about, or `__scope__` for a scope-level one. The blocked
+ *  strategist picks the answer up and continues. No-op in mock mode. */
+export const answerLoopQuestion = (repo: string, loopId: string, key: string, text: string): Promise<void> =>
+  isTauri ? invoke<void>("answer_loop_question", { repo, loopId, key, text }) : Promise.resolve();
+
+/** Read a loop's interview (transcript + pending questions). Empty in mock mode. */
+export const readLoopInterview = (repo: string, loopId: string): Promise<LoopInterviewState> =>
+  isTauri
+    ? invoke<LoopInterviewState>("read_loop_interview", { repo, loopId })
+    : Promise.resolve({ transcript: [], pending: {} });
+
+/** Persist the creator's per-spec edits (approach / steps / a per-item instruction) into
+ *  a manifest row; an instruction is also appended to the per-item spec md. No-op in mock. */
+export const mergeLoopSpecEdit = (
+  repo: string,
+  loopId: string,
+  file: string,
+  edit: { approach?: string; steps?: string[]; instruction?: string },
+): Promise<void> =>
+  isTauri
+    ? invoke<void>("merge_loop_spec_edit", {
+        repo,
+        loopId,
+        file,
+        approach: edit.approach ?? null,
+        steps: edit.steps ?? null,
+        instruction: edit.instruction ?? null,
+      })
+    : Promise.resolve();
+
+/** Set a node's dependency edges / ordering (id-or-path). No-op in mock mode. */
+export const setLoopDeps = (
+  repo: string,
+  loopId: string,
+  node: string,
+  requires: string[],
+  priority?: number,
+  wave?: number,
+): Promise<void> =>
+  isTauri
+    ? invoke<void>("set_loop_deps", { repo, loopId, node, requires, priority: priority ?? null, wave: wave ?? null })
+    : Promise.resolve();
+
+/** Persist a loop record + its builder draft (autosave). No-op in mock mode. */
+export const saveLoopDraft = (repo: string, loop: Loop, draft: LoopDraft): Promise<void> =>
+  isTauri ? invoke<void>("save_loop_draft", { repo, record: loop, draft }) : Promise.resolve();
+
+/** Read a saved builder draft (to resume a loop). Null in mock mode / if absent. */
+export const readLoopDraft = (repo: string, loopId: string): Promise<LoopDraft | null> =>
+  isTauri ? invoke<LoopDraft | null>("read_loop_draft", { repo, loopId }) : Promise.resolve(null);
+
+/** Delete a loop (registry row + .locke tree; git is untouched). No-op in mock. */
+export const deleteLoop = (repo: string, loopId: string): Promise<void> =>
+  isTauri ? invoke<void>("delete_loop", { repo, loopId }) : Promise.resolve();
 
 const initials = (name: string): string => {
   const parts = name.trim().split(/[\s/_-]+/).filter(Boolean);

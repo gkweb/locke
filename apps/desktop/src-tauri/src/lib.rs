@@ -7,6 +7,7 @@ mod cli;
 mod commands;
 mod config;
 mod git;
+mod loops;
 mod mcp;
 mod run;
 mod store;
@@ -38,9 +39,11 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(run::RunRegistry::default())
+        .manage(loops::LoopRegistry::default())
         .manage(watch::WatchState::default())
         .manage(cli::InitialRepo(std::sync::Mutex::new(initial_repo)))
         .invoke_handler(tauri::generate_handler![
+            commands::log_ui_error,
             commands::review_summary,
             commands::list_branches,
             commands::detect_base,
@@ -65,6 +68,34 @@ pub fn run() {
             commands::cancel_run,
             commands::set_permission_mode,
             commands::read_runs,
+            commands::start_loop,
+            commands::start_plan,
+            commands::open_loop_review,
+            commands::read_loop_plan_meta,
+            commands::set_loop_mode,
+            commands::pause_loop,
+            commands::stop_loop,
+            commands::stop_loop_item,
+            commands::requeue_loop_item,
+            commands::nudge_loop_item,
+            commands::resolve_loop_block,
+            commands::read_loop_blocks,
+            commands::set_loop_block_policy,
+            commands::resolve_loop_item,
+            commands::read_loops,
+            commands::read_loop_items,
+            commands::resolve_targets,
+            commands::read_loop_manifest,
+            commands::write_loop_manifest,
+            commands::add_loop_task,
+            commands::remove_loop_node,
+            commands::set_loop_deps,
+            commands::answer_loop_question,
+            commands::read_loop_interview,
+            commands::merge_loop_spec_edit,
+            commands::save_loop_draft,
+            commands::read_loop_draft,
+            commands::delete_loop,
             commands::read_comments,
             commands::write_comments,
             commands::read_check_overrides,

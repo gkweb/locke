@@ -7,12 +7,23 @@ import {
   type RunDonePayload,
   type RunEventPayload,
   type RunPermissionPayload,
+  type LoopItemEvent,
+  type LoopProgress,
+  type LoopEventPayload,
+  type LoopTrailEvent,
+  type LoopBlockEvent,
+  type LoopDonePayload,
+  type LoopReviewEvent,
+  type LoopInterviewEvent,
 } from "./api/git.js";
 import { color, font } from "./theme/tokens.js";
 import { ActionBar } from "./components/ActionBar.js";
 import { SidePanel } from "./components/SidePanel.js";
 import { StatusBar } from "./components/StatusBar.js";
+import { ErrorBoundary } from "./components/ErrorBoundary.js";
+import { installGlobalErrorCapture } from "./lib/report.js";
 import { ActivityView } from "./views/ActivityView.js";
+import { LoopsView } from "./views/loops/LoopsView.js";
 import { ReviewsView } from "./views/ReviewsView.js";
 import { RunsView } from "./views/RunsView.js";
 import { AgentsView } from "./views/AgentsView.js";
@@ -43,6 +54,8 @@ function Main() {
   switch (view) {
     case "activity":
       return <ActivityView />;
+    case "loops":
+      return <LoopsView />;
     case "reviews":
       return <ReviewsView />;
     case "runs":
@@ -66,6 +79,11 @@ export function App() {
   const panelOpen = useStore((s) => s.panelOpen);
   const panelSide = useStore((s) => s.panelSide);
   const view = useStore((s) => s.view);
+  // Navigation signature — changing it clears a crashed view's error boundary so the
+  // user recovers by moving away (loops carry sub-views, hence loopView/selectedLoop).
+  const selectedLoop = useStore((s) => s.selectedLoop);
+  const loopView = useStore((s) => s.loopView);
+  const selectedPR = useStore((s) => s.selectedPR);
   const newReviewOpen = useStore((s) => s.newReviewOpen);
   const deletePullPending = useStore((s) => s.deletePullPending);
   const runApprovalOpen = useStore((s) => s.runApprovalOpen);
@@ -73,6 +91,15 @@ export function App() {
   const loadAgentSettings = useStore((s) => s.loadAgentSettings);
   const loadMcpStatus = useStore((s) => s.loadMcpStatus);
   const loadCliStatus = useStore((s) => s.loadCliStatus);
+
+  // Capture uncaught errors + unhandled promise rejections to the durable log, with a
+  // snapshot of where the user was, so a crash is diagnosable after the fact.
+  useEffect(() => {
+    installGlobalErrorCapture(() => {
+      const st = useStore.getState();
+      return { view: st.view, selectedLoop: st.selectedLoop, loopView: st.loopView, selectedPR: st.selectedPR };
+    });
+  }, []);
 
   // Probe installed agent CLIs and load app-global opt-outs + mode once on launch
   // (repo-independent — the agents directory is reachable with no repo open). Also
@@ -99,6 +126,15 @@ export function App() {
       listen<RunEventPayload>("run:event", (e) => s.onRunEvent(e.payload)),
       listen<RunPermissionPayload>("run:permission", (e) => s.onRunPermission(e.payload)),
       listen<RunDonePayload>("run:done", (e) => s.onRunDone(e.payload)),
+      // The loop runner's fan-out stream (parallel to run:*).
+      listen<LoopItemEvent>("loop:item", (e) => s.onLoopItem(e.payload)),
+      listen<LoopProgress>("loop:progress", (e) => s.onLoopProgress(e.payload)),
+      listen<LoopEventPayload>("loop:event", (e) => s.onLoopEvent(e.payload)),
+      listen<LoopTrailEvent>("loop:trail", (e) => s.onLoopTrail(e.payload)),
+      listen<LoopBlockEvent>("loop:block", (e) => s.onLoopBlock(e.payload)),
+      listen<LoopDonePayload>("loop:done", (e) => s.onLoopDone(e.payload)),
+      listen<LoopReviewEvent>("loop:review", (e) => s.onLoopReview(e.payload)),
+      listen<LoopInterviewEvent>("loop:interview", (e) => s.onLoopInterview(e.payload)),
       // A second `locke <path>` launch is forwarded here by the single-instance
       // plugin — switch the open window to that repo.
       listen<string>("cli:open-repo", (e) => void useStore.getState().openRepo(e.payload)),
@@ -146,9 +182,12 @@ export function App() {
           minHeight: 0,
         }}
       >
-        {/* The Files screen carries its own explorer, so the review panel hides there. */}
-        {panelOpen && view !== "files" && <SidePanel />}
-        <Main />
+        {/* Files carries its own explorer and Loops its own rails/navigation, so
+            the review quick-switch panel hides on both. */}
+        {panelOpen && view !== "files" && view !== "loops" && <SidePanel />}
+        <ErrorBoundary resetKey={`${view}|${selectedPR}|${selectedLoop}|${loopView}`}>
+          <Main />
+        </ErrorBoundary>
       </div>
 
       <StatusBar />

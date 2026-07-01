@@ -220,6 +220,52 @@ export const FilesIcon = ({ size = 16, color = "currentColor", stroke = 1.5, sty
   </svg>
 );
 
+// Nav: Loops (refresh-cycle arrows) — run one task across many files (v2.0.0).
+export const LoopsIcon = ({ size = 16, color = "currentColor", stroke = 1.5, style }: IconProps) => (
+  <svg {...strokeBase(size, color, stroke, style)}>
+    <path d="M2.6 8a5.4 5.4 0 0 1 9.2-3.8M11.8 2v2.4h-2.4M13.4 8a5.4 5.4 0 0 1-9.2 3.8M4.2 14v-2.4h2.4" />
+  </svg>
+);
+
+// Monitor layout toggle: Board (vertical bars), Stream (lines), Grid (squares).
+export const BoardIcon = ({ size = 13, color = "currentColor", stroke = 1.5, style }: IconProps) => (
+  <svg {...strokeBase(size, color, stroke, style)}>
+    <rect x="2" y="2.5" width="3.5" height="11" rx="1" />
+    <rect x="6.5" y="2.5" width="3.5" height="8" rx="1" />
+    <rect x="11" y="2.5" width="3.5" height="11" rx="1" />
+  </svg>
+);
+
+export const StreamIcon = ({ size = 13, color = "currentColor", stroke = 1.5, style }: IconProps) => (
+  <svg {...strokeBase(size, color, stroke, style)}>
+    <path d="M2 4h12M2 8h12M2 12h8" />
+  </svg>
+);
+
+export const GridIcon = ({ size = 13, color = "currentColor", stroke = 1.5, style }: IconProps) => (
+  <svg {...strokeBase(size, color, stroke, style)}>
+    <rect x="2" y="2.5" width="4.5" height="4.5" rx="1" />
+    <rect x="9" y="2.5" width="4.5" height="4.5" rx="1" />
+    <rect x="2" y="9" width="4.5" height="4.5" rx="1" />
+    <rect x="9" y="9" width="4.5" height="4.5" rx="1" />
+  </svg>
+);
+
+// Send arrow (interview reply, plan composer).
+export const SendIcon = ({ size = 14, color = "currentColor", stroke = 1.8, style }: IconProps) => (
+  <svg {...strokeBase(size, color, stroke, style)}>
+    <path d="M3 8h9M8 4l4 4-4 4" />
+  </svg>
+);
+
+// Document with lines (Plan-mode badge glyph).
+export const PlanDocIcon = ({ size = 16, color = "currentColor", stroke = 1.5, style }: IconProps) => (
+  <svg {...strokeBase(size, color, stroke, style)}>
+    <path d="M3 2.5h7l2 2V13H3z" />
+    <path d="M5.5 6.5h5M5.5 9h5M5.5 11h3" />
+  </svg>
+);
+
 // Extensions (puzzle piece) — the language-plugin directory.
 export const ExtensionsIcon = ({ size = 16, color = "currentColor", stroke = 1.4, style }: IconProps) => (
   <svg {...strokeBase(size, color, stroke, style)}>

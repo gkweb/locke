@@ -436,6 +436,866 @@ fn migrate_from_index(repo: &str) -> R<Option<PullStore>> {
     Ok(Some(store))
 }
 
+// ---- loops (.locke/loops.json registry + .locke/loops/<id>/ tree) ----
+//
+// A "loop" runs one task across many files. The registry `.locke/loops.json`
+// holds the Loop records (counts, branch, pattern, prompt template) — like
+// pulls.json. Per-loop artifacts live under `.locke/loops/<id>/`:
+//   spec/<sanitized-path>.md    optional per-item spec the worker reads
+//   items/<sanitized-path>.json per-item runtime state + result record
+//   plan.md                     global plan / assumptions / conventions
+//   progress.jsonl              durable append-only event log
+// The desktop runner and the standalone locke-mcp tools both read/write this
+// tree, so item writes take the repo lock and use atomic writes.
+
+/// A loop — a task applied across a matched set of files. Counts are carried
+/// explicitly so a 1,000-item set needn't be rescanned on every read. Mirrors the
+/// front-end `Loop` shape, plus the backend-only `template`/`concurrency`.
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Loop {
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub branch: String,
+    #[serde(default)]
+    pub base: String,
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub pattern: String,
+    #[serde(default)]
+    pub total: u64,
+    #[serde(default)]
+    pub done: u64,
+    #[serde(default)]
+    pub running: u64,
+    #[serde(default)]
+    pub review: u64,
+    #[serde(default)]
+    pub failed: u64,
+    #[serde(default)]
+    pub queued: u64,
+    #[serde(default)]
+    pub blocked: u64,
+    #[serde(default)]
+    pub rate: String,
+    #[serde(default)]
+    pub elapsed: String,
+    /// Per-item prompt template (the creator's, with `{{file}}` etc. interpolated).
+    #[serde(default)]
+    pub template: String,
+    #[serde(default)]
+    pub concurrency: u64,
+    /// Open a review of the loop's branch when it finishes (the creator's opt-out
+    /// choice). Default false for legacy records; the builder sets it explicitly.
+    #[serde(default)]
+    pub review_on_done: bool,
+    /// The review (pull) opened for this loop's output, once one exists (0 = none).
+    /// Lets the completed loop deep-link back to its review and dedup creation.
+    #[serde(default)]
+    pub pull_id: u64,
+    /// How a `loop_block_on_task` proposal is handled: "approve" (default — surface it
+    /// and wait for the human) or "auto" (inject + run the prerequisite immediately).
+    #[serde(default)]
+    pub block_policy: String,
+    /// Review granularity: "wave" opens one review per wave as each wave finishes;
+    /// anything else (incl. empty, the legacy/default) opens one review for the whole
+    /// loop on completion (governed by `review_on_done`).
+    #[serde(default)]
+    pub review_scope: String,
+    /// Per-wave reviews already opened, as `(wave, pull_id)` — the dedup ledger so a
+    /// resumed run never opens a second review for a wave it already sealed.
+    #[serde(default)]
+    pub wave_pulls: Vec<(u32, u64)>,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LoopStore {
+    #[serde(default)]
+    pub loops: Vec<Loop>,
+}
+
+fn loops_index_path(repo: &str) -> PathBuf {
+    locke_dir(repo).join("loops.json")
+}
+
+fn loop_dir(repo: &str, id: &str) -> PathBuf {
+    locke_dir(repo).join("loops").join(sanitize_seg(id))
+}
+
+/// Filename-safe single segment: keep alnum/`.`/`-`/`_`, drop everything else to
+/// `-`. Used for loop ids.
+fn sanitize_seg(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '-' })
+        .collect()
+}
+
+/// Filename-safe rendering of a repo-relative path: `/` → `__`, other unsafe chars
+/// → `-`. Keeps the extension readable and avoids collisions between distinct
+/// paths (unlike collapsing every separator to `-`).
+pub fn sanitize_path(path: &str) -> String {
+    let mut out = String::new();
+    for c in path.chars() {
+        match c {
+            '/' => out.push_str("__"),
+            c if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' => out.push(c),
+            _ => out.push('-'),
+        }
+    }
+    out
+}
+
+/// Read the loop registry (empty when absent).
+pub fn read_loops(repo: &str) -> R<Vec<Loop>> {
+    match read_json(&loops_index_path(repo))? {
+        Some(v) => {
+            let store: LoopStore =
+                serde_json::from_value(v).map_err(|e| format!("parse loops.json: {e}"))?;
+            Ok(store.loops)
+        }
+        None => Ok(Vec::new()),
+    }
+}
+
+pub fn read_loop(repo: &str, id: &str) -> R<Option<Loop>> {
+    Ok(read_loops(repo)?.into_iter().find(|l| l.id == id))
+}
+
+/// Insert or replace a loop record by id (bumps `updated_at`). Serialized with the
+/// repo lock so concurrent count updates don't clobber each other.
+pub fn upsert_loop(repo: &str, mut lp: Loop) -> R<()> {
+    let _lock = lock_repo(repo)?;
+    let mut store = LoopStore { loops: read_loops(repo)? };
+    lp.updated_at = now_iso();
+    if lp.created_at.is_empty() {
+        lp.created_at = lp.updated_at.clone();
+    }
+    if let Some(slot) = store.loops.iter_mut().find(|l| l.id == lp.id) {
+        *slot = lp;
+    } else {
+        store.loops.push(lp);
+    }
+    let value = serde_json::to_value(&store).map_err(|e| format!("serialize loops: {e}"))?;
+    write_json(&loops_index_path(repo), &value)
+}
+
+/// Apply a closure to one loop record under the repo lock (read-modify-write).
+/// Used by the runner to bump counts/state atomically.
+pub fn update_loop<F: FnOnce(&mut Loop)>(repo: &str, id: &str, f: F) -> R<()> {
+    let _lock = lock_repo(repo)?;
+    let mut store = LoopStore { loops: read_loops(repo)? };
+    if let Some(lp) = store.loops.iter_mut().find(|l| l.id == id) {
+        f(lp);
+        lp.updated_at = now_iso();
+        let value = serde_json::to_value(&store).map_err(|e| format!("serialize loops: {e}"))?;
+        write_json(&loops_index_path(repo), &value)?;
+    }
+    Ok(())
+}
+
+/// Get-or-create the review (pull) for a loop's branch+base, stamping `pull_id` on
+/// the loop record. Idempotent and the single point of dedup: reuses the loop's
+/// linked pull if it still exists, else any pull already on this branch+base, else
+/// creates one (title = the loop title). So a loop never spawns two reviews, whether
+/// opened automatically on completion or on demand from the UI.
+pub fn ensure_loop_review(repo: &str, loop_id: &str) -> R<u64> {
+    let lp = read_loop(repo, loop_id)?.ok_or_else(|| format!("loop {loop_id} not found"))?;
+    let pulls = read_pulls(repo)?;
+    if lp.pull_id != 0 && pulls.pulls.iter().any(|p| p.id == lp.pull_id) {
+        return Ok(lp.pull_id);
+    }
+    if lp.branch.trim().is_empty() {
+        return Err("loop has no branch to review".into());
+    }
+    let id = match pulls.pulls.iter().find(|p| p.branch == lp.branch && p.base == lp.base) {
+        Some(p) => p.id,
+        None => {
+            let title = if lp.title.trim().is_empty() { lp.branch.clone() } else { lp.title.clone() };
+            create_pull(repo, &lp.branch, &lp.base, &title, "Locke loop", true)?.id
+        }
+    };
+    update_loop(repo, loop_id, |l| l.pull_id = id)?;
+    Ok(id)
+}
+
+/// Get-or-create the review (pull) for one wave of a loop running under the "wave"
+/// review scope: a stacked review of `wave_branch` against `base_ref` (the prior
+/// wave's branch, or the loop base for the first wave). Idempotent and the single
+/// point of dedup — reuses the wave's ledger entry if present, else any pull already
+/// on this branch+base, else creates one — and records `(wave, id)` on the loop so a
+/// resumed run never opens a second review for the same wave.
+pub fn ensure_wave_review(repo: &str, loop_id: &str, wave: u32, wave_branch: &str, base_ref: &str, title: &str) -> R<u64> {
+    let lp = read_loop(repo, loop_id)?.ok_or_else(|| format!("loop {loop_id} not found"))?;
+    let pulls = read_pulls(repo)?;
+    // Already opened for this wave and the pull still exists → reuse it.
+    if let Some((_, id)) = lp.wave_pulls.iter().find(|(w, _)| *w == wave) {
+        if pulls.pulls.iter().any(|p| p.id == *id) {
+            return Ok(*id);
+        }
+    }
+    if wave_branch.trim().is_empty() {
+        return Err("wave has no branch to review".into());
+    }
+    let id = match pulls.pulls.iter().find(|p| p.branch == wave_branch && p.base == base_ref) {
+        Some(p) => p.id,
+        None => create_pull(repo, wave_branch, base_ref, title, "Locke loop", true)?.id,
+    };
+    update_loop(repo, loop_id, |l| {
+        if let Some(slot) = l.wave_pulls.iter_mut().find(|(w, _)| *w == wave) {
+            slot.1 = id;
+        } else {
+            l.wave_pulls.push((wave, id));
+        }
+    })?;
+    Ok(id)
+}
+
+/// Remove a loop from the registry and delete its `.locke/loops/<id>/` tree.
+/// Only Locke's tracking is removed — git commits/branches are untouched.
+pub fn delete_loop(repo: &str, id: &str) -> R<()> {
+    let _lock = lock_repo(repo)?;
+    let mut store = LoopStore { loops: read_loops(repo)? };
+    store.loops.retain(|l| l.id != id);
+    let value = serde_json::to_value(&store).map_err(|e| format!("serialize loops: {e}"))?;
+    write_json(&loops_index_path(repo), &value)?;
+    let _ = fs::remove_dir_all(loop_dir(repo, id));
+    Ok(())
+}
+
+// ---- per-item state + result records (.locke/loops/<id>/items/<path>.json) ----
+
+fn loop_item_path(repo: &str, id: &str, file: &str) -> PathBuf {
+    loop_dir(repo, id).join("items").join(format!("{}.json", sanitize_path(file)))
+}
+
+pub fn read_loop_item(repo: &str, id: &str, file: &str) -> R<Option<Value>> {
+    read_json(&loop_item_path(repo, id, file))
+}
+
+/// Overwrite an item's record (runner's final write after a worker finishes).
+pub fn write_loop_item(repo: &str, id: &str, file: &str, record: &Value) -> R<()> {
+    ensure_locke(repo)?;
+    write_json(&loop_item_path(repo, id, file), record)
+}
+
+/// Merge top-level keys into an item's record (the MCP tools' declaration write),
+/// stamping `path`/`updatedAt`. Read-modify-write under the repo lock so a worker
+/// declaration and a `loop_write_note` append can't clobber each other.
+pub fn merge_loop_item(repo: &str, id: &str, file: &str, patch: Value) -> R<()> {
+    let _lock = lock_repo(repo)?;
+    let path = loop_item_path(repo, id, file);
+    let mut cur = read_json(&path)?.unwrap_or_else(|| json!({}));
+    if let (Some(obj), Some(p)) = (cur.as_object_mut(), patch.as_object()) {
+        for (k, v) in p {
+            obj.insert(k.clone(), v.clone());
+        }
+    }
+    cur["path"] = json!(file);
+    cur["updatedAt"] = json!(now_iso());
+    write_json(&path, &cur)
+}
+
+/// Append a note to an item's `notes` array (carries forward to the next step).
+pub fn append_loop_note(repo: &str, id: &str, file: &str, note: &str) -> R<()> {
+    let _lock = lock_repo(repo)?;
+    let path = loop_item_path(repo, id, file);
+    let mut cur = read_json(&path)?.unwrap_or_else(|| json!({}));
+    let obj = cur.as_object_mut().ok_or("item record is not an object")?;
+    obj.entry("notes").or_insert_with(|| json!([]));
+    if let Some(arr) = obj.get_mut("notes").and_then(|n| n.as_array_mut()) {
+        arr.push(json!({ "note": note, "time": now_iso() }));
+    }
+    obj.insert("path".into(), json!(file));
+    obj.insert("updatedAt".into(), json!(now_iso()));
+    write_json(&path, &cur)
+}
+
+/// Read every item record for a loop (unordered).
+pub fn read_loop_items(repo: &str, id: &str) -> R<Vec<Value>> {
+    let dir = loop_dir(repo, id).join("items");
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut items = Vec::new();
+    for entry in fs::read_dir(&dir).map_err(|e| format!("read items dir: {e}"))? {
+        let path = entry.map_err(|e| format!("read entry: {e}"))?.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("json") {
+            if let Some(v) = read_json(&path)? {
+                items.push(v);
+            }
+        }
+    }
+    Ok(items)
+}
+
+// ---- per-item specs (.locke/loops/<id>/spec/<path>.md) ----
+
+fn loop_spec_path(repo: &str, id: &str, file: &str) -> PathBuf {
+    loop_dir(repo, id).join("spec").join(format!("{}.md", sanitize_path(file)))
+}
+
+pub fn read_loop_spec(repo: &str, id: &str, file: &str) -> R<Option<String>> {
+    let path = loop_spec_path(repo, id, file);
+    if !path.exists() {
+        return Ok(None);
+    }
+    fs::read_to_string(&path).map(Some).map_err(|e| format!("read spec: {e}"))
+}
+
+pub fn write_loop_spec(repo: &str, id: &str, file: &str, content: &str) -> R<()> {
+    let path = loop_spec_path(repo, id, file);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create spec dir: {e}"))?;
+    }
+    fs::write(&path, content).map_err(|e| format!("write spec: {e}"))
+}
+
+/// Global plan / conventions for the loop (Plan mode writes this; Build may omit).
+pub fn read_loop_plan(repo: &str, id: &str) -> R<Option<String>> {
+    let path = loop_dir(repo, id).join("plan.md");
+    if !path.exists() {
+        return Ok(None);
+    }
+    fs::read_to_string(&path).map(Some).map_err(|e| format!("read plan: {e}"))
+}
+
+pub fn write_loop_plan(repo: &str, id: &str, content: &str) -> R<()> {
+    let dir = loop_dir(repo, id);
+    fs::create_dir_all(&dir).map_err(|e| format!("create loop dir: {e}"))?;
+    fs::write(dir.join("plan.md"), content).map_err(|e| format!("write plan: {e}"))
+}
+
+/// Structured scope metadata for the Plan view's Scope tab — `{ summary, assumptions }`,
+/// shaped to the front-end `LoopPlanMeta` (a `SpecSummary[]` + a string list). The
+/// strategist's scope pass writes this beside the human-readable `plan.md`.
+pub fn read_loop_plan_meta(repo: &str, id: &str) -> R<Option<Value>> {
+    read_json(&loop_dir(repo, id).join("plan.json"))
+}
+
+pub fn write_loop_plan_meta(repo: &str, id: &str, meta: &Value) -> R<()> {
+    ensure_locke(repo)?;
+    write_json(&loop_dir(repo, id).join("plan.json"), meta)
+}
+
+// ---- plan interview (.locke/loops/<id>/interview/) ----
+//
+// A live, multi-turn Q&A between the Plan-mode strategist and the human. When the
+// strategist needs a decision before it can finish a spec it calls the `loop_ask`
+// MCP tool, which BLOCKS (polling the filesystem) until the human answers. The
+// per-key `.q`/`.a` files are the wire; `transcript.json` is the durable,
+// append-only record the Plan view replays on reload.
+//
+//   interview/<key>.q.json     pending question { nonce, question, choices, file?, ts }
+//   interview/<key>.a.json     the human's answer { nonce, text }
+//   interview/transcript.json  append-only [{ key, role, text, file?, ts }]
+//
+// `<key>` is `sanitize_path(file)` for a per-item question, or the reserved
+// `__scope__` for a scope-level one (`file` absent). Per-item and scope interviews
+// coexist (one `.q.json` per key), so a blocked item doesn't hide the scope chat.
+
+fn loop_interview_dir(repo: &str, id: &str) -> PathBuf {
+    loop_dir(repo, id).join("interview")
+}
+
+/// The RAW interview key for a question: the item's repo-relative path / task id, or
+/// the reserved `__scope__` for a scope-level question (`file` absent or empty). This
+/// is the key the live event, the transcript rows, and the front-end all share — the
+/// `.q`/`.a` files sanitize it for the filename (`interview_stem`), but every API here
+/// takes the raw key so callers don't have to agree on a sanitizer.
+pub fn interview_key(file: Option<&str>) -> String {
+    match file {
+        Some(f) if !f.is_empty() => f.to_string(),
+        _ => "__scope__".to_string(),
+    }
+}
+
+/// Filesystem-safe stem for an interview key's `.q`/`.a` files (paths → `__`-joined).
+fn interview_stem(key: &str) -> String {
+    if key == "__scope__" {
+        key.to_string()
+    } else {
+        sanitize_path(key)
+    }
+}
+
+fn interview_q_path(repo: &str, id: &str, key: &str) -> PathBuf {
+    loop_interview_dir(repo, id).join(format!("{}.q.json", interview_stem(key)))
+}
+
+fn interview_a_path(repo: &str, id: &str, key: &str) -> PathBuf {
+    loop_interview_dir(repo, id).join(format!("{}.a.json", interview_stem(key)))
+}
+
+fn interview_transcript_path(repo: &str, id: &str) -> PathBuf {
+    loop_interview_dir(repo, id).join("transcript.json")
+}
+
+/// A fresh nonce pairing a question with its answer. Nanosecond clock + pid is
+/// unique enough that a stale answer (to a since-replaced question under the same
+/// key) never satisfies the blocked poller.
+fn fresh_nonce() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    format!("{}-{}", nanos, std::process::id())
+}
+
+/// Write the pending question for `key` (overwriting any prior), returning its
+/// nonce. The blocked `loop_ask` then polls `read_loop_answer` for a matching nonce.
+pub fn write_loop_question(
+    repo: &str,
+    id: &str,
+    key: &str,
+    question: &str,
+    choices: &[String],
+    file: Option<&str>,
+) -> R<String> {
+    ensure_locke(repo)?;
+    let nonce = fresh_nonce();
+    let q = json!({
+        "nonce": nonce,
+        "question": question,
+        "choices": choices,
+        "file": file,
+        "ts": now_iso(),
+    });
+    write_json(&interview_q_path(repo, id, key), &q)?;
+    Ok(nonce)
+}
+
+/// The pending question for `key`, if any (`{ nonce, question, choices, file?, ts }`).
+pub fn read_loop_question(repo: &str, id: &str, key: &str) -> R<Option<Value>> {
+    read_json(&interview_q_path(repo, id, key))
+}
+
+/// Drop the `.q`/`.a` pair for `key` (called once the agent has consumed the answer).
+pub fn clear_loop_question(repo: &str, id: &str, key: &str) -> R<()> {
+    for p in [interview_q_path(repo, id, key), interview_a_path(repo, id, key)] {
+        if p.exists() {
+            fs::remove_file(&p).map_err(|e| format!("clear interview file: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Record the human's answer for `key`, stamped with the pending question's nonce so
+/// the blocked `loop_ask` only unblocks on an answer to the question it actually
+/// asked (a no-op if there is no pending question).
+pub fn write_loop_answer(repo: &str, id: &str, key: &str, text: &str) -> R<()> {
+    ensure_locke(repo)?;
+    let nonce = read_loop_question(repo, id, key)?
+        .and_then(|q| q.get("nonce").and_then(|v| v.as_str()).map(String::from))
+        .unwrap_or_default();
+    write_json(&interview_a_path(repo, id, key), &json!({ "nonce": nonce, "text": text }))
+}
+
+/// The recorded answer for `key`, if any (`{ nonce, text }`).
+pub fn read_loop_answer(repo: &str, id: &str, key: &str) -> R<Option<Value>> {
+    read_json(&interview_a_path(repo, id, key))
+}
+
+/// Append one turn to the durable interview transcript (under the repo lock so the
+/// agent's `loop_ask` and the desktop's optimistic append don't clobber each other).
+pub fn append_interview_msg(repo: &str, id: &str, key: &str, role: &str, text: &str, file: Option<&str>) -> R<()> {
+    ensure_locke(repo)?;
+    let _lock = lock_repo(repo)?;
+    let path = interview_transcript_path(repo, id);
+    let mut log: Vec<Value> = match read_json(&path)? {
+        Some(v) => serde_json::from_value(v).map_err(|e| format!("parse transcript: {e}"))?,
+        None => Vec::new(),
+    };
+    log.push(json!({ "key": key, "role": role, "text": text, "file": file, "ts": now_iso() }));
+    write_json(&path, &serde_json::to_value(&log).map_err(|e| format!("serialize transcript: {e}"))?)
+}
+
+/// How many `agent`-role turns the transcript holds — the strategist's question
+/// count, which the `loop_ask` turn cap is enforced against.
+pub fn interview_agent_turns(repo: &str, id: &str) -> R<usize> {
+    let log: Vec<Value> = match read_json(&interview_transcript_path(repo, id))? {
+        Some(v) => serde_json::from_value(v).map_err(|e| format!("parse transcript: {e}"))?,
+        None => Vec::new(),
+    };
+    Ok(log.iter().filter(|m| m.get("role").and_then(|v| v.as_str()) == Some("agent")).count())
+}
+
+/// The whole interview for the Plan view on (re)load: the transcript plus every
+/// still-pending question keyed by interview key (so a reopened/stalled plan shows
+/// the open questions across all items and scope).
+pub fn read_interview(repo: &str, id: &str) -> R<Value> {
+    let transcript: Vec<Value> = match read_json(&interview_transcript_path(repo, id))? {
+        Some(v) => serde_json::from_value(v).map_err(|e| format!("parse transcript: {e}"))?,
+        None => Vec::new(),
+    };
+    // Key pending questions by the RAW item key (the q.json's `file`, or `__scope__`
+    // when absent) — not the sanitized filename stem — so a reloaded plan keys an
+    // open question the same way the live `loop:interview` event does (the front-end
+    // matches it to a spec by its raw id).
+    let mut pending = serde_json::Map::new();
+    let dir = loop_interview_dir(repo, id);
+    if dir.exists() {
+        for entry in fs::read_dir(&dir).map_err(|e| format!("read interview dir: {e}"))? {
+            let entry = entry.map_err(|e| format!("read interview entry: {e}"))?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.ends_with(".q.json") {
+                if let Some(q) = read_json(&entry.path())? {
+                    let key = q.get("file").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("__scope__");
+                    pending.insert(key.to_string(), q);
+                }
+            }
+        }
+    }
+    Ok(json!({ "transcript": transcript, "pending": pending }))
+}
+
+// ---- mid-flight work injection (.locke/loops/<id>/block/<key>.req|done.json) ----
+//
+// A build agent's `loop_block_on_task` writes a `.req.json` and then BLOCKS polling for
+// the matching `.done.json` — exactly the interview's poll-a-file handshake, but the
+// "answer" is the injected prerequisite task reaching a terminal state (written by the
+// runner, or by the desktop on a rejected approval). `key` is the task's stable id.
+
+fn loop_block_dir(repo: &str, id: &str) -> PathBuf {
+    loop_dir(repo, id).join("block")
+}
+
+fn block_req_path(repo: &str, id: &str, key: &str) -> PathBuf {
+    loop_block_dir(repo, id).join(format!("{}.req.json", sanitize_path(key)))
+}
+
+fn block_done_path(repo: &str, id: &str, key: &str) -> PathBuf {
+    loop_block_dir(repo, id).join(format!("{}.done.json", sanitize_path(key)))
+}
+
+/// Record a block-on-task request (a discovered prerequisite), returning its nonce.
+/// The blocked `loop_block_on_task` polls `read_loop_block_done` for a matching nonce.
+pub fn write_loop_block_request(
+    repo: &str,
+    id: &str,
+    key: &str,
+    title: &str,
+    spec: &str,
+    requires: &[String],
+    priority: i64,
+) -> R<String> {
+    ensure_locke(repo)?;
+    let nonce = fresh_nonce();
+    let req = json!({
+        "nonce": nonce,
+        "taskId": key,
+        "title": title,
+        "spec": spec,
+        "requires": requires,
+        "priority": priority,
+        "ts": now_iso(),
+    });
+    write_json(&block_req_path(repo, id, key), &req)?;
+    Ok(nonce)
+}
+
+/// The pending block request for `key`, if any.
+pub fn read_loop_block_request(repo: &str, id: &str, key: &str) -> R<Option<Value>> {
+    read_json(&block_req_path(repo, id, key))
+}
+
+/// Mark an injected task terminal (`status` = done | failed | rejected), unblocking the
+/// agent that called `loop_block_on_task`. Stamped with the request's nonce so a stale
+/// done never satisfies a since-replaced request under the same key.
+pub fn write_loop_block_done(repo: &str, id: &str, key: &str, status: &str, summary: &str) -> R<()> {
+    ensure_locke(repo)?;
+    let nonce = read_loop_block_request(repo, id, key)?
+        .and_then(|q| q.get("nonce").and_then(|v| v.as_str()).map(String::from))
+        .unwrap_or_default();
+    write_json(&block_done_path(repo, id, key), &json!({ "nonce": nonce, "status": status, "summary": summary }))
+}
+
+/// The recorded terminal state for an injected task `key`, if any.
+pub fn read_loop_block_done(repo: &str, id: &str, key: &str) -> R<Option<Value>> {
+    read_json(&block_done_path(repo, id, key))
+}
+
+/// Drop the `.req`/`.done` pair for `key` (called once the agent has consumed the result).
+pub fn clear_loop_block(repo: &str, id: &str, key: &str) -> R<()> {
+    for p in [block_req_path(repo, id, key), block_done_path(repo, id, key)] {
+        if p.exists() {
+            fs::remove_file(&p).map_err(|e| format!("clear block file: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Every pending block request (no matching `.done.json` yet) — for the approvals tray
+/// and a reopened run. Returns the request objects.
+pub fn read_loop_block_requests(repo: &str, id: &str) -> R<Vec<Value>> {
+    let dir = loop_block_dir(repo, id);
+    let mut out = Vec::new();
+    if dir.exists() {
+        for entry in fs::read_dir(&dir).map_err(|e| format!("read block dir: {e}"))? {
+            let name = entry.map_err(|e| format!("read block entry: {e}"))?.file_name().to_string_lossy().to_string();
+            if let Some(stem) = name.strip_suffix(".req.json") {
+                if let Some(req) = read_json(&loop_block_dir(repo, id).join(&name))? {
+                    let key = req.get("taskId").and_then(|v| v.as_str()).unwrap_or(stem).to_string();
+                    if read_loop_block_done(repo, id, &key)?.is_none() {
+                        out.push(req);
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+// ---- target+spec manifest (.locke/loops/<id>/manifest.json) ----
+
+/// One row of a loop's manifest: a target file plus (once Plan mode runs) its
+/// spec. The manifest is the loop's checked-in, hand-editable source of truth —
+/// the runner takes its active set from here, not a live glob. A superset of the
+/// builder's `LoopTarget` (path/loc/risk/flags/inc/reason) plus spec fields.
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ManifestEntry {
+    pub path: String,
+    /// Stable node id for the work graph. File items default to their `path`;
+    /// task items get a slug. Edges (`requires`) reference these.
+    #[serde(default)]
+    pub id: String,
+    /// "file" (edit a path) | "task" (a shared/prerequisite job, no single path).
+    #[serde(default)]
+    pub kind: String,
+    /// Human label for task nodes (file nodes use `path`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Ids that must reach `done` before this item is eligible (blocked-by edges).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<String>,
+    /// Human-pinned ordering within the ready set (higher runs first).
+    #[serde(default)]
+    pub priority: i64,
+    /// Topological level, derived from `requires` (hand-overridable).
+    #[serde(default)]
+    pub wave: u32,
+    #[serde(default)]
+    pub loc: u64,
+    #[serde(default)]
+    pub risk: String,
+    #[serde(default)]
+    pub flags: Vec<String>,
+    /// Whether this file is in scope (the builder audit toggle).
+    #[serde(default)]
+    pub inc: bool,
+    /// Provenance: who authored this node — "resolver" (matched by the glob/list),
+    /// "model" (strategist-suggested task), or "human" (user-added). Empty on
+    /// pre-existing rows (treated as "resolver").
+    #[serde(default)]
+    pub origin: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    // ---- spec enrichment (written by Plan mode) ----
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approach: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub detected: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tests: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// Repo-relative ref to the per-item markdown spec, once written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<String>,
+    /// Spec lifecycle: "" | candidate | speccing | specced | review | excluded.
+    /// `candidate` = surfaced by the scope hint but NOT yet chosen by the strategist
+    /// (inc=false); it authors the work set by promoting candidates (`loop_add_item`
+    /// → queued) or dropping them (`loop_drop_item` → excluded, with `reason`).
+    #[serde(default)]
+    pub status: String,
+    /// A task injected mid-run by a build agent via `loop_block_on_task` (a discovered
+    /// prerequisite). Drives the "injected" tag + the per-loop injection cap.
+    #[serde(default)]
+    pub injected: bool,
+}
+
+fn loop_manifest_path(repo: &str, id: &str) -> PathBuf {
+    loop_dir(repo, id).join("manifest.json")
+}
+
+/// The builder's serialized draft (title/branch/base/prompt/mode/resolver/targetSel),
+/// so an unfinished loop survives navigation + app restart and reopens fully.
+pub fn read_loop_draft(repo: &str, id: &str) -> R<Option<Value>> {
+    read_json(&loop_dir(repo, id).join("draft.json"))
+}
+
+pub fn write_loop_draft(repo: &str, id: &str, draft: &Value) -> R<()> {
+    ensure_locke(repo)?;
+    write_json(&loop_dir(repo, id).join("draft.json"), draft)
+}
+
+pub fn read_loop_manifest(repo: &str, id: &str) -> R<Vec<ManifestEntry>> {
+    match read_json(&loop_manifest_path(repo, id))? {
+        Some(v) => serde_json::from_value(v).map_err(|e| format!("parse manifest: {e}")),
+        None => Ok(Vec::new()),
+    }
+}
+
+pub fn write_loop_manifest(repo: &str, id: &str, entries: &[ManifestEntry]) -> R<()> {
+    ensure_locke(repo)?;
+    let _lock = lock_repo(repo)?;
+    let value = serde_json::to_value(entries).map_err(|e| format!("serialize manifest: {e}"))?;
+    write_json(&loop_manifest_path(repo, id), &value)
+}
+
+/// Read-modify-write a single manifest entry under the repo lock, applying `f` to
+/// the row matching `file` (created if absent). Lets concurrent Plan-mode workers
+/// enrich their own row without clobbering the manifest.
+pub fn merge_loop_manifest_entry<F: FnOnce(&mut ManifestEntry)>(repo: &str, id: &str, file: &str, f: F) -> R<()> {
+    ensure_locke(repo)?;
+    let _lock = lock_repo(repo)?;
+    let mut entries: Vec<ManifestEntry> = match read_json(&loop_manifest_path(repo, id))? {
+        Some(v) => serde_json::from_value(v).map_err(|e| format!("parse manifest: {e}"))?,
+        None => Vec::new(),
+    };
+    if let Some(e) = entries.iter_mut().find(|e| e.path == file) {
+        f(e);
+    } else {
+        let mut e = ManifestEntry { path: file.to_string(), inc: true, ..Default::default() };
+        f(&mut e);
+        entries.push(e);
+    }
+    let value = serde_json::to_value(&entries).map_err(|e| format!("serialize manifest: {e}"))?;
+    write_json(&loop_manifest_path(repo, id), &value)
+}
+
+/// Read-modify-write the WHOLE manifest under the repo lock. The general primitive
+/// for graph edits that span rows (adding a task node, fanning a `requires` edge
+/// across many file rows, reordering) — `merge_loop_manifest_entry` only reaches one
+/// row keyed by `path`, which can't address task nodes (keyed by `id`).
+pub fn update_loop_manifest<F: FnOnce(&mut Vec<ManifestEntry>)>(repo: &str, id: &str, f: F) -> R<()> {
+    ensure_locke(repo)?;
+    let _lock = lock_repo(repo)?;
+    let mut entries: Vec<ManifestEntry> = match read_json(&loop_manifest_path(repo, id))? {
+        Some(v) => serde_json::from_value(v).map_err(|e| format!("parse manifest: {e}"))?,
+        None => Vec::new(),
+    };
+    f(&mut entries);
+    let value = serde_json::to_value(&entries).map_err(|e| format!("serialize manifest: {e}"))?;
+    write_json(&loop_manifest_path(repo, id), &value)
+}
+
+// ---- glob matching (no deps; mirrors the desktop runner's matcher) ----
+
+/// Match a repo-relative path against a glob with `**` (any depth), `*` (within a
+/// segment), and `{a,b}` brace alternation, e.g. `packages/**/*.{vue,ts}`. Shared so
+/// the MCP server can resolve a task's `blocks` glob to the file rows it gates.
+pub fn glob_match(pat: &str, path: &str) -> bool {
+    glob_expand_braces(pat).iter().any(|p| glob_match_one(p, path))
+}
+
+fn glob_match_one(pat: &str, path: &str) -> bool {
+    let p: Vec<&str> = pat.split('/').filter(|s| !s.is_empty()).collect();
+    let s: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    glob_seg_match(&p, &s)
+}
+
+fn glob_expand_braces(pat: &str) -> Vec<String> {
+    let Some(open) = pat.find('{') else { return vec![pat.to_string()] };
+    let mut depth = 0;
+    let mut close = None;
+    for (i, c) in pat.char_indices().skip_while(|(i, _)| *i < open) {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(close) = close else { return vec![pat.to_string()] };
+    let (pre, post) = (&pat[..open], &pat[close + 1..]);
+    let inner = &pat[open + 1..close];
+    let mut parts = Vec::new();
+    let (mut d, mut start) = (0, 0);
+    for (i, c) in inner.char_indices() {
+        match c {
+            '{' => d += 1,
+            '}' => d -= 1,
+            ',' if d == 0 => {
+                parts.push(&inner[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&inner[start..]);
+    parts.into_iter().flat_map(|part| glob_expand_braces(&format!("{pre}{part}{post}"))).collect()
+}
+
+fn glob_seg_match(p: &[&str], s: &[&str]) -> bool {
+    if p.is_empty() {
+        return s.is_empty();
+    }
+    if p[0] == "**" {
+        (0..=s.len()).any(|i| glob_seg_match(&p[1..], &s[i..]))
+    } else if s.is_empty() {
+        false
+    } else if glob_wild(&p[0].chars().collect::<Vec<_>>(), &s[0].chars().collect::<Vec<_>>()) {
+        glob_seg_match(&p[1..], &s[1..])
+    } else {
+        false
+    }
+}
+
+fn glob_wild(p: &[char], t: &[char]) -> bool {
+    if p.is_empty() {
+        return t.is_empty();
+    }
+    if p[0] == '*' {
+        (0..=t.len()).any(|i| glob_wild(&p[1..], &t[i..]))
+    } else {
+        !t.is_empty() && p[0] == t[0] && glob_wild(&p[1..], &t[1..])
+    }
+}
+
+// ---- durable progress log (.locke/loops/<id>/progress.jsonl) ----
+
+/// Append one event (a `LoopStreamEvent`-shaped value) as a JSONL line. O_APPEND
+/// keeps concurrent writers from interleaving lines. Powers the Stream layout and
+/// restart recovery.
+pub fn append_loop_event(repo: &str, id: &str, event: &Value) -> R<()> {
+    let dir = loop_dir(repo, id);
+    fs::create_dir_all(&dir).map_err(|e| format!("create loop dir: {e}"))?;
+    let line = serde_json::to_string(event).map_err(|e| format!("serialize event: {e}"))?;
+    let mut f = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("progress.jsonl"))
+        .map_err(|e| format!("open progress.jsonl: {e}"))?;
+    use std::io::Write;
+    writeln!(f, "{line}").map_err(|e| format!("append progress: {e}"))
+}
+
+/// Read the durable progress log (one JSON value per line; malformed lines skipped).
+pub fn read_loop_progress(repo: &str, id: &str) -> R<Vec<Value>> {
+    let path = loop_dir(repo, id).join("progress.jsonl");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = fs::read_to_string(&path).map_err(|e| format!("read progress: {e}"))?;
+    Ok(text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect())
+}
+
 // ---- git-tracking toggle (.locke/.gitignore) ----
 
 fn gitignore_path(repo: &str) -> PathBuf {
@@ -501,6 +1361,256 @@ mod tests {
         assert_eq!(reread.pulls[0].status, "merged");
         assert_eq!(reread.pulls[0].verdict.as_deref(), Some("approve"));
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manifest_round_trips_and_merges_entries() {
+        let dir = tmp("manifest");
+        let repo = dir.to_str().unwrap();
+
+        assert!(read_loop_manifest(repo, "lp1").unwrap().is_empty());
+
+        let entries = vec![
+            ManifestEntry { path: "src/a.js".into(), loc: 10, risk: "low".into(), inc: true, ..Default::default() },
+            ManifestEntry { path: "src/b.js".into(), loc: 400, risk: "high".into(), inc: false, ..Default::default() },
+        ];
+        write_loop_manifest(repo, "lp1", &entries).unwrap();
+        assert!(dir.join(".locke/loops/lp1/manifest.json").exists());
+
+        let back = read_loop_manifest(repo, "lp1").unwrap();
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[1].path, "src/b.js");
+        assert!(!back[1].inc);
+
+        // Enrich an existing row (Plan-mode spec write) without clobbering the rest.
+        merge_loop_manifest_entry(repo, "lp1", "src/a.js", |e| {
+            e.status = "specced".into();
+            e.approach = Some("refactor".into());
+            e.spec = Some("spec/src__a.js.md".into());
+        })
+        .unwrap();
+        // Merge a brand-new row in.
+        merge_loop_manifest_entry(repo, "lp1", "src/c.js", |e| e.status = "specced".into()).unwrap();
+
+        let m = read_loop_manifest(repo, "lp1").unwrap();
+        assert_eq!(m.len(), 3);
+        let a = m.iter().find(|e| e.path == "src/a.js").unwrap();
+        assert_eq!(a.status, "specced");
+        assert_eq!(a.approach.as_deref(), Some("refactor"));
+        assert_eq!(a.loc, 10, "existing fields preserved through merge");
+        assert!(m.iter().any(|e| e.path == "src/c.js" && e.inc));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn interview_question_answer_round_trip() {
+        let dir = tmp("interview");
+        let repo = dir.to_str().unwrap();
+
+        // No pending question, empty transcript to start.
+        let iv = read_interview(repo, "lp1").unwrap();
+        assert!(iv["transcript"].as_array().unwrap().is_empty());
+        assert!(iv["pending"].as_object().unwrap().is_empty());
+
+        // The interview key is the RAW item path; scope uses `__scope__`. (The
+        // `.q`/`.a` files sanitize it for the filename — `src__Button.vue.q.json`.)
+        let key = interview_key(Some("src/Button.vue"));
+        assert_eq!(key, "src/Button.vue");
+        assert_eq!(interview_key(None), "__scope__");
+
+        let nonce = write_loop_question(repo, "lp1", &key, "Which filename?", &["a".into(), "b".into()], Some("src/Button.vue")).unwrap();
+        append_interview_msg(repo, "lp1", &key, "agent", "Which filename?", Some("src/Button.vue")).unwrap();
+
+        // The pending question surfaces for the Plan view, keyed by the RAW item key
+        // (the q.json's `file`) so it matches the live event and the spec id.
+        let iv = read_interview(repo, "lp1").unwrap();
+        let pending = iv["pending"].as_object().unwrap();
+        assert_eq!(pending["src/Button.vue"]["question"], "Which filename?");
+        assert_eq!(pending["src/Button.vue"]["nonce"].as_str().unwrap(), nonce);
+        assert_eq!(iv["transcript"].as_array().unwrap().len(), 1);
+
+        // The human's answer is stamped with the pending nonce (so a stale answer
+        // can't satisfy a since-replaced question).
+        assert!(read_loop_answer(repo, "lp1", &key).unwrap().is_none());
+        write_loop_answer(repo, "lp1", &key, "Button.vue").unwrap();
+        let a = read_loop_answer(repo, "lp1", &key).unwrap().unwrap();
+        assert_eq!(a["text"], "Button.vue");
+        assert_eq!(a["nonce"].as_str().unwrap(), nonce);
+
+        // The agent consumes it: append the human turn, clear the pair.
+        append_interview_msg(repo, "lp1", &key, "you", "Button.vue", None).unwrap();
+        clear_loop_question(repo, "lp1", &key).unwrap();
+        assert!(read_loop_question(repo, "lp1", &key).unwrap().is_none());
+        assert!(read_loop_answer(repo, "lp1", &key).unwrap().is_none());
+
+        // Transcript survives the clear; pending is empty again.
+        let iv = read_interview(repo, "lp1").unwrap();
+        assert_eq!(iv["transcript"].as_array().unwrap().len(), 2);
+        assert!(iv["pending"].as_object().unwrap().is_empty());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn interview_agent_turn_count_drives_cap() {
+        let dir = tmp("interview-cap");
+        let repo = dir.to_str().unwrap();
+
+        assert_eq!(interview_agent_turns(repo, "lp1").unwrap(), 0);
+        append_interview_msg(repo, "lp1", "__scope__", "agent", "q1", None).unwrap();
+        append_interview_msg(repo, "lp1", "__scope__", "you", "a1", None).unwrap();
+        append_interview_msg(repo, "lp1", "__scope__", "agent", "q2", None).unwrap();
+        // Only agent turns count toward the per-loop question cap.
+        assert_eq!(interview_agent_turns(repo, "lp1").unwrap(), 2);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn block_on_task_handshake_round_trip() {
+        let dir = tmp("block-handshake");
+        let repo = dir.to_str().unwrap();
+
+        // No pending proposals to start.
+        assert!(read_loop_block_requests(repo, "lp1").unwrap().is_empty());
+        assert!(read_loop_block_done(repo, "lp1", "shared-util").unwrap().is_none());
+
+        // The agent posts a prerequisite and blocks; it surfaces as pending.
+        let nonce = write_loop_block_request(repo, "lp1", "shared-util", "Extract util", "do the thing", &["dep-a".into()], 5).unwrap();
+        let pending = read_loop_block_requests(repo, "lp1").unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0]["taskId"], "shared-util");
+        assert_eq!(pending[0]["title"], "Extract util");
+
+        // The runner marks it done, nonce-stamped so a stale done can't satisfy a
+        // since-replaced request. Once done, it's no longer "pending".
+        write_loop_block_done(repo, "lp1", "shared-util", "done", "landed on the branch").unwrap();
+        let d = read_loop_block_done(repo, "lp1", "shared-util").unwrap().unwrap();
+        assert_eq!(d["status"], "done");
+        assert_eq!(d["nonce"].as_str().unwrap(), nonce);
+        assert!(read_loop_block_requests(repo, "lp1").unwrap().is_empty());
+
+        // The agent consumes the result: the pair is cleared.
+        clear_loop_block(repo, "lp1", "shared-util").unwrap();
+        assert!(read_loop_block_request(repo, "lp1", "shared-util").unwrap().is_none());
+        assert!(read_loop_block_done(repo, "lp1", "shared-util").unwrap().is_none());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn glob_match_double_star_and_braces() {
+        assert!(glob_match("src/**/*.vue", "src/a/b/C.vue"));
+        assert!(!glob_match("src/**/*.vue", "lib/C.vue"));
+        assert!(glob_match("packages/**/*.{vue,ts}", "packages/ui/x.ts"));
+        assert!(!glob_match("packages/**/*.{vue,ts}", "packages/ui/x.js"));
+    }
+
+    #[test]
+    fn update_manifest_adds_task_and_fans_blocks_edge() {
+        let dir = tmp("graph");
+        let repo = dir.to_str().unwrap();
+
+        write_loop_manifest(
+            repo,
+            "lp1",
+            &[
+                ManifestEntry { path: "src/Cart.vue".into(), id: "src/Cart.vue".into(), origin: "resolver".into(), inc: true, ..Default::default() },
+                ManifestEntry { path: "src/Nav.vue".into(), id: "src/Nav.vue".into(), origin: "resolver".into(), inc: true, ..Default::default() },
+                ManifestEntry { path: "src/util.ts".into(), id: "src/util.ts".into(), origin: "resolver".into(), inc: true, ..Default::default() },
+            ],
+        )
+        .unwrap();
+
+        // Mirror `loop_add_task`: insert a model task node + fan a `requires` edge to
+        // every file matching the `blocks` glob.
+        let blocks = "src/**/*.vue";
+        let mut linked = 0usize;
+        update_loop_manifest(repo, "lp1", |entries| {
+            entries.push(ManifestEntry {
+                id: "add-use-cart".into(),
+                kind: "task".into(),
+                title: Some("Create useCart".into()),
+                status: "specced".into(),
+                origin: "model".into(),
+                inc: true,
+                ..Default::default()
+            });
+            for e in entries.iter_mut() {
+                if e.kind != "task" && glob_match(blocks, &e.path) && !e.requires.iter().any(|r| r == "add-use-cart") {
+                    e.requires.push("add-use-cart".into());
+                    linked += 1;
+                }
+            }
+        })
+        .unwrap();
+
+        assert_eq!(linked, 2, "only the two .vue files gain the edge");
+        let m = read_loop_manifest(repo, "lp1").unwrap();
+        let task = m.iter().find(|e| e.id == "add-use-cart").unwrap();
+        assert_eq!((task.kind.as_str(), task.origin.as_str()), ("task", "model"));
+        assert!(m.iter().find(|e| e.path == "src/Cart.vue").unwrap().requires.iter().any(|r| r == "add-use-cart"));
+        assert!(m.iter().find(|e| e.path == "src/Nav.vue").unwrap().requires.iter().any(|r| r == "add-use-cart"));
+        assert!(m.iter().find(|e| e.path == "src/util.ts").unwrap().requires.is_empty(), ".ts file untouched");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // A candidate pool (inc=false) round-trips, and the strategist's authoring
+    // (promote → queued, drop → excluded with a reason) survives a re-read.
+    #[test]
+    fn candidate_pool_authors_to_a_work_set() {
+        let dir = tmp("candidates");
+        let repo = dir.to_str().unwrap();
+        write_loop_manifest(
+            repo,
+            "lp1",
+            &[
+                ManifestEntry { path: "src/A.vue".into(), id: "src/A.vue".into(), origin: "resolver".into(), inc: false, status: "candidate".into(), ..Default::default() },
+                ManifestEntry { path: "src/B.vue".into(), id: "src/B.vue".into(), origin: "resolver".into(), inc: false, status: "candidate".into(), ..Default::default() },
+            ],
+        )
+        .unwrap();
+        // Candidates persist as out-of-scope until the model decides.
+        let pool = read_loop_manifest(repo, "lp1").unwrap();
+        assert!(pool.iter().all(|e| !e.inc && e.status == "candidate"));
+
+        update_loop_manifest(repo, "lp1", |entries| {
+            for e in entries.iter_mut() {
+                if e.path == "src/A.vue" {
+                    e.inc = true;
+                    e.status = "queued".into();
+                } else if e.path == "src/B.vue" {
+                    e.inc = false;
+                    e.status = "excluded".into();
+                    e.reason = Some("test-only fixture".into());
+                }
+            }
+        })
+        .unwrap();
+
+        let m = read_loop_manifest(repo, "lp1").unwrap();
+        let a = m.iter().find(|e| e.path == "src/A.vue").unwrap();
+        assert_eq!((a.inc, a.status.as_str()), (true, "queued"));
+        let b = m.iter().find(|e| e.path == "src/B.vue").unwrap();
+        assert_eq!((b.inc, b.status.as_str(), b.reason.as_deref()), (false, "excluded", Some("test-only fixture")));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn loop_draft_round_trips() {
+        let dir = tmp("draft");
+        let repo = dir.to_str().unwrap();
+        assert!(read_loop_draft(repo, "lp1").unwrap().is_none());
+        let draft = json!({ "title": "Migrate", "resolver": { "kind": "glob", "pattern": "src/**/*.ts" }, "targetSel": { "a.ts": false } });
+        write_loop_draft(repo, "lp1", &draft).unwrap();
+        assert!(dir.join(".locke/loops/lp1/draft.json").exists());
+        let back = read_loop_draft(repo, "lp1").unwrap().unwrap();
+        assert_eq!(back["title"], "Migrate");
+        assert_eq!(back["resolver"]["pattern"], "src/**/*.ts");
+        assert_eq!(back["targetSel"]["a.ts"], false);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -682,6 +1792,81 @@ mod tests {
         assert_eq!(read_pulls(repo).unwrap().pulls.len(), 2);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn loops_registry_and_item_tree_round_trip() {
+        let dir = tmp("loops");
+        let repo = dir.to_str().unwrap();
+
+        assert!(read_loops(repo).unwrap().is_empty());
+        let lp = Loop {
+            id: "loop-1".into(),
+            title: "Migrate".into(),
+            branch: "chore/x".into(),
+            pattern: "src/**/*.vue".into(),
+            state: "building".into(),
+            total: 3,
+            queued: 3,
+            template: "Migrate {{file}}".into(),
+            concurrency: 6,
+            ..Default::default()
+        };
+        upsert_loop(repo, lp).unwrap();
+        assert!(dir.join(".locke/loops.json").exists());
+
+        // Count update is read-modify-write.
+        update_loop(repo, "loop-1", |l| {
+            l.done = 1;
+            l.queued = 2;
+            l.state = "building".into();
+        })
+        .unwrap();
+        let got = read_loop(repo, "loop-1").unwrap().unwrap();
+        assert_eq!(got.done, 1);
+        assert_eq!(got.queued, 2);
+        assert!(!got.updated_at.is_empty());
+
+        // A spec the worker would read; path sanitization keeps it unique.
+        write_loop_spec(repo, "loop-1", "src/components/Checkout.vue", "# spec\nDo X.").unwrap();
+        assert_eq!(
+            read_loop_spec(repo, "loop-1", "src/components/Checkout.vue").unwrap().as_deref(),
+            Some("# spec\nDo X.")
+        );
+        assert!(dir.join(".locke/loops/loop-1/spec/src__components__Checkout.vue.md").exists());
+
+        // MCP-style declaration merge + note append, then runner overwrite.
+        merge_loop_item(
+            repo,
+            "loop-1",
+            "src/components/Checkout.vue",
+            json!({ "declared": "complete", "summary": "converted" }),
+        )
+        .unwrap();
+        append_loop_note(repo, "loop-1", "src/components/Checkout.vue", "kept Options API").unwrap();
+        let item = read_loop_item(repo, "loop-1", "src/components/Checkout.vue").unwrap().unwrap();
+        assert_eq!(item["declared"], "complete");
+        assert_eq!(item["summary"], "converted");
+        assert_eq!(item["notes"][0]["note"], "kept Options API");
+        assert_eq!(item["path"], "src/components/Checkout.vue");
+
+        assert_eq!(read_loop_items(repo, "loop-1").unwrap().len(), 1);
+
+        // Durable progress log appends + reads as JSONL.
+        append_loop_event(repo, "loop-1", &json!({ "st": "done", "path": "a.vue", "text": "ok", "t": "12:00:00" })).unwrap();
+        append_loop_event(repo, "loop-1", &json!({ "st": "review", "path": "b.vue", "text": "paused", "t": "12:01:00" })).unwrap();
+        let prog = read_loop_progress(repo, "loop-1").unwrap();
+        assert_eq!(prog.len(), 2);
+        assert_eq!(prog[1]["st"], "review");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sanitize_path_is_collision_free_and_readable() {
+        assert_eq!(sanitize_path("src/a/b.vue"), "src__a__b.vue");
+        // Distinct paths that would collide under naive `/`→`-` stay distinct.
+        assert_ne!(sanitize_path("a/b.c"), sanitize_path("a-b.c"));
     }
 
     #[test]
